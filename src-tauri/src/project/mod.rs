@@ -101,6 +101,8 @@ pub struct WidgetDef {
     pub z: i32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tag_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
     #[serde(default)]
     pub config: serde_json::Value,
 }
@@ -357,120 +359,115 @@ pub fn water_tank_project() -> ScadaProject {
 fn water_tank_form() -> FormDef {
     use serde_json::json;
 
-    // Designer preview layout — greyscale + G/Y/R (Runtime uses WaterTankHmi dashboard).
     let mut widgets = Vec::new();
     let mut z = 0;
-    let card = "#FFFFFF";
-    let border = "#E5E7EB";
-    let text = "#1F2937";
-    let muted = "#6B7280";
-    let green = "#16A34A";
-    let yellow = "#EAB308";
-    let red = "#DC2626";
-    let grey = "#9CA3AF";
 
-    widgets.push(w("title", "label", 24.0, 16.0, 640.0, 32.0, z, None, json!({
-        "text": "WATER TANK · DUAL-PUMP  (Designer preview)", "fontSize": 18, "fontWeight": "bold",
-        "textColor": text, "align": "left"
-    })));
-    z += 1;
-    widgets.push(w("subtitle", "label", 24.0, 44.0, 720.0, 22.0, z, None, json!({
-        "text": "Press ▶ Run for full operator HMI · Modbus :5020 · palette greyscale+G/Y/R",
-        "fontSize": 11, "textColor": muted, "align": "left"
+    // Header Badges
+    widgets.push(w("status_badges", "status_badge", 24.0, 16.0, 300.0, 40.0, z, None, None, json!({
+        "simEn": true, "frozen": false
     })));
     z += 1;
 
-    widgets.push(w("tank", "tank", 40.0, 88.0, 200.0, 360.0, z, Some("wt.level_cm"), json!({
-        "title": "LEVEL", "min": 0, "max": 1000, "unit": "cm", "fillColor": grey,
-        "warn": 700, "alarm": 850, "showValue": true, "bgColor": card
+    // Deconstructed Atomic Group: METRICS OVERVIEW (group_id: grp_metrics)
+    let grp_m = Some("grp_metrics");
+    widgets.push(w("m_bg", "shape", 340.0, 16.0, 680.0, 74.0, z, None, grp_m, json!({
+        "title": "METRICS OVERVIEW", "borderRadius": 10, "bgColor": "#FFFFFF", "borderColor": "#E5E7EB", "borderWidth": 1
     })));
     z += 1;
 
-    widgets.push(w("kpi_level", "numeric", 280.0, 88.0, 180.0, 64.0, z, Some("wt.level_cm"), json!({
-        "title": "LEVEL", "unit": "cm", "decimals": 0, "bgColor": card, "textColor": green, "fontSize": 22, "fontWeight": "bold"
-    })));
-    z += 1;
-    widgets.push(w("kpi_p1", "lamp", 480.0, 88.0, 140.0, 64.0, z, Some("wt.p1_run"), json!({
-        "title": "PUMP 1", "onColor": green, "offColor": grey, "onLabel": "RUN", "offLabel": "STOP"
-    })));
-    z += 1;
-    widgets.push(w("kpi_p2", "lamp", 640.0, 88.0, 140.0, 64.0, z, Some("wt.p2_run"), json!({
-        "title": "PUMP 2", "onColor": green, "offColor": grey, "onLabel": "RUN", "offLabel": "STOP"
-    })));
-    z += 1;
-    widgets.push(w("kpi_st", "lamp", 800.0, 88.0, 160.0, 64.0, z, Some("wt.alm_fail"), json!({
-        "title": "STATION FAIL", "onColor": red, "offColor": grey, "onLabel": "FAIL", "offLabel": "OK", "blink": true
+    widgets.push(w("m_level", "numeric", 350.0, 38.0, 150.0, 46.0, z, Some("wt.level_cm"), grp_m, json!({
+        "title": "TANK LEVEL", "unit": "cm", "decimals": 0, "textColor": "#0284C7", "fontSize": 16, "borderRadius": 6, "bgColor": "#F9FAFB"
     })));
     z += 1;
 
-    widgets.push(w("sp_panel", "panel", 280.0, 176.0, 320.0, 272.0, z, None, json!({
-        "title": "SETPOINTS (live RO in designer)", "bgColor": card, "borderColor": border
-    })));
-    z += 1;
-    widgets.push(w("sp_stop", "numeric", 300.0, 216.0, 280.0, 48.0, z, Some("wt.sp_stop"), json!({
-        "title": "SP_STOP", "unit": "cm", "decimals": 0, "bgColor": "#F9FAFB", "textColor": green
-    })));
-    z += 1;
-    widgets.push(w("sp_p1", "numeric", 300.0, 276.0, 280.0, 48.0, z, Some("wt.sp_p1_on"), json!({
-        "title": "SP_P1_ON", "unit": "cm", "decimals": 0, "bgColor": "#F9FAFB", "textColor": yellow
-    })));
-    z += 1;
-    widgets.push(w("sp_p2", "numeric", 300.0, 336.0, 280.0, 48.0, z, Some("wt.sp_p2_on"), json!({
-        "title": "SP_P2_ON", "unit": "cm", "decimals": 0, "bgColor": "#F9FAFB", "textColor": red
-    })));
-    z += 1;
-    widgets.push(w("k_factor", "numeric", 300.0, 396.0, 280.0, 40.0, z, Some("wt.k_x100"), json!({
-        "title": "K ×100", "decimals": 0, "bgColor": "#F9FAFB", "textColor": text
+    widgets.push(w("m_p1", "bool_display", 510.0, 38.0, 150.0, 46.0, z, Some("wt.p1_run"), grp_m, json!({
+        "label": "PUMP 1", "trueLabel": "RUNNING", "falseLabel": "STOPPED", "trueColor": "#16A34A"
     })));
     z += 1;
 
-    widgets.push(w("status_panel", "panel", 640.0, 176.0, 320.0, 272.0, z, None, json!({
-        "title": "STATUS", "bgColor": card, "borderColor": border
-    })));
-    z += 1;
-    widgets.push(w("demand", "lamp", 660.0, 220.0, 130.0, 44.0, z, Some("wt.demand"), json!({
-        "title": "DEMAND", "onColor": yellow, "offColor": grey
-    })));
-    z += 1;
-    widgets.push(w("join", "lamp", 810.0, 220.0, 130.0, 44.0, z, Some("wt.join_p2"), json!({
-        "title": "JOIN P2", "onColor": yellow, "offColor": grey
-    })));
-    z += 1;
-    widgets.push(w("alm_hi_w", "lamp", 660.0, 280.0, 130.0, 44.0, z, Some("wt.alm_hi"), json!({
-        "title": "ALM HI", "onColor": red, "offColor": grey, "blink": true
-    })));
-    z += 1;
-    widgets.push(w("alm_fault_w", "lamp", 810.0, 280.0, 130.0, 44.0, z, Some("wt.alm_fault"), json!({
-        "title": "FAULT", "onColor": red, "offColor": grey, "blink": true
-    })));
-    z += 1;
-    widgets.push(w("sim_en", "lamp", 660.0, 340.0, 130.0, 44.0, z, Some("wt.sim_en"), json!({
-        "title": "SIM_EN", "onColor": green, "offColor": grey
-    })));
-    z += 1;
-    widgets.push(w("drain_w", "lamp", 810.0, 340.0, 130.0, 44.0, z, Some("wt.drain_regime"), json!({
-        "title": "DRAIN", "onColor": green, "offColor": grey
-    })));
-    z += 1;
-    widgets.push(w("p1_fault", "lamp", 660.0, 400.0, 130.0, 36.0, z, Some("wt.p1_fault"), json!({
-        "title": "P1 FLT", "onColor": red, "offColor": grey, "blink": true
-    })));
-    z += 1;
-    widgets.push(w("p2_fault", "lamp", 810.0, 400.0, 130.0, 36.0, z, Some("wt.p2_fault"), json!({
-        "title": "P2 FLT", "onColor": red, "offColor": grey, "blink": true
+    widgets.push(w("m_p2", "bool_display", 670.0, 38.0, 150.0, 46.0, z, Some("wt.p2_run"), grp_m, json!({
+        "label": "PUMP 2", "trueLabel": "RUNNING", "falseLabel": "STOPPED", "trueColor": "#16A34A"
     })));
     z += 1;
 
-    widgets.push(w("footer", "label", 40.0, 480.0, 920.0, 40.0, z, None, json!({
-        "text": "Designer form is a layout preview. Operator controls (Freeze, setpoints Apply, Write K) are on Runtime HMI. Lab use only.",
-        "fontSize": 11, "textColor": muted, "align": "left"
+    widgets.push(w("m_inflow", "numeric", 830.0, 38.0, 170.0, 46.0, z, Some("wt.k_x100"), grp_m, json!({
+        "title": "INFLOW K", "unit": "×100", "decimals": 0, "textColor": "#1F2937", "fontSize": 16, "borderRadius": 6, "bgColor": "#F9FAFB"
+    })));
+    z += 1;
+
+    // Main Synoptic Elements
+    widgets.push(w("iso_tank_1", "iso_water_tank", 24.0, 100.0, 360.0, 300.0, z, Some("wt.level_cm"), None, json!({
+        "label": "Water Tank Cutaway"
+    })));
+    z += 1;
+
+    widgets.push(w("iso_pump_1", "iso_pump", 400.0, 100.0, 160.0, 140.0, z, Some("wt.p1_run"), None, json!({
+        "pumpName": "PUMP 1 (Lead)"
+    })));
+    z += 1;
+
+    widgets.push(w("iso_pump_2", "iso_pump", 400.0, 250.0, 160.0, 140.0, z, Some("wt.p2_run"), None, json!({
+        "pumpName": "PUMP 2 (Lag)"
+    })));
+    z += 1;
+
+    widgets.push(w("inlet_pipe", "iso_pipe", 400.0, 400.0, 310.0, 70.0, z, Some("wt.sim_en"), None, json!({
+        "label": "Inlet Pipe Stream"
+    })));
+    z += 1;
+
+    widgets.push(w("terrain_cut", "iso_terrain", 24.0, 410.0, 360.0, 170.0, z, None, None, json!({
+        "label": "Soil & Grass Cutaway"
+    })));
+    z += 1;
+
+    // Deconstructed Atomic Group: SETPOINT CONTROLLER (group_id: grp_setpoints)
+    let grp_sp = Some("grp_setpoints");
+    widgets.push(w("sp_bg", "shape", 730.0, 100.0, 290.0, 230.0, z, None, grp_sp, json!({
+        "title": "OPERATING LEVELS SETPOINTS", "borderRadius": 10, "bgColor": "#FFFFFF", "borderColor": "#E5E7EB", "borderWidth": 1
+    })));
+    z += 1;
+
+    widgets.push(w("sp_stop_step", "numeric_input", 740.0, 130.0, 270.0, 44.0, z, Some("wt.sp_stop"), grp_sp, json!({
+        "title": "SP_STOP", "step": 50, "unit": "cm", "labelColor": "#16A34A"
+    })));
+    z += 1;
+
+    widgets.push(w("sp_p1_step", "numeric_input", 740.0, 178.0, 270.0, 44.0, z, Some("wt.sp_p1_on"), grp_sp, json!({
+        "title": "SP_P1_ON", "step": 50, "unit": "cm", "labelColor": "#EAB308"
+    })));
+    z += 1;
+
+    widgets.push(w("sp_p2_step", "numeric_input", 740.0, 226.0, 270.0, 44.0, z, Some("wt.sp_p2_on"), grp_sp, json!({
+        "title": "SP_P2_ON", "step": 50, "unit": "cm", "labelColor": "#DC2626"
+    })));
+    z += 1;
+
+    widgets.push(w("sp_apply_btn", "write_button", 740.0, 276.0, 270.0, 40.0, z, Some("wt.sp_stop"), grp_sp, json!({
+        "label": "Apply setpoints", "bgColor": "#1F2937", "textColor": "#FFFFFF"
+    })));
+    z += 1;
+
+    // Inflow, Process & Alarms Panels
+    widgets.push(w("inflow_ctrl", "inflow_control", 730.0, 340.0, 290.0, 130.0, z, Some("wt.k_x100"), None, json!({
+        "title": "Inflow Factor K"
+    })));
+    z += 1;
+
+    widgets.push(w("proc_ctrl", "process_control", 400.0, 480.0, 310.0, 130.0, z, Some("wt.sim_en"), None, json!({
+        "title": "Process Controls"
+    })));
+    z += 1;
+
+    widgets.push(w("alarms_ctrl", "alarm_panel", 730.0, 480.0, 290.0, 200.0, z, None, None, json!({
+        "title": "Active Alarms"
     })));
 
     FormDef {
         id: "main".into(),
         name: "Main_Synoptic".into(),
-        width: 1000.0,
-        height: 540.0,
+        width: 1040.0,
+        height: 700.0,
         background: "#F4F5F7".into(),
         grid: 8,
         widgets,
@@ -486,6 +483,7 @@ fn w(
     height: f64,
     z: i32,
     tag_id: Option<&str>,
+    group_id: Option<&str>,
     config: serde_json::Value,
 ) -> WidgetDef {
     WidgetDef {
@@ -497,6 +495,7 @@ fn w(
         h: height,
         z,
         tag_id: tag_id.map(|s| s.into()),
+        group_id: group_id.map(|s| s.into()),
         config,
     }
 }

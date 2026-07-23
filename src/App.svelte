@@ -6,6 +6,8 @@
     mode,
     activeForm,
     selectedWidget,
+    selectedFormId,
+    selectedWidgetId,
     tagMap,
     audit,
     dirty,
@@ -16,6 +18,8 @@
     persistProject,
     exportProjectJson,
     deleteSelectedWidget,
+    addNewForm,
+    deleteForm,
     refreshAudit,
     log,
   } from "$lib/stores/app";
@@ -118,6 +122,10 @@
     <button onclick={() => reloadWaterTank()}>File · New Water Tank</button>
     <button onclick={() => persistProject()}>File · Save</button>
     <button onclick={() => exportProjectJson()}>File · Export JSON</button>
+    <button onclick={() => addNewForm()}>Screen · New Screen</button>
+    {#if $activeForm && ($project?.forms.length ?? 0) > 1}
+      <button onclick={() => deleteForm($activeForm.id)}>Screen · Delete Screen</button>
+    {/if}
     <button
       onclick={() => switchMode($mode === "designer" ? "runtime" : "designer")}
     >
@@ -160,6 +168,7 @@
         class:primary={leftTab === "toolbox"}
         onclick={() => (leftTab = "toolbox")}>Toolbox</button
       >
+      <button onclick={() => addNewForm()}>+ Screen</button>
       <button onclick={() => persistProject()}>Save Project</button>
     {/if}
     <span style:margin-left="auto" style:color="var(--vs-text-dim)">
@@ -189,30 +198,68 @@
       {/if}
 
       <div class="center">
-        <div class="tabstrip">
-          <div class="tab active">
-            {#if isWaterTankBoard}
-              Main_Synoptic · SCADA board
-              {$mode === "designer" ? " [Design = Run 1:1]" : " [Running]"}
-            {:else}
-              {$activeForm?.name ?? "Form"}.form
-              {$mode === "designer" ? " [Design]" : " [Running]"}
-            {/if}
-          </div>
+        <!-- Interactive Multi-Screen Tabstrip -->
+        <div class="tabstrip" style:display="flex" style:align-items="center">
+          {#each $project.forms as f}
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div
+              class="tab"
+              class:active={$selectedFormId === f.id}
+              role="button"
+              tabindex="0"
+              onclick={() => {
+                selectedFormId.set(f.id);
+                selectedWidgetId.set(null);
+              }}
+              onkeydown={(e) => e.key === "Enter" && selectedFormId.set(f.id)}
+            >
+              <span>{f.name}.form</span>
+              {#if $mode === "designer" && $project.forms.length > 1}
+                <!-- svelte-ignore a11y_click_events_have_key_events -->
+                <!-- svelte-ignore a11y_no_static_element_interactions -->
+                <span
+                  class="tab-close"
+                  title="Close & Delete screen {f.name}"
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    deleteForm(f.id);
+                  }}
+                >
+                  ✕
+                </span>
+              {/if}
+            </div>
+          {/each}
+          {#if $mode === "designer"}
+            <button
+              class="btn-new-tab"
+              title="Add New Screen"
+              onclick={() => addNewForm()}
+            >
+              + New Screen
+            </button>
+          {/if}
         </div>
-        {#if isWaterTankBoard}
-          <!-- Light board only; VS chrome stays dark. Designer ≡ Runtime. -->
+        {#if $mode === "designer" && $activeForm}
+          <DesignerCanvas
+            form={$activeForm}
+            tagMap={$tagMap}
+            design={true}
+            {onWrite}
+          />
+        {:else if isWaterTankBoard}
+          <!-- Dedicated Runtime HMI dashboard -->
           <WaterTankHmi
             snapshot={$snapshot}
             tagMap={$tagMap}
             {onWrite}
-            designMode={$mode === "designer"}
+            designMode={false}
           />
         {:else if $activeForm}
           <DesignerCanvas
             form={$activeForm}
             tagMap={$tagMap}
-            design={$mode === "designer"}
+            design={false}
             {onWrite}
           />
         {:else}
@@ -257,3 +304,35 @@
     </span>
   </div>
 </div>
+
+<style>
+  .tab-close {
+    margin-left: 6px;
+    font-size: 11px;
+    font-weight: 800;
+    color: #ef4444;
+    cursor: pointer;
+    border-radius: 50%;
+    padding: 0 4px;
+    opacity: 0.7;
+  }
+  .tab-close:hover {
+    opacity: 1;
+    background: rgba(239, 68, 68, 0.2);
+  }
+  .btn-new-tab {
+    background: var(--vs-panel-header-bg, #2d2d2d);
+    color: var(--vs-text, #cccccc);
+    border: 1px dashed var(--vs-border, #444444);
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 3px 8px;
+    margin-left: 8px;
+    cursor: pointer;
+  }
+  .btn-new-tab:hover {
+    background: var(--vs-hover, #3e3e42);
+    color: #ffffff;
+  }
+</style>

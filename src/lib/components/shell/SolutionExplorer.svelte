@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { ScadaProject } from "$lib/types";
-  import { selectedFormId, mode } from "$lib/stores/app";
+  import { selectedFormId, addNewForm, deleteForm, selectedWidgetId } from "$lib/stores/app";
 
   interface Props {
     project: ScadaProject;
@@ -8,6 +8,11 @@
   }
 
   let { project, design }: Props = $props();
+
+  function selectForm(id: string) {
+    selectedFormId.set(id);
+    selectedWidgetId.set(null);
+  }
 </script>
 
 <div class="panel" style:height="100%;border:none;border-right:1px solid var(--vs-border)">
@@ -40,18 +45,44 @@
       </div>
     {/if}
 
-    <div class="tree-group">Forms</div>
+    <div class="tree-group form-header">
+      <span>Forms / Screens ({project.forms.length})</span>
+      {#if design}
+        <button
+          class="btn-add-form"
+          title="Add New Screen"
+          onclick={() => addNewForm()}
+        >
+          + Add
+        </button>
+      {/if}
+    </div>
     {#each project.forms as f}
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
-        class="tree-item"
+        class="tree-item form-item"
         class:active={$selectedFormId === f.id}
         role="button"
         tabindex="0"
-        onclick={() => selectedFormId.set(f.id)}
-        onkeydown={(e) => e.key === "Enter" && selectedFormId.set(f.id)}
+        onclick={() => selectForm(f.id)}
+        onkeydown={(e) => e.key === "Enter" && selectForm(f.id)}
       >
         <span>🗂</span>
-        <span>{f.name}.form</span>
+        <span class="form-title">{f.name}.form</span>
+        {#if design && project.forms.length > 1}
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <button
+            class="btn-del-form"
+            title="Delete screen {f.name}"
+            onclick={(e) => {
+              e.stopPropagation();
+              deleteForm(f.id);
+            }}
+          >
+            ✕
+          </button>
+        {/if}
       </div>
     {/each}
 
@@ -83,3 +114,50 @@
     </div>
   </div>
 </div>
+
+<style>
+  .form-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .btn-add-form {
+    background: #1e3a8a;
+    color: #ffffff;
+    border: none;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 800;
+    padding: 1px 6px;
+    cursor: pointer;
+  }
+  .btn-add-form:hover {
+    background: #2563eb;
+  }
+  .form-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .form-title {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    margin-left: 4px;
+  }
+  .btn-del-form {
+    background: transparent;
+    border: none;
+    color: #ef4444;
+    font-size: 11px;
+    font-weight: 800;
+    cursor: pointer;
+    opacity: 0.6;
+    padding: 0 4px;
+  }
+  .btn-del-form:hover {
+    opacity: 1;
+    color: #dc2626;
+  }
+</style>

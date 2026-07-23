@@ -73,9 +73,118 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
   switch (cmd) {
     case "get_builtin_water_tank":
     case "load_builtin_water_tank": {
-      const res = await fetch("/projects/WaterTank.proscada.json");
-      if (res.ok) {
-        mockProject = (await res.json()) as ScadaProject;
+      try {
+        const res = await fetch("/projects/WaterTank.proscada.json");
+        const ct = res.headers.get("content-type") || "";
+        if (res.ok && ct.includes("application/json")) {
+          mockProject = (await res.json()) as ScadaProject;
+        }
+      } catch {
+        /* fallback below */
+      }
+      if (!mockProject) {
+        mockProject = {
+          schema_version: "1.0",
+          id: "water_tank_dual_pump",
+          name: "Water Tank Dual-Pump Station",
+          content_hash: "0000000000000000000000000000000000000000000000000000000000000000",
+          forms: [
+            {
+              id: "Main_Synoptic",
+              name: "Main_Synoptic",
+              width: 1040,
+              height: 700,
+              background: "#121316",
+              grid: 8,
+              widgets: [
+                {
+                  id: "m_bg",
+                  widget_type: "shape",
+                  x: 20,
+                  y: 20,
+                  w: 480,
+                  h: 220,
+                  z: 1,
+                  tag_id: null,
+                  group_id: "grp_metrics",
+                  config: {
+                    background: "#1e1f24",
+                    borderColor: "#33353c",
+                    borderWidth: 1,
+                    borderRadius: 10,
+                  },
+                },
+                {
+                  id: "m_level",
+                  widget_type: "numeric",
+                  x: 40,
+                  y: 40,
+                  w: 200,
+                  h: 60,
+                  z: 2,
+                  tag_id: "wt.level_cm",
+                  group_id: "grp_metrics",
+                  config: {
+                    label: "Poziom wody (Water Level)",
+                    unit: "cm",
+                    decimals: 1,
+                    fontSize: 16,
+                    textColor: "#60a5fa",
+                  },
+                },
+              ],
+            },
+          ],
+          devices: [
+            {
+              id: "dev_plc1",
+              name: "PLC Station 1",
+              host: "127.0.0.1",
+              port: 502,
+              unit_id: 1,
+              timeout_ms: 1000,
+              enabled: true,
+            },
+          ],
+          tags: [
+            {
+              id: "wt.level_cm",
+              tag_id: "wt.level_cm",
+              name: "Water Level",
+              data_type: "float",
+              register_type: "holding",
+              address: 0,
+              scale: 1,
+              offset: 0,
+              decimals: 1,
+              unit: "cm",
+              description: "Water tank level",
+            },
+            {
+              id: "wt.p1_run",
+              tag_id: "wt.p1_run",
+              name: "Pump 1 Run",
+              data_type: "bool",
+              register_type: "holding",
+              address: 1,
+              scale: 1,
+              offset: 0,
+              decimals: 0,
+              unit: "",
+              description: "Pump 1 run signal",
+            },
+          ],
+          alarms: [],
+          events: [],
+          history: [],
+          logs: [],
+          users: [],
+          roles: [],
+          settings: {
+            theme: "dark",
+            refresh_rate_ms: 200,
+          },
+        };
       }
       return mockProject as T;
     }

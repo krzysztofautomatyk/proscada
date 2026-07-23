@@ -3,6 +3,7 @@
   import WidgetView from "$lib/components/widgets/WidgetView.svelte";
   import {
     selectedWidgetId,
+    selectedWidgetIds,
     updateWidget,
     addWidget,
   } from "$lib/stores/app";
@@ -50,10 +51,16 @@
     return [...form.widgets].sort((a, b) => (a.z ?? 0) - (b.z ?? 0));
   }
 
+  const currentSelectedWidget = $derived(
+    form.widgets.find((w) => w.id === $selectedWidgetId),
+  );
+  const activeGroupId = $derived(currentSelectedWidget?.group_id ?? null);
+
   function onSurfacePointerDown(e: PointerEvent) {
     if (!design) return;
     if (e.target === surfaceEl || (e.target as HTMLElement).classList.contains("form-surface")) {
       selectedWidgetId.set(null);
+      selectedWidgetIds.set([]);
     }
   }
 
@@ -61,7 +68,23 @@
     if (!design) return;
     e.stopPropagation();
     e.preventDefault();
-    selectedWidgetId.set(w.id);
+
+    if (e.shiftKey) {
+      selectedWidgetIds.update((ids) =>
+        ids.includes(w.id) ? ids.filter((i) => i !== w.id) : [...ids, w.id],
+      );
+    } else {
+      selectedWidgetId.set(w.id);
+      if (w.group_id) {
+        const groupMembers = form.widgets
+          .filter((item) => item.group_id === w.group_id)
+          .map((item) => item.id);
+        selectedWidgetIds.set(groupMembers);
+      } else {
+        selectedWidgetIds.set([w.id]);
+      }
+    }
+
     gesture = {
       id: w.id,
       mode: "move",
@@ -131,7 +154,10 @@
   function onDrop(e: DragEvent) {
     if (!design || !surfaceEl) return;
     e.preventDefault();
-    const type = e.dataTransfer?.getData("application/x-proscada-widget");
+    const rawType =
+      e.dataTransfer?.getData("application/x-proscada-widget") ||
+      e.dataTransfer?.getData("text/plain");
+    const type = rawType?.trim();
     if (!type) return;
     const cat = WIDGET_CATALOG.find((c) => c.type === type);
     if (!cat) return;
@@ -148,6 +174,7 @@
       h: cat.defaultH,
       z: form.widgets.length + 1,
       tag_id: null,
+      group_id: null,
       config: { ...cat.defaultConfig },
     });
   }
@@ -169,10 +196,14 @@
   >
     {#each sortedWidgets() as w (w.id)}
       {@const selected = design && $selectedWidgetId === w.id}
+      {@const multiSelected = design && $selectedWidgetIds.includes(w.id)}
+      {@const inActiveGroup = design && activeGroupId && w.group_id === activeGroupId}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
         class="widget"
         class:selected
+        class:multi-selected={multiSelected}
+        class:in-group={inActiveGroup}
         style:left="{w.x}px"
         style:top="{w.y}px"
         style:width="{w.w}px"
@@ -180,6 +211,9 @@
         style:z-index={selected ? 1000 : w.z ?? 0}
         onpointerdown={(e) => startMove(e, w)}
       >
+        {#if inActiveGroup}
+          <div class="group-tag">🔗 {w.group_id}</div>
+        {/if}
         <WidgetView
           widget={w}
           tag={w.tag_id ? tagMap.get(w.tag_id) : null}
@@ -200,3 +234,26 @@
     {/each}
   </div>
 </div>
+
+<style>
+  .widget.in-group:not(.selected) {
+    outline: 1.5px dashed #3b82f6;
+    outline-offset: 1px;
+  }
+  .widget.multi-selected:not(.selected) {
+    outline: 2px solid #60a5fa;
+  }
+  .group-tag {
+    position: absolute;
+    top: -16px;
+    left: 0;
+    font-size: 9px;
+    font-weight: 800;
+    background: #3b82f6;
+    color: #ffffff;
+    padding: 1px 4px;
+    border-radius: 3px;
+    pointer-events: none;
+    z-index: 10;
+  }
+</style>
