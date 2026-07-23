@@ -1,0 +1,56 @@
+/* ISA-101-ish SCADA board theme — greyscale + G/Y/R (no christmas-tree) */
+
+.scada-board {
+  --scada-bg: #f4f5f7;
+  --scada-panel: #ffffff;
+  --scada-border: #e5e7eb;
+  --scada-text: #1f2937;
+  --scada-muted: #6b7280;
+  --scada-track: #e5e7eb;
+  --scada-soil: #d1d5db;
+  --scada-soil-deep: #9ca3af;
+  --scada-metal: #6b7280;
+  --scada-metal-light: #d1d5db;
+  --scada-water: #9ca3af;
+  --scada-water-deep: #6b7280;
+  --scada-normal: #16a34a;
+  --scada-warning: #eab308;
+  --scada-alarm: #dc2626;
+  --scada-info: #4b5563;
+
+  color: var(--scada-text);
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scada-board .flow-anim,
+  .scada-board .rain-arrow,
+  .scada-board .water-surface,
+  .scada-board .blink-alarm {
+    animation: none !important;
+  }
+}
+
+@keyframes dash-flow {
+  to {
+    stroke-dashoffset: -48;
+  }
+}
+
+@keyframes surface-wave {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(2px);
+  }
+}
+
+.scada-board .flow-anim {
+  animation: dash-flow 1.1s linear infinite;
+}
+
+.scada-board .water-surface {
+  animation: surface-wave 2.4s ease-in-out infinite;
+}
