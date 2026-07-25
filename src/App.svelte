@@ -8,6 +8,8 @@
     selectedWidget,
     selectedFormId,
     selectedWidgetId,
+    selectedWidgetIds,
+    selectedSolutionNode,
     tagMap,
     audit,
     dirty,
@@ -16,35 +18,249 @@
     disconnectDevice,
     switchMode,
     persistProject,
-    exportProjectJson,
     deleteSelectedWidget,
     addNewForm,
     deleteForm,
     refreshAudit,
     log,
+    cutSelectedWidgets,
+    copySelectedWidgets,
+    pasteWidgets,
+    duplicateSelected,
+    multiCopySelected,
+    groupSelectedWidgets,
+    ungroupSelectedWidgets,
+    selectAllWidgets,
+    toggleLockSelected,
+    openAttributesPanel,
+    focusPropertiesTick,
+    alignSelectedWidgets,
+    moveSelectedWidgets,
   } from "$lib/stores/app";
   import { api } from "$lib/services/api";
   import type { Role } from "$lib/types";
   import SolutionExplorer from "$lib/components/shell/SolutionExplorer.svelte";
+  import MenuBar from "$lib/components/shell/MenuBar.svelte";
   import Toolbox from "$lib/components/designer/Toolbox.svelte";
   import Properties from "$lib/components/designer/Properties.svelte";
+  import ObjectList from "$lib/components/designer/ObjectList.svelte";
   import DesignerCanvas from "$lib/components/designer/DesignerCanvas.svelte";
   import OutputPanel from "$lib/components/shell/OutputPanel.svelte";
-  import WaterTankHmi from "$lib/components/runtime/WaterTankHmi.svelte";
+  import DocumentEditor from "$lib/components/shell/DocumentEditor.svelte";
+  import VariablesEditor from "$lib/components/shell/VariablesEditor.svelte";
+  import { isDocKind } from "$lib/utils/projectTree";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
 
   let role = $state<Role>("engineer");
-  let leftTab = $state<"solution" | "toolbox">("solution");
+  let leftTab = $state<"solution" | "toolbox" | "objects">("solution");
+  let propertiesEl = $state<HTMLDivElement | null>(null);
+  let workspaceEl = $state<HTMLDivElement | null>(null);
+
+  const PANE_DEFAULTS = { left: 240, right: 280, bottom: 160 };
+  const PANE_MIN = { left: 160, right: 200, bottom: 72 };
+  const PANE_STORAGE_KEY = "proscada.pane.sizes";
+
+  function loadPaneSizes() {
+    try {
+      const raw = localStorage.getItem(PANE_STORAGE_KEY);
+      if (!raw) return { ...PANE_DEFAULTS };
+      const parsed = JSON.parse(raw) as Partial<typeof PANE_DEFAULTS>;
+      return {
+        left: clamp(Number(parsed.left) || PANE_DEFAULTS.left, PANE_MIN.left, 560),
+        right: clamp(Number(parsed.right) || PANE_DEFAULTS.right, PANE_MIN.right, 560),
+        bottom: clamp(Number(parsed.bottom) || PANE_DEFAULTS.bottom, PANE_MIN.bottom, 520),
+      };
+    } catch {
+      return { ...PANE_DEFAULTS };
+    }
+  }
+
+  function clamp(n: number, min: number, max: number) {
+    return Math.max(min, Math.min(max, n));
+  }
+
+  const initialPanes = loadPaneSizes();
+  let paneLeft = $state(initialPanes.left);
+  let paneRight = $state(initialPanes.right);
+  let paneBottom = $state(initialPanes.bottom);
+  let activeSplit = $state<"left" | "right" | "bottom" | null>(null);
+
+  function persistPaneSizes() {
+    localStorage.setItem(
+      PANE_STORAGE_KEY,
+      JSON.stringify({ left: paneLeft, right: paneRight, bottom: paneBottom }),
+    );
+  }
+
+  function startSplit(which: "left" | "right" | "bottom", e: PointerEvent) {
+    e.preventDefault();
+    activeSplit = which;
+    const target = e.currentTarget as HTMLElement;
+    target.setPointerCapture(e.pointerId);
+  }
+
+  function onSplitMove(e: PointerEvent) {
+    if (!activeSplit || !workspaceEl) return;
+    const rect = workspaceEl.getBoundingClientRect();
+    if (activeSplit === "left") {
+      paneLeft = clamp(e.clientX - rect.left, PANE_MIN.left, Math.max(PANE_MIN.left, rect.width - paneRight - 280));
+    } else if (activeSplit === "right") {
+      paneRight = clamp(rect.right - e.clientX, PANE_MIN.right, Math.max(PANE_MIN.right, rect.width - paneLeft - 280));
+    } else {
+      const maxBottom = Math.max(PANE_MIN.bottom, rect.height - 120);
+      paneBottom = clamp(rect.bottom - e.clientY, PANE_MIN.bottom, maxBottom);
+    }
+  }
+
+  function endSplit(e: PointerEvent) {
+    if (!activeSplit) return;
+    activeSplit = null;
+    try {
+      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    } catch {
+      /* already released */
+    }
+    persistPaneSizes();
+  }
+
+  function resetSplit(which: "left" | "right" | "bottom") {
+    if (which === "left") paneLeft = PANE_DEFAULTS.left;
+    else if (which === "right") paneRight = PANE_DEFAULTS.right;
+    else paneBottom = PANE_DEFAULTS.bottom;
+    persistPaneSizes();
+  }
+
+  /** Native macOS/Windows title bar — no duplicate in-app title strip. */
+  $effect(() => {
+    const modeLabel = $mode === "runtime" ? "Runtime" : "Designer";
+    const projectName = $project?.name?.trim();
+    const dirtyMark = $dirty ? " •" : "";
+    const parts = [
+      "ProScada — Engineering Workstation",
+      `v1.0 ${modeLabel}`,
+    ];
+    if (projectName) parts.push(projectName + dirtyMark);
+    const title = parts.join(" · ");
+    try {
+      void getCurrentWindow()
+        .setTitle(title)
+        .catch(() => {
+          document.title = title;
+        });
+    } catch {
+      document.title = title;
+    }
+  });
+
+  $effect(() => {
+    if ($focusPropertiesTick > 0 && propertiesEl) {
+      propertiesEl.scrollTop = 0;
+      propertiesEl.classList.add("props-flash");
+      setTimeout(() => propertiesEl?.classList.remove("props-flash"), 600);
+    }
+  });
 
   onMount(() => {
     initApp();
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Delete" && $mode === "designer") {
-        deleteSelectedWidget();
-        log("Widget deleted", "warn");
+      if ($mode !== "designer") {
+        if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+          e.preventDefault();
+          persistProject();
+        }
+        return;
       }
-      if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+      const mod = e.ctrlKey || e.metaKey;
+      const t = e.target as HTMLElement | null;
+      const typing =
+        t &&
+        (t.tagName === "INPUT" ||
+          t.tagName === "TEXTAREA" ||
+          t.tagName === "SELECT" ||
+          t.isContentEditable);
+      if (typing && e.key !== "Escape") return;
+
+      if (e.key === "Delete" || e.key === "Backspace") {
+        if (!typing) {
+          e.preventDefault();
+          deleteSelectedWidget();
+        }
+        return;
+      }
+      if (mod && e.key.toLowerCase() === "s") {
         e.preventDefault();
         persistProject();
+        return;
+      }
+      if (mod && e.key.toLowerCase() === "c") {
+        e.preventDefault();
+        copySelectedWidgets();
+        return;
+      }
+      if (mod && e.key.toLowerCase() === "x") {
+        e.preventDefault();
+        cutSelectedWidgets();
+        return;
+      }
+      if (mod && e.key.toLowerCase() === "v") {
+        e.preventDefault();
+        pasteWidgets();
+        return;
+      }
+      if (mod && e.key.toLowerCase() === "d") {
+        e.preventDefault();
+        duplicateSelected();
+        return;
+      }
+      if (mod && e.key.toLowerCase() === "a") {
+        e.preventDefault();
+        selectAllWidgets();
+        return;
+      }
+      if (mod && e.shiftKey && e.key.toLowerCase() === "g") {
+        e.preventDefault();
+        ungroupSelectedWidgets();
+        return;
+      }
+      if (mod && e.key.toLowerCase() === "g") {
+        e.preventDefault();
+        groupSelectedWidgets();
+        return;
+      }
+      if (mod && e.key.toLowerCase() === "m") {
+        e.preventDefault();
+        multiCopySelected(3, 24, 24);
+        return;
+      }
+      if (mod && e.key.toLowerCase() === "l") {
+        e.preventDefault();
+        toggleLockSelected();
+        return;
+      }
+      if (e.key === "F4") {
+        e.preventDefault();
+        openAttributesPanel();
+        leftTab = "solution";
+        return;
+      }
+      if (
+        e.key === "ArrowLeft" ||
+        e.key === "ArrowRight" ||
+        e.key === "ArrowUp" ||
+        e.key === "ArrowDown"
+      ) {
+        if (!typing && ($selectedWidgetIds.length > 0 || $selectedWidgetId)) {
+          e.preventDefault();
+          const step = e.shiftKey ? 10 : 1;
+          let dx = 0;
+          let dy = 0;
+          if (e.key === "ArrowLeft") dx = -step;
+          if (e.key === "ArrowRight") dx = step;
+          if (e.key === "ArrowUp") dy = -step;
+          if (e.key === "ArrowDown") dy = step;
+          moveSelectedWidgets(dx, dy);
+          return;
+        }
       }
     };
     window.addEventListener("keydown", onKey);
@@ -72,16 +288,12 @@
     }
   }
 
-  /** Same SCADA board in Designer and Runtime (1:1). */
-  const isWaterTankBoard = $derived(
-    $project?.id === "water_tank_dual_pump" ||
-      ($project?.name ?? "").toLowerCase().includes("water tank"),
-  );
-
   async function reloadWaterTank() {
     try {
       const p = await api.loadBuiltinWaterTank();
-      project.set(p);
+      const { ensureProjectTree } = await import("$lib/utils/projectTree");
+      const normalized = ensureProjectTree(p);
+      project.set(normalized);
       dirty.set(false);
       log("Reloaded factory Water Tank project", "ok");
     } catch (e) {
@@ -98,54 +310,48 @@
           ? "offline"
           : "degraded",
   );
+
+  const centerDoc = $derived(
+    $selectedSolutionNode && isDocKind($selectedSolutionNode.kind)
+      ? $selectedSolutionNode
+      : null,
+  );
 </script>
 
 <div class="shell">
-  <div class="titlebar">
-    <span>ProScada</span>
-    <span class="badge">v1.0</span>
-    {#if $mode === "runtime"}
-      <span class="badge warn">RUNTIME</span>
-    {:else}
-      <span class="badge">DESIGNER</span>
-    {/if}
-    {#if $dirty}
-      <span class="badge danger">UNSAVED</span>
-    {/if}
-    <span class="spacer"></span>
-    <span style:font-weight="400" style:opacity="0.85">
-      {$project?.name ?? "No project"} — Visual Studio style SCADA Workstation
-    </span>
-  </div>
-
-  <div class="menubar">
-    <button onclick={() => reloadWaterTank()}>File · New Water Tank</button>
-    <button onclick={() => persistProject()}>File · Save</button>
-    <button onclick={() => exportProjectJson()}>File · Export JSON</button>
-    <button onclick={() => addNewForm()}>Screen · New Screen</button>
-    {#if $activeForm && ($project?.forms.length ?? 0) > 1}
-      <button onclick={() => deleteForm($activeForm.id)}>Screen · Delete Screen</button>
-    {/if}
-    <button
-      onclick={() => switchMode($mode === "designer" ? "runtime" : "designer")}
-    >
-      {$mode === "designer" ? "Debug · Start Runtime" : "Debug · Stop (Designer)"}
-    </button>
-    <button onclick={() => connectDevice()}>Device · Connect / Poll</button>
-    <button onclick={() => disconnectDevice()}>Device · Disconnect</button>
-    <button onclick={() => refreshAudit()}>Tools · Refresh Audit</button>
-  </div>
+  <MenuBar
+    {leftTab}
+    onLeftTab={(t) => (leftTab = t)}
+    onNewWaterTank={reloadWaterTank}
+  />
 
   <div class="toolbar">
-    <button class="primary" onclick={() => switchMode("designer")} disabled={$mode === "designer"}>
+    <button
+      class="tb"
+      class:primary={$mode === "designer"}
+      title="Design"
+      onclick={() => switchMode("designer")}
+      disabled={$mode === "designer"}
+    >
       Design
     </button>
-    <button class="primary" onclick={() => switchMode("runtime")} disabled={$mode === "runtime"}>
-      ▶ Run
+    <button
+      class="tb"
+      class:primary={$mode === "runtime"}
+      title="Start Runtime (F5)"
+      onclick={() => switchMode("runtime")}
+      disabled={$mode === "runtime"}
+    >
+      ▶ Start
     </button>
     <div class="sep"></div>
-    <button onclick={() => connectDevice()}>Connect Modbus</button>
-    <button onclick={() => disconnectDevice()}>Stop Poll</button>
+    <button class="tb" title="Save (Ctrl+S)" onclick={() => persistProject()}>Save</button>
+    {#if $mode === "designer"}
+      <button class="tb" title="Add New Screen" onclick={() => addNewForm()}>+ Screen</button>
+    {/if}
+    <div class="sep"></div>
+    <button class="tb" title="Connect Modbus" onclick={() => connectDevice()}>Connect</button>
+    <button class="tb" title="Stop Poll" onclick={() => disconnectDevice()}>Stop</button>
     <div class="sep"></div>
     <label for="role-select">Role</label>
     <select
@@ -158,20 +364,38 @@
       <option value="engineer">Engineer</option>
       <option value="administrator">Administrator</option>
     </select>
-    <div class="sep"></div>
+    {#if $mode === "designer" && $selectedWidgetIds.length >= 2}
+      <div class="sep"></div>
+      <span class="align-label">Align:</span>
+      <button class="tb align-btn" title="Align Left (do lewej)" onclick={() => alignSelectedWidgets("left")}>⇤ Left</button>
+      <button class="tb align-btn" title="Align Center H (do środka poziom)" onclick={() => alignSelectedWidgets("center")}>↔ Center</button>
+      <button class="tb align-btn" title="Align Right (do prawej)" onclick={() => alignSelectedWidgets("right")}>⇥ Right</button>
+      <button class="tb align-btn" title="Align Top (do góry)" onclick={() => alignSelectedWidgets("top")}>⤒ Top</button>
+      <button class="tb align-btn" title="Align Middle V (do środka pion)" onclick={() => alignSelectedWidgets("middle")}>↕ Middle</button>
+      <button class="tb align-btn" title="Align Bottom (do dołu)" onclick={() => alignSelectedWidgets("bottom")}>⤓ Bottom</button>
+    {/if}
     {#if $mode === "designer"}
+      <div class="sep"></div>
       <button
+        class="tb"
         class:primary={leftTab === "solution"}
+        title="Solution Explorer"
         onclick={() => (leftTab = "solution")}>Solution</button
       >
       <button
+        class="tb"
         class:primary={leftTab === "toolbox"}
+        title="Toolbox"
         onclick={() => (leftTab = "toolbox")}>Toolbox</button
       >
-      <button onclick={() => addNewForm()}>+ Screen</button>
-      <button onclick={() => persistProject()}>Save Project</button>
+      <button
+        class="tb"
+        class:primary={leftTab === "objects"}
+        title="Document Outline"
+        onclick={() => (leftTab = "objects")}>Outline</button
+      >
     {/if}
-    <span style:margin-left="auto" style:color="var(--vs-text-dim)">
+    <span class="tb-status">
       {$snapshot?.connected ? "ONLINE" : "OFFLINE"}
       · polls {$snapshot?.poll_count ?? 0}
       · {$snapshot?.last_poll_ms ?? 0} ms
@@ -181,14 +405,23 @@
     </span>
   </div>
 
-  <div class="workspace" class:runtime-only={$mode === "runtime"}>
+  <div
+    class="workspace"
+    class:runtime-only={$mode === "runtime"}
+    bind:this={workspaceEl}
+    style:--pane-left="{paneLeft}px"
+    style:--pane-right="{paneRight}px"
+    style:--pane-bottom="{paneBottom}px"
+  >
     {#if $project}
       {#if $mode === "designer"}
         <div class="solution" style:display="flex" style:flex-direction="column">
           {#if leftTab === "solution"}
             <SolutionExplorer project={$project} design={true} />
-          {:else}
+          {:else if leftTab === "toolbox"}
             <Toolbox />
+          {:else if $activeForm}
+            <ObjectList form={$activeForm} />
           {/if}
         </div>
       {:else}
@@ -197,85 +430,109 @@
         </div>
       {/if}
 
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="splitter splitter-v split-v-left"
+        class:active={activeSplit === "left"}
+        title="Drag to resize · double-click to reset"
+        onpointerdown={(e) => startSplit("left", e)}
+        onpointermove={onSplitMove}
+        onpointerup={endSplit}
+        onpointercancel={endSplit}
+        ondblclick={() => resetSplit("left")}
+      ></div>
+
       <div class="center">
-        <!-- Interactive Multi-Screen Tabstrip -->
-        <div class="tabstrip" style:display="flex" style:align-items="center">
-          {#each $project.forms as f}
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div
-              class="tab"
-              class:active={$selectedFormId === f.id}
-              role="button"
-              tabindex="0"
-              onclick={() => {
-                selectedFormId.set(f.id);
-                selectedWidgetId.set(null);
-              }}
-              onkeydown={(e) => e.key === "Enter" && selectedFormId.set(f.id)}
-            >
-              <span>{f.name}.form</span>
-              {#if $mode === "designer" && $project.forms.length > 1}
-                <!-- svelte-ignore a11y_click_events_have_key_events -->
-                <!-- svelte-ignore a11y_no_static_element_interactions -->
-                <span
-                  class="tab-close"
-                  title="Close & Delete screen {f.name}"
-                  onclick={(e) => {
-                    e.stopPropagation();
-                    deleteForm(f.id);
-                  }}
-                >
-                  ✕
-                </span>
-              {/if}
+        {#if centerDoc}
+          <div class="tabstrip" style:display="flex" style:align-items="center">
+            <div class="tab active">
+              <span>{centerDoc.name}</span>
             </div>
-          {/each}
-          {#if $mode === "designer"}
-            <button
-              class="btn-new-tab"
-              title="Add New Screen"
-              onclick={() => addNewForm()}
-            >
-              + New Screen
-            </button>
-          {/if}
-        </div>
-        {#if $mode === "designer" && $activeForm}
-          <DesignerCanvas
-            form={$activeForm}
-            tagMap={$tagMap}
-            design={true}
-            {onWrite}
-          />
-        {:else if isWaterTankBoard}
-          <!-- Dedicated Runtime HMI dashboard -->
-          <WaterTankHmi
-            snapshot={$snapshot}
-            tagMap={$tagMap}
-            {onWrite}
-            designMode={false}
-          />
-        {:else if $activeForm}
-          <DesignerCanvas
-            form={$activeForm}
-            tagMap={$tagMap}
-            design={false}
-            {onWrite}
-          />
-        {:else}
-          <div
-            class="canvas-wrap"
-            style:display="flex"
-            style:align-items="center"
-            style:justify-content="center"
-          >
-            No form in project
           </div>
+          <div class="doc-host">
+            {#if centerDoc.kind === "variables"}
+              <VariablesEditor scada={$project} design={$mode === "designer"} />
+            {:else}
+              <DocumentEditor node={centerDoc} design={$mode === "designer"} />
+            {/if}
+          </div>
+        {:else}
+          <!-- Interactive Multi-Screen Tabstrip -->
+          <div class="tabstrip" style:display="flex" style:align-items="center">
+            {#each $project.forms as f}
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
+              <div
+                class="tab"
+                class:active={$selectedFormId === f.id}
+                role="button"
+                tabindex="0"
+                onclick={() => {
+                  selectedFormId.set(f.id);
+                  selectedWidgetId.set(null);
+                }}
+                onkeydown={(e) => e.key === "Enter" && selectedFormId.set(f.id)}
+              >
+                <span>{f.name}.form</span>
+                {#if $mode === "designer" && $project.forms.length > 1}
+                  <!-- svelte-ignore a11y_click_events_have_key_events -->
+                  <!-- svelte-ignore a11y_no_static_element_interactions -->
+                  <span
+                    class="tab-close"
+                    title="Close & Delete screen {f.name}"
+                    onclick={(e) => {
+                      e.stopPropagation();
+                      deleteForm(f.id);
+                    }}
+                  >
+                    ✕
+                  </span>
+                {/if}
+              </div>
+            {/each}
+            {#if $mode === "designer"}
+              <button
+                class="btn-new-tab"
+                title="Add New Screen"
+                onclick={() => addNewForm()}
+              >
+                + New Screen
+              </button>
+            {/if}
+          </div>
+          {#if $activeForm}
+            <!-- Design and Run: always the currently selected screen (tab). -->
+            <DesignerCanvas
+              form={$activeForm}
+              tagMap={$tagMap}
+              design={$mode === "designer"}
+              {onWrite}
+            />
+          {:else}
+            <div
+              class="canvas-wrap"
+              style:display="flex"
+              style:align-items="center"
+              style:justify-content="center"
+            >
+              No form in project
+            </div>
+          {/if}
         {/if}
       </div>
 
       {#if $mode === "designer"}
-        <div class="properties">
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div
+          class="splitter splitter-v split-v-right"
+          class:active={activeSplit === "right"}
+          title="Drag to resize · double-click to reset"
+          onpointerdown={(e) => startSplit("right", e)}
+          onpointermove={onSplitMove}
+          onpointerup={endSplit}
+          onpointercancel={endSplit}
+          ondblclick={() => resetSplit("right")}
+        ></div>
+        <div class="properties" bind:this={propertiesEl}>
           <Properties
             widget={$selectedWidget}
             form={$activeForm}
@@ -283,6 +540,18 @@
           />
         </div>
       {/if}
+
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="splitter splitter-h split-h-bottom"
+        class:active={activeSplit === "bottom"}
+        title="Drag to resize Output / Alarms · double-click to reset"
+        onpointerdown={(e) => startSplit("bottom", e)}
+        onpointermove={onSplitMove}
+        onpointerup={endSplit}
+        onpointercancel={endSplit}
+        ondblclick={() => resetSplit("bottom")}
+      ></div>
 
       <div class="output">
         <OutputPanel snapshot={$snapshot} audit={$audit} />
@@ -298,6 +567,17 @@
       {$snapshot?.connected ? "● Modbus master connected" : "○ Disconnected"}
     </span>
     <span class="item">Role: {$snapshot?.role ?? role}</span>
+    {#if $mode === "designer" && $selectedWidgetIds.length >= 2}
+      <span class="item align-item">
+        <span class="sb-align-lbl">Align ({$selectedWidgetIds.length}):</span>
+        <button class="sb-btn" title="Align Left (do lewej)" onclick={() => alignSelectedWidgets("left")}>⇤</button>
+        <button class="sb-btn" title="Align Center H (do środka w poziomie)" onclick={() => alignSelectedWidgets("center")}>↔</button>
+        <button class="sb-btn" title="Align Right (do prawej)" onclick={() => alignSelectedWidgets("right")}>⇥</button>
+        <button class="sb-btn" title="Align Top (do góry)" onclick={() => alignSelectedWidgets("top")}>⤒</button>
+        <button class="sb-btn" title="Align Middle V (do środka w pionie)" onclick={() => alignSelectedWidgets("middle")}>↕</button>
+        <button class="sb-btn" title="Align Bottom (do dołu)" onclick={() => alignSelectedWidgets("bottom")}>⤓</button>
+      </span>
+    {/if}
     <span class="item">Mode: {$mode}</span>
     <span class="item" style:margin-left="auto">
       IEC 62443 / ISA-18.2 practices · Lab use only · Not certified
@@ -334,5 +614,12 @@
   .btn-new-tab:hover {
     background: var(--vs-hover, #3e3e42);
     color: #ffffff;
+  }
+  .doc-host {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
   }
 </style>

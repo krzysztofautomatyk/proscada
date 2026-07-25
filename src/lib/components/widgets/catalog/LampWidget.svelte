@@ -12,10 +12,19 @@
 
   const cfg = $derived((widget.config ?? {}) as Record<string, unknown>);
   const str = (k: string, d = "") => String(cfg[k] ?? d);
-  const bool = (k: string, d = false) => Boolean(cfg[k] ?? d);
+  const num = (k: string, d = 0) => Number(cfg[k] ?? d);
 
   const quality = $derived(tag?.quality ?? "bad");
   const on = $derived(tag?.bool_value ?? false);
+
+  const fontFamily = $derived(str("fontFamily", "Segoe UI, system-ui, sans-serif"));
+  const fontSize = $derived(num("fontSize", 12));
+  const fontWeight = $derived(str("fontWeight", "700"));
+  const bgColor = $derived(str("bgColor", "#FFFFFF"));
+  const borderColor = $derived(str("borderColor", "#E5E7EB"));
+  const borderWidth = $derived(num("borderWidth", 1));
+  const borderRadius = $derived(num("borderRadius", 8));
+  const titleColor = $derived(str("titleColor", "#6B7280"));
 
   function lampColor() {
     if (on) return str("onColor", "#16A34A");
@@ -25,20 +34,26 @@
 
 <div
   class="w-chrome"
-  style:background="#FFFFFF"
-  style:border="1px solid #E5E7EB"
-  style:border-radius="8px"
-  class:blink={bool("blink") && on}
+  style:background={bgColor}
+  style:border="{borderWidth}px solid {borderColor}"
+  style:border-radius="{borderRadius}px"
+  style:font-family={fontFamily}
 >
-  <div class="w-title"><span class="quality {quality}"></span>{str("title", "STATE")}</div>
-  <div class="w-body" style:justify-content="flex-start">
+  <div class="w-title" style:color={titleColor} style:font-size="{Math.max(9, fontSize - 1)}px">
+    <span class="quality {quality}"></span>{str("title", "STATE")}
+  </div>
+  <div class="w-body">
     <span
       class="lamp-dot"
       class:off={!on}
       style:background={lampColor()}
       style:color={lampColor()}
     ></span>
-    <span style:font-weight="700" style:color={on ? lampColor() : "#9CA3AF"}>
+    <span
+      style:font-weight={fontWeight}
+      style:font-size="{fontSize}px"
+      style:color={on ? lampColor() : "#9CA3AF"}
+    >
       {on ? str("onLabel", "ON") : str("offLabel", "OFF")}
     </span>
   </div>
@@ -55,9 +70,7 @@
     padding: 6px 8px;
   }
   .w-title {
-    font-size: 11px;
     font-weight: 700;
-    color: #6b7280;
     display: flex;
     align-items: center;
     gap: 4px;
@@ -90,12 +103,5 @@
   }
   .quality.uncertain {
     background: #eab308;
-  }
-  @keyframes blink-anim {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.3; }
-  }
-  .blink {
-    animation: blink-anim 1s infinite;
   }
 </style>

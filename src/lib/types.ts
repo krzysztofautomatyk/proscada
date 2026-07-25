@@ -51,6 +51,7 @@ export interface WidgetDef {
   z: number;
   tag_id?: string | null;
   group_id?: string | null;
+  locked?: boolean;
   config: Record<string, unknown>;
 }
 
@@ -75,6 +76,31 @@ export interface AlarmDefinition {
   message: string;
 }
 
+/** Solution Explorer node kinds (VS-style project tree). */
+export type ProjectNodeKind =
+  | "folder"
+  | "screen"
+  | "variables"
+  | "script"
+  | "note"
+  | "markdown";
+
+export interface ProjectNode {
+  id: string;
+  /** null = child of project root */
+  parent_id: string | null;
+  kind: ProjectNodeKind;
+  name: string;
+  order: number;
+  /** For screen — FormDef.id; for variables — optional filter label */
+  ref_id?: string | null;
+  /** Body for script / note / markdown */
+  content?: string;
+  /** Script language (v1: javascript only) */
+  language?: "javascript";
+  collapsed?: boolean;
+}
+
 export interface ScadaProject {
   schema_version: number;
   id: string;
@@ -84,6 +110,8 @@ export interface ScadaProject {
   tags: TagDefinition[];
   forms: FormDef[];
   alarms: AlarmDefinition[];
+  /** Hierarchical Solution Explorer items (folders, screens, scripts, docs). */
+  tree?: ProjectNode[];
   content_hash: string;
 }
 
@@ -149,9 +177,38 @@ export const WIDGET_CATALOG: WidgetCatalogItem[] = [
     label: "Label",
     category: "Display",
     icon: "T",
-    defaultW: 160,
-    defaultH: 28,
-    defaultConfig: { text: "Label", fontSize: 13, textColor: "#1f2937", align: "left" },
+    defaultW: 180,
+    defaultH: 32,
+    defaultConfig: {
+      text: "Label",
+      fontFamily: "Segoe UI, system-ui, sans-serif",
+      fontSize: 14,
+      fontWeight: "normal",
+      fontStyle: "normal",
+      textColor: "#1f2937",
+      bgColor: "transparent",
+      borderColor: "transparent",
+      borderWidth: 0,
+      borderRadius: 0,
+      align: "left",
+      vAlign: "center",
+      // Generic dynamics (blink / marquee / visibility)
+      blinkMode: "none",
+      blinkTagId: "",
+      blinkBit: 0,
+      blinkVal: 1,
+      blinkSpeedMs: 600,
+      scrollMode: "none",
+      scrollTagId: "",
+      scrollBit: 0,
+      scrollVal: 1,
+      scrollSpeedSec: 8,
+      scrollDir: "left",
+      visibilityMode: "always",
+      visibilityTagId: "",
+      visibilityBit: 0,
+      visibilityVal: 1,
+    },
   },
   {
     type: "numeric",
@@ -194,6 +251,57 @@ export const WIDGET_CATALOG: WidgetCatalogItem[] = [
     },
   },
   {
+    type: "image",
+    label: "Image / Icon",
+    category: "Display",
+    icon: "🖼️",
+    defaultW: 120,
+    defaultH: 120,
+    defaultConfig: {
+      src: "",
+      fit: "contain",
+      alt: "Pump Graphic",
+      borderRadius: 0,
+      bgColor: "transparent",
+      borderColor: "transparent",
+      borderWidth: 0,
+      borderStyle: "none",
+      blinkMode: "none",
+      visibilityMode: "always",
+    },
+  },
+  {
+    type: "line",
+    label: "Line / Arrow",
+    category: "Display",
+    icon: "／",
+    defaultW: 200,
+    defaultH: 80,
+    defaultConfig: {
+      // endpoints in % of bounding box (0–100)
+      x1: 8,
+      y1: 50,
+      x2: 92,
+      y2: 50,
+      stroke: "#1f2937",
+      strokeWidth: 2.5,
+      lineStyle: "solid", // solid | dashed | dotted | dashdot | longdash
+      startCap: "none", // none | arrow | open-arrow | circle | square | diamond | bar
+      endCap: "arrow",
+      capSize: 12,
+      // dynamics
+      blinkMode: "none",
+      blinkTagId: "",
+      blinkBit: 0,
+      blinkVal: 1,
+      blinkSpeedMs: 600,
+      visibilityMode: "always",
+      visibilityTagId: "",
+      visibilityBit: 0,
+      visibilityVal: 1,
+    },
+  },
+  {
     type: "bool_display",
     label: "Bool Display",
     category: "Display",
@@ -216,6 +324,26 @@ export const WIDGET_CATALOG: WidgetCatalogItem[] = [
     defaultW: 240,
     defaultH: 160,
     defaultConfig: { title: "PANEL", bgColor: "#ffffff", borderColor: "#e5e7eb" },
+  },
+
+  // Containers & Sub-screens
+  {
+    type: "embedded_screen",
+    label: "Embedded Screen / Faceplate",
+    category: "Containers",
+    icon: "🔲",
+    defaultW: 320,
+    defaultH: 240,
+    defaultConfig: {
+      target_form_id: "",
+      tag_prefix: "PUMP1_",
+      tag_overrides: {},
+      scale_mode: "fit",
+      bgColor: "transparent",
+      borderColor: "#9ca3af",
+      borderWidth: 1,
+      borderStyle: "dashed",
+    },
   },
 
   // Indicators & Alarms

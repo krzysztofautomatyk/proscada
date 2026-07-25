@@ -17,12 +17,17 @@
   const title = $derived(str("title", widget.tag_id ?? "Value"));
   const decimals = $derived(num("decimals", 0));
   const unit = $derived(str("unit", ""));
+  const fontFamily = $derived(str("fontFamily", "Segoe UI, system-ui, sans-serif"));
   const fontSize = $derived(num("fontSize", 18));
   const fontWeight = $derived(str("fontWeight", "bold"));
+  const fontStyle = $derived(str("fontStyle", "normal"));
   const textColor = $derived(str("textColor", "#1F2937"));
+  const titleColor = $derived(str("titleColor", "#6b7280"));
   const bgColor = $derived(str("bgColor", "#FFFFFF"));
   const borderRadius = $derived(num("borderRadius", 8));
   const borderColor = $derived(str("borderColor", "#E5E7EB"));
+  const borderWidth = $derived(num("borderWidth", 1));
+  const align = $derived(str("align", "left"));
 
   const quality = $derived(tag?.quality ?? "bad");
   const value = $derived(tag?.value ?? 0);
@@ -31,11 +36,12 @@
 <div
   class="numeric-card"
   style:background={bgColor}
-  style:border="1px solid {borderColor}"
+  style:border="{borderWidth}px solid {borderColor}"
   style:border-radius="{borderRadius}px"
+  style:font-family={fontFamily}
 >
   {#if title}
-    <div class="header">
+    <div class="header" style:color={titleColor}>
       <span class="quality {quality}"></span>
       <span class="title-text">{title}</span>
     </div>
@@ -45,6 +51,9 @@
     style:color={textColor}
     style:font-size="{fontSize}px"
     style:font-weight={fontWeight}
+    style:font-style={fontStyle}
+    style:justify-content={align === "center" ? "center" : align === "right" ? "flex-end" : "flex-start"}
+    style:text-align={align}
   >
     {#if design && !tag}
       — —
@@ -71,7 +80,6 @@
   .header {
     font-size: 11px;
     font-weight: 700;
-    color: #6b7280;
     display: flex;
     align-items: center;
     gap: 4px;
@@ -93,6 +101,10 @@
     border-radius: 50%;
     background: #dc2626;
   }
-  .quality.good { background: #16a34a; }
-  .quality.uncertain { background: #eab308; }
+  .quality.good {
+    background: #16a34a;
+  }
+  .quality.uncertain {
+    background: #eab308;
+  }
 </style>

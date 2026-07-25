@@ -84,10 +84,12 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
       }
       if (!mockProject) {
         mockProject = {
-          schema_version: "1.0",
+          schema_version: 2,
           id: "water_tank_dual_pump",
           name: "Water Tank Dual-Pump Station",
-          content_hash: "0000000000000000000000000000000000000000000000000000000000000000",
+          description: "Browser mock fallback project",
+          content_hash:
+            "0000000000000000000000000000000000000000000000000000000000000000",
           forms: [
             {
               id: "Main_Synoptic",
@@ -142,6 +144,7 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
               host: "127.0.0.1",
               port: 502,
               unit_id: 1,
+              poll_ms: 250,
               timeout_ms: 1000,
               enabled: true,
             },
@@ -149,11 +152,10 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
           tags: [
             {
               id: "wt.level_cm",
-              tag_id: "wt.level_cm",
               name: "Water Level",
-              data_type: "float",
-              register_type: "holding",
-              address: 0,
+              device_id: "dev_plc1",
+              data_type: "f32",
+              binding: { address: 104, table: "holding", writable: false },
               scale: 1,
               offset: 0,
               decimals: 1,
@@ -162,11 +164,10 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
             },
             {
               id: "wt.p1_run",
-              tag_id: "wt.p1_run",
               name: "Pump 1 Run",
+              device_id: "dev_plc1",
               data_type: "bool",
-              register_type: "holding",
-              address: 1,
+              binding: { address: 101, bit: 0, table: "holding", writable: false },
               scale: 1,
               offset: 0,
               decimals: 0,
@@ -175,15 +176,7 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
             },
           ],
           alarms: [],
-          events: [],
-          history: [],
-          logs: [],
-          users: [],
-          roles: [],
-          settings: {
-            theme: "dark",
-            refresh_rate_ms: 200,
-          },
+          tree: [],
         };
       }
       return mockProject as T;

@@ -24,6 +24,8 @@ pub fn run() {
     let _ = engine.load_project(project::water_tank_project());
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         .manage(AppState { engine })
         .invoke_handler(tauri::generate_handler![
             commands::get_builtin_water_tank,

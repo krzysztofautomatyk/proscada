@@ -20,6 +20,11 @@
   const borderWidth = $derived(num("borderWidth", 1));
   const borderStyle = $derived(str("borderStyle", "solid"));
   const shadow = $derived(str("shadow", "0 1px 3px rgba(0,0,0,0.05)"));
+  const titleColor = $derived(str("titleColor", "#6b7280"));
+  const fontFamily = $derived(str("fontFamily", "Segoe UI, system-ui, sans-serif"));
+  const fontSize = $derived(num("fontSize", 11));
+  const fontWeight = $derived(str("fontWeight", "800"));
+  const align = $derived(str("align", "left"));
 </script>
 
 <div
@@ -28,9 +33,18 @@
   style:background={bgColor}
   style:border="{borderWidth}px {borderStyle} {borderColor}"
   style:box-shadow={shadow}
+  style:font-family={fontFamily}
 >
   {#if str("title")}
-    <div class="shape-title">{str("title")}</div>
+    <div
+      class="shape-title"
+      style:color={titleColor}
+      style:font-size="{fontSize}px"
+      style:font-weight={fontWeight}
+      style:text-align={align}
+    >
+      {str("title")}
+    </div>
   {/if}
 </div>
 
@@ -44,8 +58,6 @@
     padding: 6px 8px;
   }
   .shape-title {
-    font-size: 11px;
-    font-weight: 800;
-    color: #6b7280;
+    width: 100%;
   }
 </style>

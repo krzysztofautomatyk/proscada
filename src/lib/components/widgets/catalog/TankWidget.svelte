@@ -28,8 +28,8 @@
   function tankFillColor() {
     const alarm = cfg.alarm != null ? Number(cfg.alarm) : null;
     const warn = cfg.warn != null ? Number(cfg.warn) : null;
-    if (alarm != null && value >= alarm) return "#DC2626";
-    if (warn != null && value >= warn) return "#EAB308";
+    if (alarm != null && value >= alarm) return str("alarmColor", "#DC2626");
+    if (warn != null && value >= warn) return str("warnColor", "#EAB308");
     return str("fillColor", "#39B7E6");
   }
 </script>
@@ -37,15 +37,22 @@
 <div
   class="tank-shell"
   style:background={str("bgColor", "#FFFFFF")}
-  style:border="2px solid #9CA3AF"
+  style:border="{num("borderWidth", 2)}px solid {str("borderColor", "#9CA3AF")}"
+  style:border-radius="{num("borderRadius", 8)}px"
+  style:font-family={str("fontFamily", "Segoe UI, system-ui, sans-serif")}
 >
-  <div class="w-title" style:color="#6B7280">
+  <div
+    class="w-title"
+    style:color={str("titleColor", "#6B7280")}
+    style:font-size="{num("titleFontSize", 11)}px"
+    style:font-weight={str("fontWeight", "700")}
+  >
     <span class="quality {quality}"></span>{str("title", "LEVEL")}
   </div>
   <div class="tank-fill" style:height="{tankPct()}%" style:background={tankFillColor()}></div>
   {#if bool("showValue", true)}
-    <div class="tank-level-text" style:color="#1F2937">
-      <div style:font-size="20px" style:font-weight="800">{value.toFixed(0)}</div>
+    <div class="tank-level-text" style:color={str("textColor", "#1F2937")}>
+      <div style:font-size="{num("fontSize", 20)}px" style:font-weight="800">{value.toFixed(0)}</div>
       <div style:font-size="11px" style:opacity="0.85">{str("unit", "cm")}</div>
     </div>
   {/if}
@@ -59,13 +66,10 @@
     flex-direction: column;
     box-sizing: border-box;
     position: relative;
-    border-radius: 8px;
     overflow: hidden;
     padding: 6px;
   }
   .w-title {
-    font-size: 11px;
-    font-weight: 700;
     position: relative;
     z-index: 2;
     display: flex;

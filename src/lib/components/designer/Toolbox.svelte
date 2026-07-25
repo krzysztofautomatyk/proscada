@@ -2,7 +2,25 @@
   import { WIDGET_CATALOG } from "$lib/types";
   import { addCatalogWidget } from "$lib/stores/app";
 
+  const FAVORITES_KEY = "proscada.toolbox.favorites";
+  const COLLAPSED_KEY = "proscada.toolbox.collapsed";
+
   const categories = [...new Set(WIDGET_CATALOG.map((w) => w.category))];
+
+  function loadJson<T>(key: string, fallback: T): T {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return fallback;
+      return JSON.parse(raw) as T;
+    } catch {
+      return fallback;
+    }
+  }
+
+  let favorites = $state<string[]>(loadJson<string[]>(FAVORITES_KEY, []));
+  let collapsed = $state<Record<string, boolean>>(
+    loadJson<Record<string, boolean>>(COLLAPSED_KEY, {})
+  );
 
   // Manual drag implementation - NO draggable="true" attribute!
   // macOS WKWebView (Tauri) intercepts ALL mouse events on draggable elements
@@ -11,6 +29,44 @@
   let dragStartPos = $state({ x: 0, y: 0 });
   let isDragging = $state(false);
   let dragGhostEl = $state<HTMLDivElement | null>(null);
+
+  const favoriteItems = $derived(
+    favorites
+      .map((type) => WIDGET_CATALOG.find((w) => w.type === type))
+      .filter((w): w is (typeof WIDGET_CATALOG)[number] => !!w)
+  );
+
+  function persistFavorites() {
+    localStorage.setItem(FAVORITES_KEY, JSON.stringify(favorites));
+  }
+
+  function persistCollapsed() {
+    localStorage.setItem(COLLAPSED_KEY, JSON.stringify(collapsed));
+  }
+
+  function isFavorite(type: string) {
+    return favorites.includes(type);
+  }
+
+  function toggleFavorite(e: MouseEvent, type: string) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (favorites.includes(type)) {
+      favorites = favorites.filter((t) => t !== type);
+    } else {
+      favorites = [...favorites, type];
+    }
+    persistFavorites();
+  }
+
+  function isCollapsed(key: string) {
+    return !!collapsed[key];
+  }
+
+  function toggleCollapsed(key: string) {
+    collapsed = { ...collapsed, [key]: !collapsed[key] };
+    persistCollapsed();
+  }
 
   function onPointerDown(e: PointerEvent, type: string) {
     dragType = type;
@@ -81,43 +137,166 @@
     e.stopPropagation();
     addCatalogWidget(type);
   }
+
+  /** Stop parent pointer-drag handlers from treating fav/+ clicks as item clicks. */
+  function stopItemPointer(e: PointerEvent) {
+    e.stopPropagation();
+  }
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="panel" style:height="100%;border:none" onpointermove={onPointerMove}>
   <div class="panel-header">Toolbox (Click + or Drag)</div>
   <div class="panel-body">
-    {#each categories as cat}
-      <div class="tree-group">{cat}</div>
-      {#each WIDGET_CATALOG.filter((w) => w.category === cat) as item}
-        <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <!-- svelte-ignore a11y_click_events_have_key_events -->
-        <div
-          class="toolbox-item"
-          onpointerdown={(e) => onPointerDown(e, item.type)}
-          onpointerup={onPointerUp}
-          title="Click to add or drag onto canvas"
-          role="button"
-          tabindex="0"
-        >
-          <span class="icon">{item.icon}</span>
-          <span class="item-label">{item.label}</span>
-          <button
-            type="button"
-            class="btn-quick-add"
-            title="Add {item.label}"
-            onmousedown={(e) => e.stopPropagation()}
-            onclick={(e) => handleQuickAdd(e, item.type)}
+    <!-- Favorites (always first) -->
+    <button
+      type="button"
+      class="tree-group collapsible"
+      class:collapsed={isCollapsed("Favorites")}
+      onclick={() => toggleCollapsed("Favorites")}
+      aria-expanded={!isCollapsed("Favorites")}
+    >
+      <span class="chevron">{isCollapsed("Favorites") ? "▸" : "▾"}</span>
+      <span>★ Favorites</span>
+      <span class="count">{favoriteItems.length}</span>
+    </button>
+    {#if !isCollapsed("Favorites")}
+      {#if favoriteItems.length === 0}
+        <div class="empty-favorites">Star widgets to pin them here</div>
+      {:else}
+        {#each favoriteItems as item}
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <div
+            class="toolbox-item"
+            onpointerdown={(e) => onPointerDown(e, item.type)}
+            onpointerup={onPointerUp}
+            title="Click to add or drag onto canvas"
+            role="button"
+            tabindex="0"
           >
-            +
-          </button>
-        </div>
-      {/each}
+            <span class="icon">{item.icon}</span>
+            <span class="item-label">{item.label}</span>
+            <button
+              type="button"
+              class="btn-fav active"
+              title="Remove from favorites"
+              onpointerdown={stopItemPointer}
+              onpointerup={stopItemPointer}
+              onmousedown={(e) => e.stopPropagation()}
+              onclick={(e) => toggleFavorite(e, item.type)}
+            >
+              ★
+            </button>
+            <button
+              type="button"
+              class="btn-quick-add"
+              title="Add {item.label}"
+              onpointerdown={stopItemPointer}
+              onpointerup={stopItemPointer}
+              onmousedown={(e) => e.stopPropagation()}
+              onclick={(e) => handleQuickAdd(e, item.type)}
+            >
+              +
+            </button>
+          </div>
+        {/each}
+      {/if}
+    {/if}
+
+    {#each categories as cat}
+      <button
+        type="button"
+        class="tree-group collapsible"
+        class:collapsed={isCollapsed(cat)}
+        onclick={() => toggleCollapsed(cat)}
+        aria-expanded={!isCollapsed(cat)}
+      >
+        <span class="chevron">{isCollapsed(cat) ? "▸" : "▾"}</span>
+        <span>{cat}</span>
+        <span class="count">{WIDGET_CATALOG.filter((w) => w.category === cat).length}</span>
+      </button>
+      {#if !isCollapsed(cat)}
+        {#each WIDGET_CATALOG.filter((w) => w.category === cat) as item}
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <div
+            class="toolbox-item"
+            onpointerdown={(e) => onPointerDown(e, item.type)}
+            onpointerup={onPointerUp}
+            title="Click to add or drag onto canvas"
+            role="button"
+            tabindex="0"
+          >
+            <span class="icon">{item.icon}</span>
+            <span class="item-label">{item.label}</span>
+            <button
+              type="button"
+              class="btn-fav"
+              class:active={isFavorite(item.type)}
+              title={isFavorite(item.type) ? "Remove from favorites" : "Add to favorites"}
+              onpointerdown={stopItemPointer}
+              onpointerup={stopItemPointer}
+              onmousedown={(e) => e.stopPropagation()}
+              onclick={(e) => toggleFavorite(e, item.type)}
+            >
+              {isFavorite(item.type) ? "★" : "☆"}
+            </button>
+            <button
+              type="button"
+              class="btn-quick-add"
+              title="Add {item.label}"
+              onpointerdown={stopItemPointer}
+              onpointerup={stopItemPointer}
+              onmousedown={(e) => e.stopPropagation()}
+              onclick={(e) => handleQuickAdd(e, item.type)}
+            >
+              +
+            </button>
+          </div>
+        {/each}
+      {/if}
     {/each}
   </div>
 </div>
 
 <style>
+  .tree-group.collapsible {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    width: 100%;
+    border: none;
+    background: transparent;
+    padding: 6px 8px 2px;
+    color: var(--vs-text-dim);
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    text-align: left;
+  }
+  .tree-group.collapsible:hover {
+    color: var(--vs-text, #cccccc);
+  }
+  .chevron {
+    width: 10px;
+    flex-shrink: 0;
+    font-size: 11px;
+    line-height: 1;
+  }
+  .count {
+    margin-left: auto;
+    opacity: 0.55;
+    font-weight: 600;
+  }
+  .empty-favorites {
+    padding: 4px 8px 8px 22px;
+    font-size: 10px;
+    color: var(--vs-text-dim);
+    opacity: 0.7;
+  }
   .toolbox-item {
     display: flex;
     align-items: center;
@@ -136,6 +315,31 @@
     flex: 1;
     margin-left: 6px;
     font-size: 11px;
+  }
+  .btn-fav {
+    background: transparent;
+    border: none;
+    color: var(--vs-text-dim, #888);
+    font-size: 12px;
+    width: 20px;
+    height: 22px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    opacity: 0;
+    flex-shrink: 0;
+    padding: 0;
+  }
+  .toolbox-item:hover .btn-fav,
+  .btn-fav.active {
+    opacity: 1;
+  }
+  .btn-fav.active {
+    color: #eab308;
+  }
+  .btn-fav:hover {
+    color: #eab308;
   }
   .btn-quick-add {
     background: transparent;

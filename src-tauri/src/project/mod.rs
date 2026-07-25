@@ -1,9 +1,9 @@
-//! Project schema — devices, tags, forms, widgets, alarms.
+//! Project schema — devices, tags, forms, widgets, alarms, solution tree.
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -103,6 +103,8 @@ pub struct WidgetDef {
     pub tag_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locked: Option<bool>,
     #[serde(default)]
     pub config: serde_json::Value,
 }
@@ -161,6 +163,37 @@ pub struct AlarmDefinition {
     pub message: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectNodeKind {
+    Folder,
+    Screen,
+    Variables,
+    Script,
+    Note,
+    Markdown,
+}
+
+/// Solution Explorer node (folders, screens, scripts, docs).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectNode {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
+    pub kind: ProjectNodeKind,
+    pub name: String,
+    #[serde(default)]
+    pub order: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ref_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collapsed: Option<bool>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScadaProject {
     pub schema_version: u32,
@@ -171,6 +204,9 @@ pub struct ScadaProject {
     pub tags: Vec<TagDefinition>,
     pub forms: Vec<FormDef>,
     pub alarms: Vec<AlarmDefinition>,
+    /// Hierarchical Solution Explorer items. Missing in v1 files → empty.
+    #[serde(default)]
+    pub tree: Vec<ProjectNode>,
     #[serde(default)]
     pub content_hash: String,
 }
@@ -297,6 +333,7 @@ pub fn water_tank_project() -> ScadaProject {
     }
 
     let form = water_tank_form();
+    let pump_faceplate = pump_faceplate_form();
 
     let alarms = vec![
         AlarmDefinition {
@@ -341,6 +378,9 @@ pub fn water_tank_project() -> ScadaProject {
         },
     ];
 
+    let form_id = form.id.clone();
+    let tree = default_water_tank_tree(&form_id, &form.name, &pump_faceplate.id, &pump_faceplate.name);
+
     let mut project = ScadaProject {
         schema_version: SCHEMA_VERSION,
         id: "water_tank_dual_pump".into(),
@@ -348,12 +388,131 @@ pub fn water_tank_project() -> ScadaProject {
         description: "SCADA visualization for PLC LAD SIM Water Tank (Modbus HR100–121). Military/medical-grade engineering practices; lab use only.".into(),
         devices: vec![device],
         tags,
-        forms: vec![form],
+        forms: vec![form, pump_faceplate],
         alarms,
+        tree,
         content_hash: String::new(),
     };
     project.recompute_hash();
     project
+}
+
+fn default_water_tank_tree(
+    form_id: &str,
+    form_name: &str,
+    pf_id: &str,
+    pf_name: &str,
+) -> Vec<ProjectNode> {
+    vec![
+        ProjectNode {
+            id: "fld_screens".into(),
+            parent_id: None,
+            kind: ProjectNodeKind::Folder,
+            name: "Screens".into(),
+            order: 0,
+            ref_id: None,
+            content: None,
+            language: None,
+            collapsed: Some(false),
+        },
+        ProjectNode {
+            id: "scr_main".into(),
+            parent_id: Some("fld_screens".into()),
+            kind: ProjectNodeKind::Screen,
+            name: form_name.into(),
+            order: 0,
+            ref_id: Some(form_id.into()),
+            content: None,
+            language: None,
+            collapsed: None,
+        },
+        ProjectNode {
+            id: "scr_pump_faceplate".into(),
+            parent_id: Some("fld_screens".into()),
+            kind: ProjectNodeKind::Screen,
+            name: pf_name.into(),
+            order: 1,
+            ref_id: Some(pf_id.into()),
+            content: None,
+            language: None,
+            collapsed: None,
+        },
+        ProjectNode {
+            id: "fld_scripts".into(),
+            parent_id: None,
+            kind: ProjectNodeKind::Folder,
+            name: "Scripts".into(),
+            order: 1,
+            ref_id: None,
+            content: None,
+            language: None,
+            collapsed: Some(false),
+        },
+        ProjectNode {
+            id: "scr_demo_click".into(),
+            parent_id: Some("fld_scripts".into()),
+            kind: ProjectNodeKind::Script,
+            name: "OnButtonClick.js".into(),
+            order: 0,
+            ref_id: None,
+            content: Some(
+                r#"// Demo HMI script — bind via Properties → On Click Script
+async function onEvent(event) {
+  log("HMI click from " + (event.widgetId || "?"));
+}
+"#
+                .into(),
+            ),
+            language: Some("javascript".into()),
+            collapsed: None,
+        },
+        ProjectNode {
+            id: "fld_docs".into(),
+            parent_id: None,
+            kind: ProjectNodeKind::Folder,
+            name: "Documents".into(),
+            order: 2,
+            ref_id: None,
+            content: None,
+            language: None,
+            collapsed: Some(false),
+        },
+        ProjectNode {
+            id: "md_readme".into(),
+            parent_id: Some("fld_docs".into()),
+            kind: ProjectNodeKind::Markdown,
+            name: "README.md".into(),
+            order: 0,
+            ref_id: None,
+            content: Some(
+                "# Water Tank Dual-Pump\n\nOperator notes and commissioning checklist.\n".into(),
+            ),
+            language: None,
+            collapsed: None,
+        },
+        ProjectNode {
+            id: "note_ops".into(),
+            parent_id: Some("fld_docs".into()),
+            kind: ProjectNodeKind::Note,
+            name: "OperatorNotes.txt".into(),
+            order: 1,
+            ref_id: None,
+            content: Some("Shift handover notes…\n".into()),
+            language: None,
+            collapsed: None,
+        },
+        ProjectNode {
+            id: "var_all".into(),
+            parent_id: None,
+            kind: ProjectNodeKind::Variables,
+            name: "Variables".into(),
+            order: 3,
+            ref_id: None,
+            content: Some("".into()),
+            language: None,
+            collapsed: None,
+        },
+    ]
 }
 
 fn water_tank_form() -> FormDef {
@@ -474,6 +633,101 @@ fn water_tank_form() -> FormDef {
     }
 }
 
+fn pump_faceplate_form() -> FormDef {
+    use serde_json::json;
+
+    let mut widgets = Vec::new();
+    let mut z = 0;
+
+    // 1. Label widget
+    widgets.push(w(
+        "pf_label",
+        "label",
+        12.0,
+        8.0,
+        160.0,
+        24.0,
+        z,
+        None,
+        None,
+        json!({
+            "text": "PUMP MODULE",
+            "fontSize": 13,
+            "fontWeight": "bold",
+            "textColor": "#1E293B"
+        }),
+    ));
+    z += 1;
+
+    // 2. Image widget (Vector Pump Graphic)
+    widgets.push(w(
+        "pf_image",
+        "image",
+        12.0,
+        36.0,
+        90.0,
+        85.0,
+        z,
+        None,
+        None,
+        json!({
+            "src": "",
+            "fit": "contain",
+            "alt": "Pump Graphic"
+        }),
+    ));
+    z += 1;
+
+    // 3. Bool LED Indicator (Status)
+    widgets.push(w(
+        "pf_led",
+        "bool_display",
+        110.0,
+        48.0,
+        118.0,
+        46.0,
+        z,
+        Some("run"),
+        None,
+        json!({
+            "label": "STATUS",
+            "trueLabel": "RUNNING",
+            "falseLabel": "STOPPED",
+            "trueColor": "#16A34A",
+            "falseColor": "#9CA3AF"
+        }),
+    ));
+    z += 1;
+
+    // 4. Connection Line / Arrow
+    widgets.push(w(
+        "pf_line",
+        "line",
+        12.0,
+        134.0,
+        216.0,
+        24.0,
+        z,
+        None,
+        None,
+        json!({
+            "x1": 5, "y1": 50, "x2": 95, "y2": 50,
+            "stroke": "#2563EB", "strokeWidth": 3.0,
+            "lineStyle": "solid", "endCap": "arrow"
+        }),
+    ));
+
+    FormDef {
+        id: "pump_faceplate".into(),
+        name: "Pump_Faceplate_Master".into(),
+        width: 240.0,
+        height: 170.0,
+        background: "#FFFFFF".into(),
+        grid: 8,
+        widgets,
+    }
+}
+
 fn w(
     id: &str,
     widget_type: &str,
@@ -496,6 +750,7 @@ fn w(
         z,
         tag_id: tag_id.map(|s| s.into()),
         group_id: group_id.map(|s| s.into()),
+        locked: None,
         config,
     }
 }

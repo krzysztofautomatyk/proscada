@@ -20,11 +20,24 @@
   const pct = $derived(Math.max(0, Math.min(100, ((value - min) / (max - min || 1)) * 100)));
 </script>
 
-<div class="w-chrome" style:background={str("bgColor", "#FFFFFF")} style:border="1px solid #E5E7EB">
-  <div class="w-title" style:color="#6B7280">{str("title", "BAR")}</div>
-  <div class="w-body" style:padding="6px">
-    <div style:width="100%" style:height="14px" style:background="#E5E7EB" style:border-radius="3px" style:overflow="hidden">
-      <div style:width="{pct}%" style:height="100%" style:background={str("fillColor", "#16A34A")}></div>
+<div
+  class="w-chrome"
+  style:background={str("bgColor", "#FFFFFF")}
+  style:border="{num("borderWidth", 1)}px solid {str("borderColor", "#E5E7EB")}"
+  style:border-radius="{num("borderRadius", 8)}px"
+  style:font-family={str("fontFamily", "Segoe UI, system-ui, sans-serif")}
+>
+  <div
+    class="w-title"
+    style:color={str("titleColor", "#6B7280")}
+    style:font-size="{num("fontSize", 11)}px"
+    style:font-weight={str("fontWeight", "700")}
+  >
+    {str("title", "BAR")}
+  </div>
+  <div class="w-body">
+    <div class="track" style:background={str("trackColor", "#E5E7EB")}>
+      <div class="fill" style:width="{pct}%" style:background={str("fillColor", "#16A34A")}></div>
     </div>
   </div>
 </div>
@@ -36,16 +49,24 @@
     display: flex;
     flex-direction: column;
     box-sizing: border-box;
-    border-radius: 8px;
     padding: 6px;
   }
   .w-title {
-    font-size: 11px;
-    font-weight: 700;
+    margin-bottom: 4px;
   }
   .w-body {
     flex: 1;
     display: flex;
     align-items: center;
+  }
+  .track {
+    width: 100%;
+    height: 14px;
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .fill {
+    height: 100%;
+    transition: width 0.25s ease;
   }
 </style>

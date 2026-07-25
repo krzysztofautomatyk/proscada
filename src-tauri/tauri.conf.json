@@ -13,7 +13,7 @@
     "withGlobalTauri": false,
     "windows": [
       {
-        "title": "ProScada — Engineering Workstation",
+        "title": "ProScada — Engineering Workstation · v1.0 Designer",
         "width": 1600,
         "height": 1000,
         "minWidth": 1200,

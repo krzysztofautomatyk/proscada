@@ -1,5 +1,8 @@
 <script lang="ts">
   import type { WidgetDef, TagValue } from "$lib/types";
+  import { selectedFormId } from "$lib/stores/app";
+  import { get } from "svelte/store";
+  import { runScriptById } from "$lib/services/scriptRuntime";
 
   interface Props {
     widget: WidgetDef;
@@ -15,7 +18,23 @@
   const num = (k: string, d = 0) => Number(cfg[k] ?? d);
   const bool = (k: string, d = false) => Boolean(cfg[k] ?? d);
 
-  function doWrite() {
+  async function doWrite() {
+    const scriptId = str("onClickScriptId", "");
+    if (scriptId) {
+      try {
+        await runScriptById(scriptId, {
+          type: "click",
+          widgetId: widget.id,
+          formId: get(selectedFormId),
+          tagId: widget.tag_id ?? null,
+        });
+      } catch {
+        return;
+      }
+      // If script is bound, skip default write unless alsoWriteAfterScript
+      if (!bool("alsoWriteAfterScript", false)) return;
+    }
+
     if (!widget.tag_id || !onWrite) return;
     const v =
       str("valueKind", "number") === "bool"
@@ -37,9 +56,12 @@
   class="w-chrome"
   style:background={str("bgColor", "#1F2937")}
   style:color={str("textColor", "#fff")}
-  style:border="none"
-  style:font-weight="700"
-  style:border-radius="8px"
+  style:border="{num("borderWidth", 0)}px solid {str("borderColor", "transparent")}"
+  style:font-family={str("fontFamily", "Segoe UI, system-ui, sans-serif")}
+  style:font-size="{num("fontSize", 12)}px"
+  style:font-weight={str("fontWeight", "700")}
+  style:font-style={str("fontStyle", "normal")}
+  style:border-radius="{num("borderRadius", 8)}px"
   style:cursor={design ? "default" : "pointer"}
   disabled={design}
   onclick={(e) => {
@@ -58,7 +80,6 @@
     align-items: center;
     justify-content: center;
     box-sizing: border-box;
-    font-size: 12px;
     transition: opacity 0.2s;
   }
   .w-chrome:hover:not(:disabled) {
