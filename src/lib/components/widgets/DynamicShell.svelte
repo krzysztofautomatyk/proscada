@@ -35,8 +35,9 @@
       designSystem.styles[0],
   );
   const fontToken = $derived(
-    designSystem.fonts.find((font) => font.id === String(cfg.fontTokenId ?? "font-label")) ??
-      designSystem.fonts[0],
+    cfg.fontTokenId && cfg.fontTokenId !== "none"
+      ? designSystem.fonts.find((font) => font.id === String(cfg.fontTokenId))
+      : undefined,
   );
   const animationPreset = $derived(
     designSystem.animations.find(
@@ -100,7 +101,7 @@
     style:--psc-text={styleClass?.text ?? "#1f2937"}
     style:--psc-accent={styleClass?.accent ?? "#2563eb"}
     style:--psc-border={styleClass?.border ?? "#cbd5e1"}
-    style:font-family="var(--psc-font-family)"
+    style:font-family={fontToken ? "var(--psc-font-family)" : undefined}
     style:color="var(--psc-text)"
     onclick={onShellClick}
   >

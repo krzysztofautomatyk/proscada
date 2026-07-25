@@ -476,7 +476,7 @@
   >
     {#if $project}
       {#if $mode === "designer"}
-        <div class="solution" style:display="flex" style:flex-direction="column">
+        <div class="solution">
           {#if leftTab === "solution"}
             <SolutionExplorer project={$project} design={true} />
           {:else if leftTab === "toolbox"}

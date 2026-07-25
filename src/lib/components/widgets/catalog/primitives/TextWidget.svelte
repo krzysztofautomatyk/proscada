@@ -23,7 +23,9 @@
   const text = $derived(str("text", "Label"));
   const designSystem = $derived(normalizeProjectDesignSystem($project?.design_system));
   const fontToken = $derived(
-    designSystem.fonts.find((font) => font.id === str("fontTokenId", "")),
+    cfg.fontTokenId && cfg.fontTokenId !== "none"
+      ? designSystem.fonts.find((font) => font.id === str("fontTokenId", ""))
+      : undefined,
   );
   const fontFamily = $derived(
     fontToken ? `${fontToken.family}, ${fontToken.fallback}` : str("fontFamily", "Segoe UI, system-ui, sans-serif"),

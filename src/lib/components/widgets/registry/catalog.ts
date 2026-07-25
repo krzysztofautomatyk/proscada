@@ -54,7 +54,7 @@ const canonicalWidgets: WidgetCatalogItem[] = [
     aliases: ["Label"],
     defaultConfig: {
       text: "Label",
-      fontTokenId: "font-label",
+      fontTokenId: "none",
       fontFamily: "Segoe UI, system-ui, sans-serif",
       fontSize: 14,
       fontWeight: "normal",

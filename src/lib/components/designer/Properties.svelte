@@ -324,7 +324,8 @@
           <tr>
             <td>Font token</td>
             <td>
-              <select value={cfgStr("fontTokenId", "font-label")} onchange={(e) => setCfg("fontTokenId", e.currentTarget.value)}>
+              <select value={cfgStr("fontTokenId", "none")} onchange={(e) => setCfg("fontTokenId", e.currentTarget.value)}>
+                <option value="none">(none / custom settings)</option>
                 {#each designSystem.fonts as font}
                   <option value={font.id}>{font.name}</option>
                 {/each}
