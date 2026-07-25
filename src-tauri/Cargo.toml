@@ -4,7 +4,7 @@ version = "1.0.0"
 description = "ProScada — high-assurance SCADA designer & runtime with Modbus TCP master"
 authors = ["ProScada Expert Council"]
 edition = "2021"
-rust-version = "1.77.2"
+rust-version = "1.88.0"
 license = "MIT"
 
 [lib]

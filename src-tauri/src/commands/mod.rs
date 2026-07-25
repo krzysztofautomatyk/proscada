@@ -5,10 +5,10 @@ use std::sync::Arc;
 use serde::Serialize;
 use tauri::State;
 
-use crate::engine::{AlarmInstance, Engine, EngineSnapshot, TagValue};
-use crate::project::{Role, ScadaProject, water_tank_project};
 use crate::audit::AuditEntry;
+use crate::engine::{AlarmInstance, Engine, EngineSnapshot, TagValue};
 use crate::modbus::{self, ConnectionConfig};
+use crate::project::{water_tank_project, Role, ScadaProject};
 
 pub struct AppState {
     pub engine: Arc<Engine>,
@@ -60,10 +60,7 @@ pub fn get_snapshot(state: State<'_, AppState>) -> EngineSnapshot {
 }
 
 #[tauri::command]
-pub fn start_polling(
-    state: State<'_, AppState>,
-    device_id: Option<String>,
-) -> Result<(), String> {
+pub fn start_polling(state: State<'_, AppState>, device_id: Option<String>) -> Result<(), String> {
     state.engine.start_polling(device_id)
 }
 

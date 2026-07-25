@@ -86,8 +86,12 @@
           <th>Id</th>
           <th>Type</th>
           <th>Addr</th>
+          <th>Bit</th>
           <th>Table</th>
           <th>W</th>
+          <th>Verify</th>
+          <th>Bit write</th>
+          <th>Single writer</th>
           <th>Unit</th>
           <th>Description</th>
           {#if design}<th></th>{/if}
@@ -123,6 +127,21 @@
               {/if}
             </td>
             <td>
+              {#if design && t.binding.writable}
+                <input
+                  type="checkbox"
+                  checked={t.binding.verify_readback ?? true}
+                  title="Require the value to persist during immediate read-back. Disable for self-clearing command points."
+                  onchange={(e) =>
+                    patchTag(t.id, {
+                      binding: { ...t.binding, verify_readback: e.currentTarget.checked },
+                    })}
+                />
+              {:else}
+                {t.binding.writable ? ((t.binding.verify_readback ?? true) ? "✓" : "observe") : "—"}
+              {/if}
+            </td>
+            <td>
               {#if design}
                 <input
                   type="number"
@@ -137,8 +156,99 @@
                 {t.binding.address}
               {/if}
             </td>
-            <td>{t.binding.table}</td>
-            <td>{t.binding.writable ? "✓" : ""}</td>
+            <td>
+              {#if design}
+                <input
+                  type="number"
+                  class="bit"
+                  min="0"
+                  max="15"
+                  placeholder="—"
+                  value={t.binding.bit ?? ""}
+                  disabled={t.data_type !== "bool" || t.binding.table !== "holding"}
+                  onchange={(e) =>
+                    patchTag(t.id, {
+                      binding: {
+                        ...t.binding,
+                        bit: e.currentTarget.value === "" ? null : Number(e.currentTarget.value),
+                      },
+                    })}
+                />
+              {:else}
+                {t.binding.bit ?? "—"}
+              {/if}
+            </td>
+            <td>
+              {#if design}
+                <select
+                  value={t.binding.table}
+                  onchange={(e) =>
+                    patchTag(t.id, {
+                      binding: {
+                        ...t.binding,
+                        table: e.currentTarget.value as TagDefinition["binding"]["table"],
+                        bit: e.currentTarget.value === "holding" ? t.binding.bit : null,
+                      },
+                    })}
+                >
+                  <option value="holding">holding</option>
+                  <option value="input">input</option>
+                  <option value="coil">coil</option>
+                  <option value="discrete">discrete</option>
+                </select>
+              {:else}
+                {t.binding.table}
+              {/if}
+            </td>
+            <td>
+              {#if design}
+                <input
+                  type="checkbox"
+                  checked={t.binding.writable ?? false}
+                  disabled={t.binding.table === "input" || t.binding.table === "discrete"}
+                  onchange={(e) =>
+                    patchTag(t.id, {
+                      binding: { ...t.binding, writable: e.currentTarget.checked },
+                    })}
+                />
+              {:else}
+                {t.binding.writable ? "✓" : ""}
+              {/if}
+            </td>
+            <td>
+              {#if design && t.binding.table === "holding" && t.binding.bit !== null && t.binding.bit !== undefined}
+                <select
+                  value={t.binding.bit_write_mode ?? "mask_write"}
+                  onchange={(e) =>
+                    patchTag(t.id, {
+                      binding: {
+                        ...t.binding,
+                        bit_write_mode: e.currentTarget.value as "mask_write" | "read_modify_write",
+                      },
+                    })}
+                >
+                  <option value="mask_write">FC22 mask</option>
+                  <option value="read_modify_write">FC03+FC06 RMW</option>
+                </select>
+              {:else}
+                —
+              {/if}
+            </td>
+            <td>
+              {#if design && t.binding.bit_write_mode === "read_modify_write"}
+                <input
+                  type="checkbox"
+                  checked={t.binding.single_writer ?? false}
+                  title="Required for RMW; confirms no other master or PLC logic writes this register."
+                  onchange={(e) =>
+                    patchTag(t.id, {
+                      binding: { ...t.binding, single_writer: e.currentTarget.checked },
+                    })}
+                />
+              {:else}
+                {t.binding.single_writer ? "✓" : "—"}
+              {/if}
+            </td>
             <td>
               {#if design}
                 <input

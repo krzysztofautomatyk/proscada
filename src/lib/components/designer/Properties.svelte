@@ -15,6 +15,8 @@
   } from "$lib/stores/app";
   import { FONT_OPTIONS } from "$lib/utils/dynamics";
   import ConditionEditor from "./ConditionEditor.svelte";
+  import { normalizeProjectDesignSystem } from "$lib/utils/designSystem";
+  import VerticalScrollControls from "./VerticalScrollControls.svelte";
 
   interface Props {
     widget: WidgetDef | null;
@@ -23,6 +25,8 @@
   }
 
   let { widget, form, tags }: Props = $props();
+  let scrollContainer = $state<HTMLDivElement | null>(null);
+  const designSystem = $derived(normalizeProjectDesignSystem($project?.design_system));
 
   function setCfg(key: string, value: unknown) {
     if (!widget) return;
@@ -120,6 +124,13 @@
     "src",
     "fit",
     "alt",
+    "styleClassId",
+    "fontTokenId",
+    "animationPresetId",
+    "animationMode",
+    "animationTagId",
+    "animationBit",
+    "animationVal",
   ]);
 
   const rawConfigEntries = $derived(
@@ -180,8 +191,11 @@
 </script>
 
 <div class="panel" style:height="100%;border:none;border-left:1px solid var(--vs-border)">
-  <div class="panel-header">Properties</div>
-  <div class="panel-body">
+  <div class="panel-header">
+    <span>Properties</span>
+    <VerticalScrollControls target={scrollContainer} />
+  </div>
+  <div class="panel-body scrollable-panel-body" bind:this={scrollContainer}>
     {#if widget}
       <!-- Z-Order Layer Toolbar & Grouping -->
       <div class="layer-toolbar">
@@ -291,6 +305,39 @@
               >
                 <option value="false">Unlocked (move/resize)</option>
                 <option value="true">Locked (no move/resize)</option>
+              </select>
+            </td>
+          </tr>
+          <tr>
+            <td colspan="2" class="section">Project Design System</td>
+          </tr>
+          <tr>
+            <td>Style class</td>
+            <td>
+              <select value={cfgStr("styleClassId", "style-default")} onchange={(e) => setCfg("styleClassId", e.currentTarget.value)}>
+                {#each designSystem.styles as style}
+                  <option value={style.id}>{style.name}</option>
+                {/each}
+              </select>
+            </td>
+          </tr>
+          <tr>
+            <td>Font token</td>
+            <td>
+              <select value={cfgStr("fontTokenId", "font-label")} onchange={(e) => setCfg("fontTokenId", e.currentTarget.value)}>
+                {#each designSystem.fonts as font}
+                  <option value={font.id}>{font.name}</option>
+                {/each}
+              </select>
+            </td>
+          </tr>
+          <tr>
+            <td>Animation preset</td>
+            <td>
+              <select value={cfgStr("animationPresetId", "anim-none")} onchange={(e) => setCfg("animationPresetId", e.currentTarget.value)}>
+                {#each designSystem.animations as animation}
+                  <option value={animation.id}>{animation.name}</option>
+                {/each}
               </select>
             </td>
           </tr>
@@ -1103,6 +1150,18 @@
       {/if}
 
       <!-- GENERIC DYNAMICS (all widgets) -->
+      <ConditionEditor
+        title="Custom animation"
+        mode={cfgStr("animationMode", "none")}
+        tagId={cfgStr("animationTagId", "")}
+        bit={cfgNum("animationBit", 0)}
+        val={cfgNum("animationVal", 1)}
+        {tags}
+        onMode={(v) => setCfg("animationMode", v)}
+        onTag={(v) => setCfg("animationTagId", v)}
+        onBit={(v) => setCfg("animationBit", v)}
+        onVal={(v) => setCfg("animationVal", v)}
+      />
       <ConditionEditor
         title="Blink"
         mode={cfgStr("blinkMode", "none")}

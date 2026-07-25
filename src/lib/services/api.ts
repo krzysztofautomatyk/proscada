@@ -52,6 +52,7 @@ function mockSnap(): EngineSnapshot {
       name: a.name,
       message: a.message,
       priority: a.priority,
+      group_id: a.group_id ?? "",
       state: "inactive" as const,
       last_change: new Date().toISOString(),
     })),

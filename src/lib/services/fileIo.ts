@@ -63,7 +63,11 @@ export async function openTextFile(
   return new Promise((resolve) => {
     const input = document.createElement("input");
     input.type = "file";
-    input.accept = ".json,.proscada.json,application/json";
+    input.accept = [
+      ...filters.flatMap((filter) => filter.extensions.map((extension) => `.${extension}`)),
+      "application/json",
+      "text/csv",
+    ].join(",");
     input.style.display = "none";
     input.onchange = async () => {
       const file = input.files?.[0];

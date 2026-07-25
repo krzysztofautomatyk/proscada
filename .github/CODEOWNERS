@@ -1,0 +1,10 @@
+* @krzysztofautomatyk
+
+/src-tauri/src/engine/ @krzysztofautomatyk
+/src-tauri/src/modbus/ @krzysztofautomatyk
+/src-tauri/src/commands/ @krzysztofautomatyk
+/src-tauri/capabilities/ @krzysztofautomatyk
+/src/lib/services/scriptRuntime.ts @krzysztofautomatyk
+/.github/workflows/ @krzysztofautomatyk
+/.github/skills/ @krzysztofautomatyk
+

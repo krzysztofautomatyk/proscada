@@ -38,7 +38,7 @@
     moveSelectedWidgets,
   } from "$lib/stores/app";
   import { api } from "$lib/services/api";
-  import type { Role } from "$lib/types";
+  import type { LeftPanelTab, Role } from "$lib/types";
   import SolutionExplorer from "$lib/components/shell/SolutionExplorer.svelte";
   import MenuBar from "$lib/components/shell/MenuBar.svelte";
   import Toolbox from "$lib/components/designer/Toolbox.svelte";
@@ -48,11 +48,14 @@
   import OutputPanel from "$lib/components/shell/OutputPanel.svelte";
   import DocumentEditor from "$lib/components/shell/DocumentEditor.svelte";
   import VariablesEditor from "$lib/components/shell/VariablesEditor.svelte";
-  import { isDocKind } from "$lib/utils/projectTree";
+  import DesignSystemManager from "$lib/components/designer/DesignSystemManager.svelte";
+  import ComponentLibraryManager from "$lib/components/designer/ComponentLibraryManager.svelte";
+  import AlarmManagerEditor from "$lib/components/designer/AlarmManagerEditor.svelte";
+  import { ensureProjectTree, isDocKind } from "$lib/utils/projectTree";
   import { getCurrentWindow } from "@tauri-apps/api/window";
 
   let role = $state<Role>("engineer");
-  let leftTab = $state<"solution" | "toolbox" | "objects">("solution");
+  let leftTab = $state<LeftPanelTab>("solution");
   let propertiesEl = $state<HTMLDivElement | null>(null);
   let workspaceEl = $state<HTMLDivElement | null>(null);
 
@@ -291,7 +294,6 @@
   async function reloadWaterTank() {
     try {
       const p = await api.loadBuiltinWaterTank();
-      const { ensureProjectTree } = await import("$lib/utils/projectTree");
       const normalized = ensureProjectTree(p);
       project.set(normalized);
       dirty.set(false);
@@ -300,6 +302,47 @@
       log(`Reload failed: ${e}`, "err");
     }
   }
+
+  onMount(() => {
+    const onAlarmAction = (event: Event) => {
+      const detail = (event as CustomEvent<{ action?: string; alarmId?: string }>).detail;
+      if (detail?.action !== "ack" || !detail.alarmId) return;
+      void api
+        .ackAlarm(detail.alarmId)
+        .then(() => {
+          log(`Alarm ACK requested: ${detail.alarmId}`, "ok");
+          return refreshAudit();
+        })
+        .catch((error: unknown) => log(`Alarm ACK failed: ${error}`, "err"));
+    };
+    const onNavigate = (event: Event) => {
+      const detail = (event as CustomEvent<{ target?: string }>).detail;
+      const target = detail?.target;
+      if (!target) return;
+      const key = target.startsWith("screen:") ? target.slice(7) : target.replace(/^\/+/, "");
+      const form = $project?.forms.find(
+        (candidate) => candidate.id === key || candidate.name.toLowerCase() === key.toLowerCase(),
+      );
+      if (!form) {
+        log(`Navigation target not found: ${target}`, "warn");
+        return;
+      }
+      selectedFormId.set(form.id);
+      log(`Navigate → ${form.name}`, "info");
+    };
+    const onDialogAction = (event: Event) => {
+      const detail = (event as CustomEvent<{ action?: string; sourceWidgetId?: string }>).detail;
+      log(`Dialog ${detail?.action ?? "action"} · ${detail?.sourceWidgetId ?? "unknown"}`, "info");
+    };
+    window.addEventListener("proscada:alarm-action", onAlarmAction);
+    window.addEventListener("proscada:navigate", onNavigate);
+    window.addEventListener("proscada:dialog-action", onDialogAction);
+    return () => {
+      window.removeEventListener("proscada:alarm-action", onAlarmAction);
+      window.removeEventListener("proscada:navigate", onNavigate);
+      window.removeEventListener("proscada:dialog-action", onDialogAction);
+    };
+  });
 
   const statusClass = $derived(
     !$snapshot
@@ -394,6 +437,24 @@
         title="Document Outline"
         onclick={() => (leftTab = "objects")}>Outline</button
       >
+      <button
+        class="tb"
+        class:primary={leftTab === "designSystem"}
+        title="Project Design System"
+        onclick={() => (leftTab = "designSystem")}>Styles</button
+      >
+      <button
+        class="tb"
+        class:primary={leftTab === "components"}
+        title="Reusable Component Library"
+        onclick={() => (leftTab = "components")}>Components</button
+      >
+      <button
+        class="tb"
+        class:primary={leftTab === "alarms"}
+        title="Central Alarm Manager"
+        onclick={() => (leftTab = "alarms")}>Alarms</button
+      >
     {/if}
     <span class="tb-status">
       {$snapshot?.connected ? "ONLINE" : "OFFLINE"}
@@ -420,7 +481,13 @@
             <SolutionExplorer project={$project} design={true} />
           {:else if leftTab === "toolbox"}
             <Toolbox />
-          {:else if $activeForm}
+          {:else if leftTab === "designSystem"}
+            <DesignSystemManager />
+          {:else if leftTab === "components"}
+            <ComponentLibraryManager />
+          {:else if leftTab === "alarms"}
+            <AlarmManagerEditor />
+          {:else if leftTab === "objects" && $activeForm}
             <ObjectList form={$activeForm} />
           {/if}
         </div>

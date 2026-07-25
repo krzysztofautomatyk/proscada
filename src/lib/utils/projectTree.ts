@@ -1,6 +1,7 @@
 import type { FormDef, ProjectNode, ProjectNodeKind, ScadaProject } from "$lib/types";
+import { defaultProjectDesignSystem, normalizeProjectDesignSystem } from "$lib/utils/designSystem";
 
-export const CURRENT_SCHEMA = 2;
+export const CURRENT_SCHEMA = 3;
 
 const DOC_KINDS: ProjectNodeKind[] = ["script", "note", "markdown", "variables"];
 
@@ -72,8 +73,18 @@ export function defaultExt(kind: ProjectNodeKind): string {
 /** Ensure project has a usable tree; migrate legacy flat forms. */
 export function ensureProjectTree(p: ScadaProject): ScadaProject {
   const tree = [...(p.tree ?? [])];
+  const normalized = {
+    ...p,
+    alarm_groups: Array.isArray(p.alarm_groups) ? p.alarm_groups : [],
+    component_templates: Array.isArray(p.component_templates) ? p.component_templates : [],
+    design_system: normalizeProjectDesignSystem(p.design_system),
+  };
   if (tree.length > 0) {
-    return { ...p, tree, schema_version: Math.max(p.schema_version || 1, CURRENT_SCHEMA) };
+    return {
+      ...normalized,
+      tree,
+      schema_version: Math.max(p.schema_version || 1, CURRENT_SCHEMA),
+    };
   }
 
   const screensId = uid("fld");
@@ -95,7 +106,7 @@ export function ensureProjectTree(p: ScadaProject): ScadaProject {
     },
   ];
 
-  p.forms.forEach((f, i) => {
+  normalized.forms.forEach((f, i) => {
     nodes.push({
       id: uid("scr"),
       parent_id: screensId,
@@ -107,7 +118,7 @@ export function ensureProjectTree(p: ScadaProject): ScadaProject {
   });
 
   return {
-    ...p,
+    ...normalized,
     schema_version: CURRENT_SCHEMA,
     tree: nodes,
   };
@@ -133,6 +144,9 @@ export function createEmptyProject(name = "New Project"): ScadaProject {
     tags: [],
     forms: [form],
     alarms: [],
+    alarm_groups: [],
+    design_system: defaultProjectDesignSystem(),
+    component_templates: [],
     tree: [],
     content_hash: "",
   };
@@ -191,6 +205,9 @@ export function normalizeImportedProject(raw: unknown): ScadaProject {
   p.devices = Array.isArray(p.devices) ? p.devices : [];
   p.tags = Array.isArray(p.tags) ? p.tags : [];
   p.alarms = Array.isArray(p.alarms) ? p.alarms : [];
+  p.alarm_groups = Array.isArray(p.alarm_groups) ? p.alarm_groups : [];
+  p.component_templates = Array.isArray(p.component_templates) ? p.component_templates : [];
+  p.design_system = normalizeProjectDesignSystem(p.design_system);
   p.tree = Array.isArray(p.tree) ? p.tree : [];
   p.description = p.description ?? "";
   p.content_hash = p.content_hash ?? "";

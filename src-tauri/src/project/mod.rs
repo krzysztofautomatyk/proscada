@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -24,7 +24,7 @@ impl Role {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ModbusTable {
     Holding,
@@ -33,7 +33,39 @@ pub enum ModbusTable {
     Discrete,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BitWriteMode {
+    #[default]
+    MaskWrite,
+    ReadModifyWrite,
+}
+
+fn is_default_bit_write_mode(mode: &BitWriteMode) -> bool {
+    matches!(mode, BitWriteMode::MaskWrite)
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn is_zero_f64(value: &f64) -> bool {
+    *value == 0.0
+}
+
+fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TagDataType {
     Bool,
@@ -64,6 +96,12 @@ pub struct TagBinding {
     pub table: ModbusTable,
     #[serde(default)]
     pub writable: bool,
+    #[serde(default, skip_serializing_if = "is_default_bit_write_mode")]
+    pub bit_write_mode: BitWriteMode,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub single_writer: bool,
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub verify_readback: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -151,6 +189,8 @@ pub struct AlarmDefinition {
     pub id: String,
     pub name: String,
     pub tag_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub group_id: String,
     pub priority: AlarmPriority,
     /// For bool tags: alarm when true. For numeric: use limit.
     #[serde(default)]
@@ -159,8 +199,28 @@ pub struct AlarmDefinition {
     pub hi_limit: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lo_limit: Option<f64>,
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub deadband: f64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub on_delay_ms: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub off_delay_ms: u64,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub latching: bool,
     #[serde(default)]
     pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlarmGroupDefinition {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object_id: Option<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -204,6 +264,12 @@ pub struct ScadaProject {
     pub tags: Vec<TagDefinition>,
     pub forms: Vec<FormDef>,
     pub alarms: Vec<AlarmDefinition>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub alarm_groups: Vec<AlarmGroupDefinition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub design_system: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub component_templates: Vec<serde_json::Value>,
     /// Hierarchical Solution Explorer items. Missing in v1 files → empty.
     #[serde(default)]
     pub tree: Vec<ProjectNode>,
@@ -252,11 +318,46 @@ pub fn water_tank_project() -> ScadaProject {
         ("wt.do_pack", "WT.DO_PACK", 101, false, "", "DO pack Q0–Q15"),
         ("wt.m_lo", "WT.M_LO", 102, false, "", "Markers M0–M15"),
         ("wt.m_hi", "WT.M_HI", 103, false, "", "Markers M16–M31"),
-        ("wt.level_cm", "WT.LEVEL_cm", 104, true, "cm", "Process level 0…1000"),
-        ("wt.k_x100", "WT.K_x100", 105, true, "×100", "Inflow factor K×100"),
-        ("wt.fill_step", "WT.FILL_STEP", 106, true, "", "Inflow units / tick"),
-        ("wt.pump_step", "WT.PUMP_STEP", 107, false, "", "Single pump capacity / tick"),
-        ("wt.sp_stop", "WT.SP_STOP", 108, true, "cm", "Stop / reset demand"),
+        (
+            "wt.level_cm",
+            "WT.LEVEL_cm",
+            104,
+            true,
+            "cm",
+            "Process level 0…1000",
+        ),
+        (
+            "wt.k_x100",
+            "WT.K_x100",
+            105,
+            true,
+            "×100",
+            "Inflow factor K×100",
+        ),
+        (
+            "wt.fill_step",
+            "WT.FILL_STEP",
+            106,
+            true,
+            "",
+            "Inflow units / tick",
+        ),
+        (
+            "wt.pump_step",
+            "WT.PUMP_STEP",
+            107,
+            false,
+            "",
+            "Single pump capacity / tick",
+        ),
+        (
+            "wt.sp_stop",
+            "WT.SP_STOP",
+            108,
+            true,
+            "cm",
+            "Stop / reset demand",
+        ),
         ("wt.sp_p1_on", "WT.SP_P1_ON", 109, true, "cm", "Start P1"),
         ("wt.sp_p2_on", "WT.SP_P2_ON", 110, true, "cm", "Join P2"),
         ("wt.cap", "WT.CAP", 111, false, "", "Total pump capacity"),
@@ -268,8 +369,22 @@ pub fn water_tank_project() -> ScadaProject {
         ("wt.p2_hh", "WT.P2_HH", 117, false, "h", "P2 run hours"),
         ("wt.p2_mm", "WT.P2_MM", 118, false, "min", "P2 run minutes"),
         ("wt.p2_ss", "WT.P2_SS", 119, false, "s", "P2 run seconds"),
-        ("wt.p1_starts", "WT.P1_STARTS", 120, false, "", "P1 start count"),
-        ("wt.p2_starts", "WT.P2_STARTS", 121, false, "", "P2 start count"),
+        (
+            "wt.p1_starts",
+            "WT.P1_STARTS",
+            120,
+            false,
+            "",
+            "P1 start count",
+        ),
+        (
+            "wt.p2_starts",
+            "WT.P2_STARTS",
+            121,
+            false,
+            "",
+            "P2 start count",
+        ),
     ];
 
     for (id, name, addr, writable, unit, desc) in words {
@@ -283,6 +398,9 @@ pub fn water_tank_project() -> ScadaProject {
                 bit: None,
                 table: ModbusTable::Holding,
                 writable: *writable,
+                bit_write_mode: BitWriteMode::MaskWrite,
+                single_writer: false,
+                verify_readback: true,
             },
             unit: (*unit).into(),
             description: (*desc).into(),
@@ -304,7 +422,13 @@ pub fn water_tank_project() -> ScadaProject {
         ("wt.p2_run", "WT.P2_RUN", 101, 1, "Pump 2 run"),
         ("wt.alm_hi", "WT.ALM_HI", 101, 2, "High level alarm"),
         ("wt.alm_fault", "WT.ALM_FAULT", 101, 3, "Any pump fault"),
-        ("wt.alm_fail", "WT.ALM_FAIL", 101, 4, "Station fail — no pump"),
+        (
+            "wt.alm_fail",
+            "WT.ALM_FAIL",
+            101,
+            4,
+            "Station fail — no pump",
+        ),
         ("wt.demand", "WT.DEMAND", 102, 2, "Pump-out demand"),
         ("wt.join_p2", "WT.JOIN_P2", 102, 3, "Need lag pump"),
         ("wt.p1_ok", "WT.P1_OK", 102, 4, "P1 available"),
@@ -323,6 +447,9 @@ pub fn water_tank_project() -> ScadaProject {
                 bit: Some(*bit),
                 table: ModbusTable::Holding,
                 writable: false,
+                bit_write_mode: BitWriteMode::MaskWrite,
+                single_writer: false,
+                verify_readback: true,
             },
             unit: String::new(),
             description: (*desc).into(),
@@ -340,46 +467,71 @@ pub fn water_tank_project() -> ScadaProject {
             id: "alm_hi".into(),
             name: "High Level".into(),
             tag_id: "wt.alm_hi".into(),
+            group_id: "water_tank".into(),
             priority: AlarmPriority::High,
             when_true: true,
             hi_limit: None,
             lo_limit: None,
+            deadband: 0.0,
+            on_delay_ms: 0,
+            off_delay_ms: 0,
+            latching: false,
             message: "Wet-well high level (ALM_HI)".into(),
         },
         AlarmDefinition {
             id: "alm_fault".into(),
             name: "Pump Fault".into(),
             tag_id: "wt.alm_fault".into(),
+            group_id: "water_tank".into(),
             priority: AlarmPriority::High,
             when_true: true,
             hi_limit: None,
             lo_limit: None,
+            deadband: 0.0,
+            on_delay_ms: 0,
+            off_delay_ms: 0,
+            latching: true,
             message: "Pump fault present (ALM_FAULT)".into(),
         },
         AlarmDefinition {
             id: "alm_fail".into(),
             name: "Station Fail".into(),
             tag_id: "wt.alm_fail".into(),
+            group_id: "water_tank".into(),
             priority: AlarmPriority::Critical,
             when_true: true,
             hi_limit: None,
             lo_limit: None,
+            deadband: 0.0,
+            on_delay_ms: 0,
+            off_delay_ms: 0,
+            latching: true,
             message: "Demand with no available pump (ALM_FAIL)".into(),
         },
         AlarmDefinition {
             id: "alm_level_hi".into(),
             name: "Level Hi Limit".into(),
             tag_id: "wt.level_cm".into(),
+            group_id: "water_tank".into(),
             priority: AlarmPriority::Medium,
             when_true: false,
             hi_limit: Some(850.0),
             lo_limit: None,
+            deadband: 10.0,
+            on_delay_ms: 500,
+            off_delay_ms: 500,
+            latching: false,
             message: "Level above 850 cm".into(),
         },
     ];
 
     let form_id = form.id.clone();
-    let tree = default_water_tank_tree(&form_id, &form.name, &pump_faceplate.id, &pump_faceplate.name);
+    let tree = default_water_tank_tree(
+        &form_id,
+        &form.name,
+        &pump_faceplate.id,
+        &pump_faceplate.name,
+    );
 
     let mut project = ScadaProject {
         schema_version: SCHEMA_VERSION,
@@ -390,6 +542,15 @@ pub fn water_tank_project() -> ScadaProject {
         tags,
         forms: vec![form, pump_faceplate],
         alarms,
+        alarm_groups: vec![AlarmGroupDefinition {
+            id: "water_tank".into(),
+            name: "Water Tank Station".into(),
+            parent_id: None,
+            object_id: Some("WT-001".into()),
+            description: "Built-in dual-pump water tank".into(),
+        }],
+        design_system: None,
+        component_templates: Vec::new(),
         tree,
         content_hash: String::new(),
     };
@@ -522,9 +683,20 @@ fn water_tank_form() -> FormDef {
     let mut z = 0;
 
     // Header Badges
-    widgets.push(w("status_badges", "status_badge", 24.0, 16.0, 300.0, 40.0, z, None, None, json!({
-        "simEn": true, "frozen": false
-    })));
+    widgets.push(w(
+        "status_badges",
+        "status_badge",
+        24.0,
+        16.0,
+        300.0,
+        40.0,
+        z,
+        None,
+        None,
+        json!({
+            "simEn": true, "frozen": false
+        }),
+    ));
     z += 1;
 
     // Deconstructed Atomic Group: METRICS OVERVIEW (group_id: grp_metrics)
@@ -555,29 +727,84 @@ fn water_tank_form() -> FormDef {
     z += 1;
 
     // Main Synoptic Elements
-    widgets.push(w("iso_tank_1", "iso_water_tank", 24.0, 100.0, 360.0, 300.0, z, Some("wt.level_cm"), None, json!({
-        "label": "Water Tank Cutaway"
-    })));
+    widgets.push(w(
+        "iso_tank_1",
+        "iso_water_tank",
+        24.0,
+        100.0,
+        360.0,
+        300.0,
+        z,
+        Some("wt.level_cm"),
+        None,
+        json!({
+            "label": "Water Tank Cutaway"
+        }),
+    ));
     z += 1;
 
-    widgets.push(w("iso_pump_1", "iso_pump", 400.0, 100.0, 160.0, 140.0, z, Some("wt.p1_run"), None, json!({
-        "pumpName": "PUMP 1 (Lead)"
-    })));
+    widgets.push(w(
+        "iso_pump_1",
+        "iso_pump",
+        400.0,
+        100.0,
+        160.0,
+        140.0,
+        z,
+        Some("wt.p1_run"),
+        None,
+        json!({
+            "pumpName": "PUMP 1 (Lead)"
+        }),
+    ));
     z += 1;
 
-    widgets.push(w("iso_pump_2", "iso_pump", 400.0, 250.0, 160.0, 140.0, z, Some("wt.p2_run"), None, json!({
-        "pumpName": "PUMP 2 (Lag)"
-    })));
+    widgets.push(w(
+        "iso_pump_2",
+        "iso_pump",
+        400.0,
+        250.0,
+        160.0,
+        140.0,
+        z,
+        Some("wt.p2_run"),
+        None,
+        json!({
+            "pumpName": "PUMP 2 (Lag)"
+        }),
+    ));
     z += 1;
 
-    widgets.push(w("inlet_pipe", "iso_pipe", 400.0, 400.0, 310.0, 70.0, z, Some("wt.sim_en"), None, json!({
-        "label": "Inlet Pipe Stream"
-    })));
+    widgets.push(w(
+        "inlet_pipe",
+        "iso_pipe",
+        400.0,
+        400.0,
+        310.0,
+        70.0,
+        z,
+        Some("wt.sim_en"),
+        None,
+        json!({
+            "label": "Inlet Pipe Stream"
+        }),
+    ));
     z += 1;
 
-    widgets.push(w("terrain_cut", "iso_terrain", 24.0, 410.0, 360.0, 170.0, z, None, None, json!({
-        "label": "Soil & Grass Cutaway"
-    })));
+    widgets.push(w(
+        "terrain_cut",
+        "iso_terrain",
+        24.0,
+        410.0,
+        360.0,
+        170.0,
+        z,
+        None,
+        None,
+        json!({
+            "label": "Soil & Grass Cutaway"
+        }),
+    ));
     z += 1;
 
     // Deconstructed Atomic Group: SETPOINT CONTROLLER (group_id: grp_setpoints)
@@ -587,40 +814,117 @@ fn water_tank_form() -> FormDef {
     })));
     z += 1;
 
-    widgets.push(w("sp_stop_step", "numeric_input", 740.0, 130.0, 270.0, 44.0, z, Some("wt.sp_stop"), grp_sp, json!({
-        "title": "SP_STOP", "step": 50, "unit": "cm", "labelColor": "#16A34A"
-    })));
+    widgets.push(w(
+        "sp_stop_step",
+        "numeric_input",
+        740.0,
+        130.0,
+        270.0,
+        44.0,
+        z,
+        Some("wt.sp_stop"),
+        grp_sp,
+        json!({
+            "title": "SP_STOP", "step": 50, "unit": "cm", "labelColor": "#16A34A"
+        }),
+    ));
     z += 1;
 
-    widgets.push(w("sp_p1_step", "numeric_input", 740.0, 178.0, 270.0, 44.0, z, Some("wt.sp_p1_on"), grp_sp, json!({
-        "title": "SP_P1_ON", "step": 50, "unit": "cm", "labelColor": "#EAB308"
-    })));
+    widgets.push(w(
+        "sp_p1_step",
+        "numeric_input",
+        740.0,
+        178.0,
+        270.0,
+        44.0,
+        z,
+        Some("wt.sp_p1_on"),
+        grp_sp,
+        json!({
+            "title": "SP_P1_ON", "step": 50, "unit": "cm", "labelColor": "#EAB308"
+        }),
+    ));
     z += 1;
 
-    widgets.push(w("sp_p2_step", "numeric_input", 740.0, 226.0, 270.0, 44.0, z, Some("wt.sp_p2_on"), grp_sp, json!({
-        "title": "SP_P2_ON", "step": 50, "unit": "cm", "labelColor": "#DC2626"
-    })));
+    widgets.push(w(
+        "sp_p2_step",
+        "numeric_input",
+        740.0,
+        226.0,
+        270.0,
+        44.0,
+        z,
+        Some("wt.sp_p2_on"),
+        grp_sp,
+        json!({
+            "title": "SP_P2_ON", "step": 50, "unit": "cm", "labelColor": "#DC2626"
+        }),
+    ));
     z += 1;
 
-    widgets.push(w("sp_apply_btn", "write_button", 740.0, 276.0, 270.0, 40.0, z, Some("wt.sp_stop"), grp_sp, json!({
-        "label": "Apply setpoints", "bgColor": "#1F2937", "textColor": "#FFFFFF"
-    })));
+    widgets.push(w(
+        "sp_apply_btn",
+        "write_button",
+        740.0,
+        276.0,
+        270.0,
+        40.0,
+        z,
+        Some("wt.sp_stop"),
+        grp_sp,
+        json!({
+            "label": "Apply setpoints", "bgColor": "#1F2937", "textColor": "#FFFFFF"
+        }),
+    ));
     z += 1;
 
     // Inflow, Process & Alarms Panels
-    widgets.push(w("inflow_ctrl", "inflow_control", 730.0, 340.0, 290.0, 130.0, z, Some("wt.k_x100"), None, json!({
-        "title": "Inflow Factor K"
-    })));
+    widgets.push(w(
+        "inflow_ctrl",
+        "inflow_control",
+        730.0,
+        340.0,
+        290.0,
+        130.0,
+        z,
+        Some("wt.k_x100"),
+        None,
+        json!({
+            "title": "Inflow Factor K"
+        }),
+    ));
     z += 1;
 
-    widgets.push(w("proc_ctrl", "process_control", 400.0, 480.0, 310.0, 130.0, z, Some("wt.sim_en"), None, json!({
-        "title": "Process Controls"
-    })));
+    widgets.push(w(
+        "proc_ctrl",
+        "process_control",
+        400.0,
+        480.0,
+        310.0,
+        130.0,
+        z,
+        Some("wt.sim_en"),
+        None,
+        json!({
+            "title": "Process Controls"
+        }),
+    ));
     z += 1;
 
-    widgets.push(w("alarms_ctrl", "alarm_panel", 730.0, 480.0, 290.0, 200.0, z, None, None, json!({
-        "title": "Active Alarms"
-    })));
+    widgets.push(w(
+        "alarms_ctrl",
+        "alarm_panel",
+        730.0,
+        480.0,
+        290.0,
+        200.0,
+        z,
+        None,
+        None,
+        json!({
+            "title": "Active Alarms"
+        }),
+    ));
 
     FormDef {
         id: "main".into(),
@@ -728,6 +1032,8 @@ fn pump_faceplate_form() -> FormDef {
     }
 }
 
+// The compact fixture factory mirrors WidgetDef's serialized fields at each call site.
+#[allow(clippy::too_many_arguments)]
 fn w(
     id: &str,
     widget_type: &str,

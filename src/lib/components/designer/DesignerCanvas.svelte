@@ -11,7 +11,7 @@
     setSelection,
     toggleSelection,
   } from "$lib/stores/app";
-  import { WIDGET_CATALOG } from "$lib/types";
+  import { WIDGET_CATALOG } from "$lib/components/widgets/registry";
   import { defaultDynamicsConfig } from "$lib/utils/dynamics";
   import {
     expandSelectionWithGroups,

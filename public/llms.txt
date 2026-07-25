@@ -1,0 +1,19 @@
+# ProScada
+
+> High-assurance SCADA Designer and Runtime using Tauri, Rust, Svelte 5 and Modbus TCP. Lab and integration use; not a safety PLC.
+
+## Core context
+
+- [Agent instructions](https://github.com/krzysztofautomatyk/proscada/blob/main/AGENTS.md)
+- [Documentation](https://github.com/krzysztofautomatyk/proscada/blob/main/docs/README.md)
+- [AI workflow](https://github.com/krzysztofautomatyk/proscada/blob/main/docs/ai/README.md)
+- [Architecture](https://github.com/krzysztofautomatyk/proscada/blob/main/docs/architecture/overview.md)
+- [Toolbox](https://github.com/krzysztofautomatyk/proscada/blob/main/docs/toolbox/README.md)
+- [Skills](https://github.com/krzysztofautomatyk/proscada/tree/main/.github/skills)
+
+## Safety
+
+- Preserve Runtime, role, writable, quality and read-back gates.
+- Keep PLC watchdog, interlock and safety logic in the PLC.
+- Never connect an AI agent or CI runner to an OT network.
+

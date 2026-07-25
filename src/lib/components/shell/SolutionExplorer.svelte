@@ -204,6 +204,7 @@
   <div
     class="panel-body se-body"
     role="tree"
+    tabindex="0"
     oncontextmenu={(e) => openCtx(e, null, true)}
     ondragover={onDragOver}
     ondrop={(e) => onDrop(e, null)}

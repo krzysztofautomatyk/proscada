@@ -7,8 +7,14 @@ import type {
   WidgetDef,
   FormDef,
   AuditEntry,
+  AlarmDefinition,
+  AlarmGroupDefinition,
+  ComponentTemplate,
+  ProjectDesignSystem,
+  TagDefinition,
 } from "$lib/types";
-import { WIDGET_CATALOG } from "$lib/types";
+import { WIDGET_CATALOG } from "$lib/components/widgets/registry";
+import { getWidgetCatalogItem } from "$lib/components/widgets/registry";
 import { defaultDynamicsConfig } from "$lib/utils/dynamics";
 import { api } from "$lib/services/api";
 import {
@@ -161,6 +167,15 @@ export async function disconnectDevice() {
 }
 
 export async function switchMode(m: AppMode) {
+  if (m === "runtime" && get(dirty)) {
+    const wasConnected = get(snapshot)?.connected ?? false;
+    log("Saving project before Runtime so the engine receives the current tag map", "info");
+    if (!(await persistProject())) {
+      log("Runtime blocked: project save failed", "err");
+      return;
+    }
+    if (wasConnected) await connectDevice();
+  }
   mode.set(m);
   await api.setMode(m);
   const form = get(activeForm);
@@ -394,6 +409,582 @@ export function addCatalogWidget(type: string, posX?: number, posY?: number) {
     config: { ...defaultDynamicsConfig(), ...cat.defaultConfig },
   });
   log(`Added widget: ${cat.label}`, "ok");
+}
+
+export function updateProjectDesignSystem(next: ProjectDesignSystem) {
+  project.update((current) => {
+    if (!current) return current;
+    dirty.set(true);
+    return { ...current, design_system: structuredClone(next) };
+  });
+  log("Project design system updated", "ok");
+}
+
+function selectedWidgetsForTemplate(): { form: FormDef; widgets: WidgetDef[] } | null {
+  const form = get(activeForm);
+  if (!form) return null;
+  const widgets = widgetsFromSelection(form);
+  return widgets.length > 0 ? { form, widgets } : null;
+}
+
+function stripUnsafeTemplateConfig(config: Record<string, unknown>): Record<string, unknown> {
+  const clean: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(config)) {
+    if (/script|javascript/i.test(key)) continue;
+    if (typeof value === "string" && /^\s*javascript:/i.test(value)) continue;
+    if (Array.isArray(value)) {
+      clean[key] = value.map((item) =>
+        item && typeof item === "object" && !Array.isArray(item)
+          ? stripUnsafeTemplateConfig(item as Record<string, unknown>)
+          : item,
+      );
+    } else if (value && typeof value === "object") {
+      clean[key] = stripUnsafeTemplateConfig(value as Record<string, unknown>);
+    } else {
+      clean[key] = value;
+    }
+  }
+  return clean;
+}
+
+export function createComponentTemplateFromSelection(
+  name: string,
+  category = "Custom",
+): string | null {
+  const selection = selectedWidgetsForTemplate();
+  const trimmedName = name.trim();
+  if (!selection || !trimmedName) {
+    log("Select at least one widget and provide a component name", "warn");
+    return null;
+  }
+  const minX = Math.min(...selection.widgets.map((widget) => widget.x));
+  const minY = Math.min(...selection.widgets.map((widget) => widget.y));
+  const maxX = Math.max(...selection.widgets.map((widget) => widget.x + widget.w));
+  const maxY = Math.max(...selection.widgets.map((widget) => widget.y + widget.h));
+  const template: ComponentTemplate = {
+    id: uid("cmp"),
+    name: trimmedName,
+    category: category.trim() || "Custom",
+    version: "1.0.0",
+    description: `Created from ${selection.widgets.length} widget(s) on ${selection.form.name}`,
+    width: Math.max(1, maxX - minX),
+    height: Math.max(1, maxY - minY),
+    parameter_names: [
+      "objectId",
+      "name",
+      "tagPrefix",
+      "alarmGroup",
+      "location",
+      "deviceId",
+      "baseAddress",
+    ],
+    alarm_templates: [],
+    widgets: selection.widgets.map((widget) => ({
+      ...cloneWidgetDeep(widget),
+      x: widget.x - minX,
+      y: widget.y - minY,
+      group_id: null,
+      config: stripUnsafeTemplateConfig(widget.config ?? {}),
+    })),
+  };
+  project.update((current) => {
+    if (!current) return current;
+    dirty.set(true);
+    return {
+      ...current,
+      component_templates: [...(current.component_templates ?? []), template],
+    };
+  });
+  log(`Component template created: ${template.name} v${template.version}`, "ok");
+  return template.id;
+}
+
+function substituteTemplateValue(
+  value: unknown,
+  parameters: Record<string, string>,
+): unknown {
+  if (typeof value === "string") {
+    return Object.entries(parameters).reduce(
+      (result, [key, replacement]) => result.replaceAll(`{${key}}`, replacement),
+      value,
+    );
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => substituteTemplateValue(item, parameters));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+        key,
+        substituteTemplateValue(item, parameters),
+      ]),
+    );
+  }
+  return value;
+}
+
+function buildComponentInstance(
+  template: ComponentTemplate,
+  x: number,
+  y: number,
+  zStart: number,
+  parameters: Record<string, string>,
+): WidgetDef[] {
+  const instanceGroup = generateUniqueWidgetId().replace("w_", "cmpgrp_");
+  return template.widgets.map((source, index) => ({
+    ...cloneWidgetDeep(source),
+    id: generateUniqueWidgetId(),
+    x: x + source.x,
+    y: y + source.y,
+    z: zStart + index,
+    group_id: instanceGroup,
+    tag_id: source.tag_id
+      ? String(substituteTemplateValue(source.tag_id, parameters))
+      : null,
+    locked: false,
+    config: substituteTemplateValue(
+      stripUnsafeTemplateConfig(source.config ?? {}),
+      parameters,
+    ) as Record<string, unknown>,
+  }));
+}
+
+export function instantiateComponentTemplate(
+  templateId: string,
+  x = 60,
+  y = 60,
+  parameters: Record<string, string> = {},
+): string[] {
+  const current = get(project);
+  const form = get(activeForm);
+  const template = current?.component_templates?.find((item) => item.id === templateId);
+  if (!current || !form || !template) {
+    log(`Component template not found: ${templateId}`, "err");
+    return [];
+  }
+  const widgets = buildComponentInstance(
+    template,
+    x,
+    y,
+    form.widgets.length + 1,
+    parameters,
+  );
+  project.update((value) => {
+    if (!value) return value;
+    const forms = value.forms.map((item) =>
+      item.id === form.id ? { ...item, widgets: [...item.widgets, ...widgets] } : item,
+    );
+    dirty.set(true);
+    return { ...value, forms };
+  });
+  setSelection(widgets.map((widget) => widget.id), widgets[0]?.id);
+  log(`Instantiated ${template.name}: ${widgets.length} widget(s)`, "ok");
+  return widgets.map((widget) => widget.id);
+}
+
+export function deleteComponentTemplate(templateId: string) {
+  project.update((current) => {
+    if (!current) return current;
+    const templates = (current.component_templates ?? []).filter(
+      (template) => template.id !== templateId,
+    );
+    if (templates.length === (current.component_templates ?? []).length) return current;
+    dirty.set(true);
+    return { ...current, component_templates: templates };
+  });
+  log(`Component template removed: ${templateId}`, "warn");
+}
+
+interface ComponentPackage {
+  format: "proscada.component";
+  schemaVersion: 1;
+  exportedAt: string;
+  integrity: {
+    algorithm: "SHA-256";
+    digest: string;
+  };
+  template: ComponentTemplate;
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const bytes = new TextEncoder().encode(value);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function validateComponentTemplate(value: unknown): ComponentTemplate {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Component template must be an object");
+  }
+  const candidate = value as Record<string, unknown>;
+  if (
+    typeof candidate.id !== "string" ||
+    typeof candidate.name !== "string" ||
+    typeof candidate.version !== "string" ||
+    !Array.isArray(candidate.widgets)
+  ) {
+    throw new Error("Component template requires id, name, version and widgets[]");
+  }
+  if (candidate.widgets.length === 0 || candidate.widgets.length > 500) {
+    throw new Error("Component template must contain 1..500 widgets");
+  }
+  const ids = new Set<string>();
+  for (const rawWidget of candidate.widgets) {
+    if (!rawWidget || typeof rawWidget !== "object" || Array.isArray(rawWidget)) {
+      throw new Error("Component widgets must be objects");
+    }
+    const widget = rawWidget as WidgetDef;
+    if (!widget.id || ids.has(widget.id)) throw new Error(`Duplicate widget id: ${widget.id}`);
+    if (!getWidgetCatalogItem(widget.widget_type)) {
+      throw new Error(`Unsupported widget type: ${widget.widget_type}`);
+    }
+    if (
+      !Number.isFinite(widget.x) ||
+      !Number.isFinite(widget.y) ||
+      !Number.isFinite(widget.w) ||
+      !Number.isFinite(widget.h) ||
+      widget.w <= 0 ||
+      widget.h <= 0
+    ) {
+      throw new Error(`Invalid geometry for component widget: ${widget.id}`);
+    }
+    const configText = JSON.stringify(widget.config ?? {});
+    if (/javascript:|onClickScriptId|<script/i.test(configText)) {
+      throw new Error(`Executable content is not allowed in component widget: ${widget.id}`);
+    }
+    ids.add(widget.id);
+  }
+  return structuredClone(value) as ComponentTemplate;
+}
+
+export async function exportComponentTemplate(templateId: string) {
+  const template = get(project)?.component_templates?.find((item) => item.id === templateId);
+  if (!template) {
+    log(`Component template not found: ${templateId}`, "err");
+    return;
+  }
+  const serializedTemplate = JSON.stringify(template);
+  const pkg: ComponentPackage = {
+    format: "proscada.component",
+    schemaVersion: 1,
+    exportedAt: new Date().toISOString(),
+    integrity: {
+      algorithm: "SHA-256",
+      digest: await sha256Hex(serializedTemplate),
+    },
+    template,
+  };
+  const { saveTextFile } = await import("$lib/services/fileIo");
+  const safeName = template.name.replace(/[^a-z0-9_-]+/gi, "_");
+  const path = await saveTextFile(
+    `${safeName}-${template.version}.pscctrl`,
+    JSON.stringify(pkg, null, 2),
+    [{ name: "ProSCADA Component", extensions: ["pscctrl", "json"] }],
+  );
+  if (path) log(`Component exported: ${path}`, "ok");
+}
+
+export async function importComponentTemplateFile() {
+  const { openTextFile } = await import("$lib/services/fileIo");
+  const picked = await openTextFile([
+    { name: "ProSCADA Component", extensions: ["pscctrl", "json"] },
+  ]);
+  if (!picked) return;
+  const raw: unknown = JSON.parse(picked.text);
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("Invalid component package");
+  }
+  const pkg = raw as Partial<ComponentPackage>;
+  if (pkg.format !== "proscada.component" || pkg.schemaVersion !== 1) {
+    throw new Error("Unsupported component package format");
+  }
+  if (
+    pkg.integrity?.algorithm !== "SHA-256" ||
+    pkg.integrity.digest !== (await sha256Hex(JSON.stringify(pkg.template)))
+  ) {
+    throw new Error("Component package integrity verification failed");
+  }
+  const template = validateComponentTemplate(pkg.template);
+  project.update((current) => {
+    if (!current) return current;
+    const templates = (current.component_templates ?? []).filter(
+      (item) => item.id !== template.id,
+    );
+    dirty.set(true);
+    return { ...current, component_templates: [...templates, template] };
+  });
+  log(`Component imported: ${template.name} v${template.version}`, "ok");
+}
+
+export function installPumpStationTemplate(): string {
+  const existing = get(project)?.component_templates?.find(
+    (template) => template.id === "builtin-pump-station-2p2f1s",
+  );
+  if (existing) return existing.id;
+  const template: ComponentTemplate = {
+    id: "builtin-pump-station-2p2f1s",
+    name: "Pompownia 2P + 2F + 1S",
+    category: "Pompownie",
+    version: "1.0.0",
+    description: "Dwie pompy, dwa pływaki, sonda hydrostatyczna, alarm roll-up i faceplate.",
+    width: 520,
+    height: 320,
+    parameter_names: ["objectId", "name", "tagPrefix", "alarmGroup", "location"],
+    widgets: [
+      { id: "ps-bg", widget_type: "panel", x: 0, y: 0, w: 520, h: 320, z: 0, tag_id: null, group_id: null, config: { title: "{name}", bgColor: "#ffffff", borderColor: "#94a3b8" } },
+      { id: "ps-p1", widget_type: "process_symbol", x: 20, y: 52, w: 145, h: 115, z: 1, tag_id: "{tagPrefix}.P1_RunFb", group_id: null, config: { variant: "pump", label: "P1" } },
+      { id: "ps-p2", widget_type: "process_symbol", x: 180, y: 52, w: 145, h: 115, z: 2, tag_id: "{tagPrefix}.P2_RunFb", group_id: null, config: { variant: "pump", label: "P2" } },
+      { id: "ps-flo", widget_type: "state_indicator", x: 20, y: 184, w: 145, h: 50, z: 3, tag_id: "{tagPrefix}.FloatLow", group_id: null, config: { title: "FLOAT LOW", variant: "bit" } },
+      { id: "ps-fhi", widget_type: "state_indicator", x: 180, y: 184, w: 145, h: 50, z: 4, tag_id: "{tagPrefix}.FloatHigh", group_id: null, config: { title: "FLOAT HIGH", variant: "bit" } },
+      { id: "ps-level", widget_type: "numeric", x: 345, y: 52, w: 155, h: 70, z: 5, tag_id: "{tagPrefix}.Level", group_id: null, config: { title: "LEVEL", unit: "m", decimals: 2 } },
+      { id: "ps-alarm", widget_type: "alarm_indicator", x: 345, y: 136, w: 155, h: 70, z: 6, tag_id: null, group_id: null, config: { group: "{alarmGroup}", alarms: "[]" } },
+      { id: "ps-faceplate-p1", widget_type: "faceplate", x: 20, y: 248, w: 235, h: 58, z: 7, tag_id: "{tagPrefix}.P1_RunFb", group_id: null, config: { variant: "compact", equipmentName: "P1 · {name}", mode: "AUTO", available: true, permissive: true, local: false, startTagId: "{tagPrefix}.P1_StartCmd", stopTagId: "{tagPrefix}.P1_StopCmd", startValue: 1, stopValue: 1 } },
+      { id: "ps-faceplate-p2", widget_type: "faceplate", x: 265, y: 248, w: 235, h: 58, z: 8, tag_id: "{tagPrefix}.P2_RunFb", group_id: null, config: { variant: "compact", equipmentName: "P2 · {name}", mode: "AUTO", available: true, permissive: true, local: false, startTagId: "{tagPrefix}.P2_StartCmd", stopTagId: "{tagPrefix}.P2_StopCmd", startValue: 1, stopValue: 1 } },
+    ],
+    alarm_templates: [
+      { id: "{objectId}-P1-FAULT", name: "{name} · P1 fault", tag_id: "{tagPrefix}.P1_Fault", group_id: "{alarmGroup}", priority: "high", when_true: true, hi_limit: null, lo_limit: null, deadband: 0, on_delay_ms: 250, off_delay_ms: 500, latching: true, message: "Pump 1 fault — operator action required" },
+      { id: "{objectId}-P2-FAULT", name: "{name} · P2 fault", tag_id: "{tagPrefix}.P2_Fault", group_id: "{alarmGroup}", priority: "high", when_true: true, hi_limit: null, lo_limit: null, deadband: 0, on_delay_ms: 250, off_delay_ms: 500, latching: true, message: "Pump 2 fault — operator action required" },
+      { id: "{objectId}-LOW", name: "{name} · Low level", tag_id: "{tagPrefix}.FloatLow", group_id: "{alarmGroup}", priority: "high", when_true: true, hi_limit: null, lo_limit: null, deadband: 0, on_delay_ms: 500, off_delay_ms: 500, latching: false, message: "Low level / dry-run risk" },
+      { id: "{objectId}-HIGH", name: "{name} · High level", tag_id: "{tagPrefix}.FloatHigh", group_id: "{alarmGroup}", priority: "high", when_true: true, hi_limit: null, lo_limit: null, deadband: 0, on_delay_ms: 500, off_delay_ms: 500, latching: false, message: "High wet-well level" },
+      { id: "{objectId}-HH", name: "{name} · High-high level", tag_id: "{tagPrefix}.Level", group_id: "{alarmGroup}", priority: "critical", when_true: false, hi_limit: 95, lo_limit: null, deadband: 2, on_delay_ms: 500, off_delay_ms: 1000, latching: true, message: "High-high level — immediate response required" },
+    ],
+  };
+  project.update((current) => {
+    if (!current) return current;
+    dirty.set(true);
+    return {
+      ...current,
+      component_templates: [...(current.component_templates ?? []), template],
+    };
+  });
+  log(`Installed component template: ${template.name}`, "ok");
+  return template.id;
+}
+
+function parseCsvLine(line: string): string[] {
+  const cells: string[] = [];
+  let value = "";
+  let quoted = false;
+  for (let index = 0; index < line.length; index++) {
+    const char = line[index];
+    if (char === '"') {
+      if (quoted && line[index + 1] === '"') {
+        value += '"';
+        index++;
+      } else {
+        quoted = !quoted;
+      }
+    } else if (char === "," && !quoted) {
+      cells.push(value.trim());
+      value = "";
+    } else {
+      value += char;
+    }
+  }
+  cells.push(value.trim());
+  if (quoted) throw new Error("Unclosed CSV quote");
+  return cells;
+}
+
+function pumpStationTags(
+  parameters: Record<string, string>,
+  current: ScadaProject,
+): TagDefinition[] {
+  const prefix = parameters.tagPrefix;
+  const deviceId = parameters.deviceId;
+  const baseAddress = Number(parameters.baseAddress);
+  if (!deviceId) throw new Error(`${parameters.objectId}: deviceId is required`);
+  if (!current.devices.some((device) => device.id === deviceId)) {
+    throw new Error(`${parameters.objectId}: deviceId ${deviceId} does not exist`);
+  }
+  if (!Number.isInteger(baseAddress) || baseAddress < 0 || baseAddress > 65520) {
+    throw new Error(`${parameters.objectId}: baseAddress must be an integer 0..65520`);
+  }
+  const boolTag = (
+    suffix: string,
+    name: string,
+    address: number,
+    bit: number,
+    writable = false,
+  ): TagDefinition => ({
+    id: `${prefix}.${suffix}`,
+    name: `${parameters.name} · ${name}`,
+    device_id: deviceId,
+    data_type: "bool",
+    binding: {
+      address,
+      bit,
+      table: "holding",
+      writable,
+      bit_write_mode: "mask_write",
+      single_writer: false,
+      verify_readback: !writable,
+    },
+    unit: "",
+    description: `${parameters.objectId} ${name}`,
+    scale: 1,
+    offset: 0,
+    decimals: 0,
+  });
+  return [
+    boolTag("P1_RunFb", "P1 run feedback", baseAddress, 0),
+    boolTag("P2_RunFb", "P2 run feedback", baseAddress, 1),
+    boolTag("P1_Fault", "P1 fault", baseAddress, 2),
+    boolTag("P2_Fault", "P2 fault", baseAddress, 3),
+    boolTag("FloatLow", "Low float", baseAddress, 4),
+    boolTag("FloatHigh", "High float", baseAddress, 5),
+    boolTag("P1_StartCmd", "P1 start command", baseAddress + 2, 0, true),
+    boolTag("P1_StopCmd", "P1 stop command", baseAddress + 2, 1, true),
+    boolTag("P2_StartCmd", "P2 start command", baseAddress + 2, 2, true),
+    boolTag("P2_StopCmd", "P2 stop command", baseAddress + 2, 3, true),
+    {
+      id: `${prefix}.Level`,
+      name: `${parameters.name} · Level`,
+      device_id: deviceId,
+      data_type: "u16",
+      binding: { address: baseAddress + 1, table: "holding", writable: false },
+      unit: "m",
+      description: `${parameters.objectId} hydrostatic level`,
+      scale: 0.01,
+      offset: 0,
+      decimals: 2,
+    },
+  ];
+}
+
+function appendAlarmGroupPath(
+  path: string,
+  objectId: string,
+  groups: AlarmGroupDefinition[],
+): void {
+  const segments = path.split("/").map((segment) => segment.trim()).filter(Boolean);
+  let parentId: string | null = null;
+  let fullPath = "";
+  for (const segment of segments) {
+    fullPath = fullPath ? `${fullPath}/${segment}` : segment;
+    if (!groups.some((group) => group.id === fullPath)) {
+      groups.push({
+        id: fullPath,
+        name: segment,
+        parent_id: parentId,
+        object_id: fullPath === path ? objectId : null,
+        description: fullPath === path ? `Generated component alarm group for ${objectId}` : "",
+      });
+    }
+    parentId = fullPath;
+  }
+}
+
+export function bulkInstantiateComponentTemplate(templateId: string, csv: string): number {
+  const current = get(project);
+  const form = get(activeForm);
+  const template = current?.component_templates?.find((item) => item.id === templateId);
+  if (!current || !form || !template) throw new Error("Component template or active form missing");
+  const lines = csv.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (lines.length < 2) throw new Error("CSV requires a header and at least one data row");
+  if (lines.length > 501) throw new Error("Bulk import is limited to 500 objects");
+  const headers = parseCsvLine(lines[0]);
+  const required = ["objectId", "name", "tagPrefix", "alarmGroup", "location"];
+  if (template.id === "builtin-pump-station-2p2f1s") {
+    required.push("deviceId", "baseAddress");
+  }
+  for (const header of required) {
+    if (!headers.includes(header)) throw new Error(`CSV missing required column: ${header}`);
+  }
+  const objectIds = new Set<string>();
+  const allWidgets: WidgetDef[] = [];
+  const nextGroups = structuredClone(current.alarm_groups ?? []);
+  const nextAlarms = structuredClone(current.alarms);
+  const nextTags = structuredClone(current.tags);
+  const existingTagIds = new Set(nextTags.map((tag) => tag.id));
+  const existingAlarmIds = new Set(nextAlarms.map((alarm) => alarm.id));
+  const occupiedHoldingAddresses = new Set(
+    current.tags
+      .filter((tag) => tag.binding.table === "holding")
+      .map((tag) => `${tag.device_id}:${tag.binding.address}`),
+  );
+  for (let rowIndex = 1; rowIndex < lines.length; rowIndex++) {
+    const cells = parseCsvLine(lines[rowIndex]);
+    if (cells.length !== headers.length) {
+      throw new Error(`CSV row ${rowIndex + 1} has ${cells.length} cells; expected ${headers.length}`);
+    }
+    const parameters = Object.fromEntries(headers.map((header, index) => [header, cells[index]]));
+    if (!parameters.objectId) throw new Error(`CSV row ${rowIndex + 1}: objectId is required`);
+    if (objectIds.has(parameters.objectId)) {
+      throw new Error(`CSV row ${rowIndex + 1}: duplicate objectId ${parameters.objectId}`);
+    }
+    objectIds.add(parameters.objectId);
+    appendAlarmGroupPath(parameters.alarmGroup, parameters.objectId, nextGroups);
+    if (template.id === "builtin-pump-station-2p2f1s") {
+      const generatedTags = pumpStationTags(parameters, current);
+      const generatedAddresses = new Set(
+        generatedTags.map((tag) => `${tag.device_id}:${tag.binding.address}`),
+      );
+      for (const address of generatedAddresses) {
+        if (occupiedHoldingAddresses.has(address)) {
+          throw new Error(`CSV row ${rowIndex + 1}: physical holding address collision ${address}`);
+        }
+        occupiedHoldingAddresses.add(address);
+      }
+      for (const tag of generatedTags) {
+        if (existingTagIds.has(tag.id)) {
+          throw new Error(`CSV row ${rowIndex + 1}: duplicate generated tag ${tag.id}`);
+        }
+        existingTagIds.add(tag.id);
+        nextTags.push(tag);
+      }
+    }
+    for (const alarmTemplate of template.alarm_templates ?? []) {
+      const alarm = substituteTemplateValue(
+        structuredClone(alarmTemplate),
+        parameters,
+      ) as AlarmDefinition;
+      if (existingAlarmIds.has(alarm.id)) {
+        throw new Error(`CSV row ${rowIndex + 1}: duplicate generated alarm ${alarm.id}`);
+      }
+      existingAlarmIds.add(alarm.id);
+      nextAlarms.push(alarm);
+    }
+    const instanceIndex = rowIndex - 1;
+    const column = instanceIndex % 4;
+    const row = Math.floor(instanceIndex / 4);
+    allWidgets.push(
+      ...buildComponentInstance(
+        template,
+        40 + column * (template.width + 24),
+        40 + row * (template.height + 24),
+        form.widgets.length + allWidgets.length + 1,
+        parameters,
+      ),
+    );
+  }
+  project.update((value) => {
+    if (!value) return value;
+    dirty.set(true);
+    const objectCount = lines.length - 1;
+    const requiredWidth = 80 + Math.min(4, objectCount) * (template.width + 24);
+    const requiredHeight = 80 + Math.ceil(objectCount / 4) * (template.height + 24);
+    return {
+      ...value,
+      tags: nextTags,
+      alarms: nextAlarms,
+      alarm_groups: nextGroups,
+      forms: value.forms.map((item) =>
+        item.id === form.id
+          ? {
+              ...item,
+              width: Math.max(item.width, requiredWidth),
+              height: Math.max(item.height, requiredHeight),
+              widgets: [...item.widgets, ...allWidgets],
+            }
+          : item,
+      ),
+    };
+  });
+  log(`Bulk instantiated ${lines.length - 1} × ${template.name}`, "ok");
+  return lines.length - 1;
 }
 
 export function deleteSelectedWidget() {
@@ -812,16 +1403,18 @@ export function moveSelectedWidgets(dx: number, dy: number) {
   });
 }
 
-export async function persistProject() {
+export async function persistProject(): Promise<boolean> {
   const p = get(project);
-  if (!p) return;
+  if (!p) return false;
   try {
     const saved = await api.saveProject(p);
     project.set(saved);
     dirty.set(false);
     log("Project saved (in-memory + hash recomputed)", "ok");
+    return true;
   } catch (e) {
     log(`Save failed: ${e}`, "err");
+    return false;
   }
 }
 

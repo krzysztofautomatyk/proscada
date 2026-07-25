@@ -6,9 +6,9 @@ mod project;
 
 use std::sync::Arc;
 
+use audit::AuditLog;
 use commands::AppState;
 use engine::Engine;
-use audit::AuditLog;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import type { LeftPanelTab } from "$lib/types";
   import {
     mode,
     activeForm,
@@ -29,8 +30,8 @@
   } from "$lib/stores/app";
 
   interface Props {
-    leftTab: "solution" | "toolbox" | "objects";
-    onLeftTab: (tab: "solution" | "toolbox" | "objects") => void;
+    leftTab: LeftPanelTab;
+    onLeftTab: (tab: LeftPanelTab) => void;
     onNewWaterTank: () => void;
   }
 
@@ -238,6 +239,33 @@
               onclick={() => run(() => onLeftTab("objects"))}
             >
               <span>Document Outline</span>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              class:checked={design && leftTab === "designSystem"}
+              disabled={!design}
+              onclick={() => run(() => onLeftTab("designSystem"))}
+            >
+              <span>Project Styles / Fonts / Animations</span>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              class:checked={design && leftTab === "components"}
+              disabled={!design}
+              onclick={() => run(() => onLeftTab("components"))}
+            >
+              <span>Component Library</span>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              class:checked={design && leftTab === "alarms"}
+              disabled={!design}
+              onclick={() => run(() => onLeftTab("alarms"))}
+            >
+              <span>Central Alarm Manager</span>
             </button>
             <div class="vs-menu-sep"></div>
             <button

@@ -1,5 +1,13 @@
 export type Role = "viewer" | "operator" | "engineer" | "administrator";
 
+export type LeftPanelTab =
+  | "solution"
+  | "toolbox"
+  | "objects"
+  | "designSystem"
+  | "components"
+  | "alarms";
+
 export type Quality = "good" | "uncertain" | "bad";
 
 export type AlarmPriority = "low" | "medium" | "high" | "critical";
@@ -26,6 +34,9 @@ export interface TagBinding {
   bit?: number | null;
   table: "holding" | "input" | "coil" | "discrete";
   writable?: boolean;
+  bit_write_mode?: "mask_write" | "read_modify_write";
+  single_writer?: boolean;
+  verify_readback?: boolean;
 }
 
 export interface TagDefinition {
@@ -69,11 +80,74 @@ export interface AlarmDefinition {
   id: string;
   name: string;
   tag_id: string;
+  group_id?: string;
   priority: AlarmPriority;
   when_true: boolean;
   hi_limit?: number | null;
   lo_limit?: number | null;
+  deadband?: number;
+  on_delay_ms?: number;
+  off_delay_ms?: number;
+  latching?: boolean;
   message: string;
+}
+
+export interface AlarmGroupDefinition {
+  id: string;
+  name: string;
+  parent_id?: string | null;
+  object_id?: string | null;
+  description?: string;
+}
+
+export interface ProjectFontToken {
+  id: string;
+  name: string;
+  family: string;
+  fallback: string;
+  size: number;
+  weight: string;
+  lineHeight: number;
+}
+
+export interface ProjectStyleClass {
+  id: string;
+  name: string;
+  target: string;
+  surface: string;
+  text: string;
+  accent: string;
+  border: string;
+}
+
+export type AnimationKind = "none" | "pulse" | "rotate" | "fade" | "slide";
+
+export interface ProjectAnimationPreset {
+  id: string;
+  name: string;
+  kind: AnimationKind;
+  durationMs: number;
+  easing: string;
+}
+
+export interface ProjectDesignSystem {
+  version: number;
+  fonts: ProjectFontToken[];
+  styles: ProjectStyleClass[];
+  animations: ProjectAnimationPreset[];
+}
+
+export interface ComponentTemplate {
+  id: string;
+  name: string;
+  category: string;
+  version: string;
+  description: string;
+  width: number;
+  height: number;
+  widgets: WidgetDef[];
+  parameter_names: string[];
+  alarm_templates?: AlarmDefinition[];
 }
 
 /** Solution Explorer node kinds (VS-style project tree). */
@@ -110,6 +184,9 @@ export interface ScadaProject {
   tags: TagDefinition[];
   forms: FormDef[];
   alarms: AlarmDefinition[];
+  alarm_groups?: AlarmGroupDefinition[];
+  design_system?: ProjectDesignSystem;
+  component_templates?: ComponentTemplate[];
   /** Hierarchical Solution Explorer items (folders, screens, scripts, docs). */
   tree?: ProjectNode[];
   content_hash: string;
@@ -130,7 +207,10 @@ export interface AlarmInstance {
   name: string;
   message: string;
   priority: AlarmPriority;
+  group_id?: string;
   state: AlarmState;
+  source_active?: boolean;
+  latched?: boolean;
   active_since?: string | null;
   last_change: string;
 }
@@ -159,360 +239,3 @@ export interface AuditEntry {
   prev_hash: string;
   hash: string;
 }
-
-export interface WidgetCatalogItem {
-  type: string;
-  label: string;
-  category: string;
-  icon: string;
-  defaultW: number;
-  defaultH: number;
-  defaultConfig: Record<string, unknown>;
-}
-
-export const WIDGET_CATALOG: WidgetCatalogItem[] = [
-  // Display & Text
-  {
-    type: "label",
-    label: "Label",
-    category: "Display",
-    icon: "T",
-    defaultW: 180,
-    defaultH: 32,
-    defaultConfig: {
-      text: "Label",
-      fontFamily: "Segoe UI, system-ui, sans-serif",
-      fontSize: 14,
-      fontWeight: "normal",
-      fontStyle: "normal",
-      textColor: "#1f2937",
-      bgColor: "transparent",
-      borderColor: "transparent",
-      borderWidth: 0,
-      borderRadius: 0,
-      align: "left",
-      vAlign: "center",
-      // Generic dynamics (blink / marquee / visibility)
-      blinkMode: "none",
-      blinkTagId: "",
-      blinkBit: 0,
-      blinkVal: 1,
-      blinkSpeedMs: 600,
-      scrollMode: "none",
-      scrollTagId: "",
-      scrollBit: 0,
-      scrollVal: 1,
-      scrollSpeedSec: 8,
-      scrollDir: "left",
-      visibilityMode: "always",
-      visibilityTagId: "",
-      visibilityBit: 0,
-      visibilityVal: 1,
-    },
-  },
-  {
-    type: "numeric",
-    label: "Numeric Display",
-    category: "Display",
-    icon: "#",
-    defaultW: 160,
-    defaultH: 56,
-    defaultConfig: {
-      title: "Value",
-      decimals: 0,
-      unit: "cm",
-      bgColor: "#ffffff",
-      textColor: "#1f2937",
-    },
-  },
-  {
-    type: "status_badge",
-    label: "Status Badges",
-    category: "Display",
-    icon: "🏷️",
-    defaultW: 240,
-    defaultH: 36,
-    defaultConfig: { simEn: true, frozen: false },
-  },
-  {
-    type: "shape",
-    label: "Shape (Rounded Box)",
-    category: "Display",
-    icon: "▢",
-    defaultW: 180,
-    defaultH: 120,
-    defaultConfig: {
-      title: "",
-      borderRadius: 10,
-      bgColor: "#ffffff",
-      borderColor: "#e5e7eb",
-      borderWidth: 1,
-      borderStyle: "solid",
-    },
-  },
-  {
-    type: "image",
-    label: "Image / Icon",
-    category: "Display",
-    icon: "🖼️",
-    defaultW: 120,
-    defaultH: 120,
-    defaultConfig: {
-      src: "",
-      fit: "contain",
-      alt: "Pump Graphic",
-      borderRadius: 0,
-      bgColor: "transparent",
-      borderColor: "transparent",
-      borderWidth: 0,
-      borderStyle: "none",
-      blinkMode: "none",
-      visibilityMode: "always",
-    },
-  },
-  {
-    type: "line",
-    label: "Line / Arrow",
-    category: "Display",
-    icon: "／",
-    defaultW: 200,
-    defaultH: 80,
-    defaultConfig: {
-      // endpoints in % of bounding box (0–100)
-      x1: 8,
-      y1: 50,
-      x2: 92,
-      y2: 50,
-      stroke: "#1f2937",
-      strokeWidth: 2.5,
-      lineStyle: "solid", // solid | dashed | dotted | dashdot | longdash
-      startCap: "none", // none | arrow | open-arrow | circle | square | diamond | bar
-      endCap: "arrow",
-      capSize: 12,
-      // dynamics
-      blinkMode: "none",
-      blinkTagId: "",
-      blinkBit: 0,
-      blinkVal: 1,
-      blinkSpeedMs: 600,
-      visibilityMode: "always",
-      visibilityTagId: "",
-      visibilityBit: 0,
-      visibilityVal: 1,
-    },
-  },
-  {
-    type: "bool_display",
-    label: "Bool Display",
-    category: "Display",
-    icon: "🔘",
-    defaultW: 160,
-    defaultH: 44,
-    defaultConfig: {
-      label: "BOOL STATUS",
-      trueLabel: "ON",
-      falseLabel: "OFF",
-      trueColor: "#16a34a",
-      falseColor: "#9ca3af",
-    },
-  },
-  {
-    type: "panel",
-    label: "Group Panel",
-    category: "Display",
-    icon: "▭",
-    defaultW: 240,
-    defaultH: 160,
-    defaultConfig: { title: "PANEL", bgColor: "#ffffff", borderColor: "#e5e7eb" },
-  },
-
-  // Containers & Sub-screens
-  {
-    type: "embedded_screen",
-    label: "Embedded Screen / Faceplate",
-    category: "Containers",
-    icon: "🔲",
-    defaultW: 320,
-    defaultH: 240,
-    defaultConfig: {
-      target_form_id: "",
-      tag_prefix: "PUMP1_",
-      tag_overrides: {},
-      scale_mode: "fit",
-      bgColor: "transparent",
-      borderColor: "#9ca3af",
-      borderWidth: 1,
-      borderStyle: "dashed",
-    },
-  },
-
-  // Indicators & Alarms
-  {
-    type: "lamp",
-    label: "Indicator Lamp",
-    category: "Indicators & Alarms",
-    icon: "●",
-    defaultW: 120,
-    defaultH: 44,
-    defaultConfig: {
-      title: "STATE",
-      onColor: "#16a34a",
-      offColor: "#9ca3af",
-      onLabel: "ON",
-      offLabel: "OFF",
-      blink: false,
-    },
-  },
-  {
-    type: "alarm_panel",
-    label: "Alarm Panel",
-    category: "Indicators & Alarms",
-    icon: "🔔",
-    defaultW: 320,
-    defaultH: 200,
-    defaultConfig: { title: "Alarms" },
-  },
-
-  // Gauges & Synoptic
-  {
-    type: "tank",
-    label: "2D Tank Level",
-    category: "Gauges & Synoptic",
-    icon: "▣",
-    defaultW: 120,
-    defaultH: 220,
-    defaultConfig: {
-      title: "LEVEL",
-      min: 0,
-      max: 1000,
-      unit: "cm",
-      fillColor: "#39b7e6",
-      warn: 700,
-      alarm: 850,
-      showValue: true,
-      bgColor: "#ffffff",
-    },
-  },
-  {
-    type: "bar",
-    label: "Bar Graph",
-    category: "Gauges & Synoptic",
-    icon: "▬",
-    defaultW: 200,
-    defaultH: 40,
-    defaultConfig: {
-      title: "BAR",
-      min: 0,
-      max: 100,
-      fillColor: "#16a34a",
-      bgColor: "#ffffff",
-    },
-  },
-  {
-    type: "iso_water_tank",
-    label: "Iso Water Tank",
-    category: "Gauges & Synoptic",
-    icon: "🛢️",
-    defaultW: 360,
-    defaultH: 300,
-    defaultConfig: { label: "Water Tank Cutaway" },
-  },
-  {
-    type: "iso_pump",
-    label: "Iso Pump",
-    category: "Gauges & Synoptic",
-    icon: "⚙️",
-    defaultW: 160,
-    defaultH: 140,
-    defaultConfig: { pumpName: "PUMP 1" },
-  },
-  {
-    type: "iso_pipe",
-    label: "Iso Pipe Segment",
-    category: "Gauges & Synoptic",
-    icon: "🔍",
-    defaultW: 260,
-    defaultH: 70,
-    defaultConfig: { label: "Inlet Pipe" },
-  },
-  {
-    type: "iso_terrain",
-    label: "Iso Terrain Cutaway",
-    category: "Gauges & Synoptic",
-    icon: "🏞️",
-    defaultW: 400,
-    defaultH: 180,
-    defaultConfig: { label: "Soil & Grass Cutaway" },
-  },
-
-  // Process Controls
-  {
-    type: "write_button",
-    label: "Write Button",
-    category: "Process Controls",
-    icon: "▶",
-    defaultW: 140,
-    defaultH: 36,
-    defaultConfig: {
-      label: "WRITE",
-      confirm: true,
-      valueKind: "number",
-      writeValue: 0,
-      bgColor: "#1f2937",
-      textColor: "#fff",
-    },
-  },
-  {
-    type: "numeric_input",
-    label: "Numeric Input Stepper",
-    category: "Process Controls",
-    icon: "🔢",
-    defaultW: 200,
-    defaultH: 64,
-    defaultConfig: {
-      title: "SP VALUE",
-      step: 10,
-      min: 0,
-      max: 1000,
-      unit: "cm",
-      labelColor: "#16a34a",
-    },
-  },
-  {
-    type: "setpoint_control",
-    label: "Setpoints Controller",
-    category: "Process Controls",
-    icon: "🎛️",
-    defaultW: 280,
-    defaultH: 230,
-    defaultConfig: { title: "Setpoints" },
-  },
-  {
-    type: "inflow_control",
-    label: "Inflow K Controller",
-    category: "Process Controls",
-    icon: "🚰",
-    defaultW: 240,
-    defaultH: 120,
-    defaultConfig: { title: "Inflow K" },
-  },
-  {
-    type: "process_control",
-    label: "Process Freeze Controller",
-    category: "Process Controls",
-    icon: "⏸️",
-    defaultW: 260,
-    defaultH: 120,
-    defaultConfig: { title: "Process Freeze" },
-  },
-  {
-    type: "metrics_panel",
-    label: "Metrics Overview Bar",
-    category: "Process Controls",
-    icon: "📊",
-    defaultW: 600,
-    defaultH: 80,
-    defaultConfig: { title: "Metrics Overview" },
-  },
-];
-

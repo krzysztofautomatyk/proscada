@@ -64,6 +64,14 @@ export const VISIBILITY_FIELDS: ConditionFields = {
   defaultMode: "always",
 };
 
+export const ANIMATION_FIELDS: ConditionFields = {
+  modeKey: "animationMode",
+  tagKey: "animationTagId",
+  bitKey: "animationBit",
+  valKey: "animationVal",
+  defaultMode: "none",
+};
+
 export function evaluateCondition(
   mode: ConditionMode | string | undefined,
   tagId: string | null | undefined,
@@ -152,6 +160,14 @@ export function isWidgetVisible(
   return readCondition(config, VISIBILITY_FIELDS, tagMap, mainTagId);
 }
 
+export function isWidgetAnimating(
+  config: Record<string, unknown>,
+  tagMap: Map<string, TagValue>,
+  mainTagId?: string | null,
+): boolean {
+  return readCondition(config, ANIMATION_FIELDS, tagMap, mainTagId);
+}
+
 /** Default dynamics keys for any new widget catalog entry. */
 export function defaultDynamicsConfig(): Record<string, unknown> {
   return {
@@ -170,6 +186,11 @@ export function defaultDynamicsConfig(): Record<string, unknown> {
     visibilityTagId: "",
     visibilityBit: 0,
     visibilityVal: 1,
+    animationPresetId: "anim-none",
+    animationMode: "none",
+    animationTagId: "",
+    animationBit: 0,
+    animationVal: 1,
   };
 }
 

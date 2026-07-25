@@ -1,11 +1,22 @@
 <script lang="ts">
-  import { WIDGET_CATALOG } from "$lib/types";
-  import { addCatalogWidget } from "$lib/stores/app";
+  import {
+    CANONICAL_WIDGETS,
+    TOOLBOX_CATEGORIES,
+    WIDGET_CATALOG,
+  } from "$lib/components/widgets/registry";
+  import {
+    addCatalogWidget,
+    instantiateComponentTemplate,
+    project,
+  } from "$lib/stores/app";
+  import VerticalScrollControls from "./VerticalScrollControls.svelte";
 
   const FAVORITES_KEY = "proscada.toolbox.favorites";
   const COLLAPSED_KEY = "proscada.toolbox.collapsed";
 
-  const categories = [...new Set(WIDGET_CATALOG.map((w) => w.category))];
+  const categories = TOOLBOX_CATEGORIES.filter((category) =>
+    WIDGET_CATALOG.some((widget) => widget.category === category),
+  );
 
   function loadJson<T>(key: string, fallback: T): T {
     try {
@@ -29,12 +40,14 @@
   let dragStartPos = $state({ x: 0, y: 0 });
   let isDragging = $state(false);
   let dragGhostEl = $state<HTMLDivElement | null>(null);
+  let scrollContainer = $state<HTMLDivElement | null>(null);
 
   const favoriteItems = $derived(
     favorites
       .map((type) => WIDGET_CATALOG.find((w) => w.type === type))
       .filter((w): w is (typeof WIDGET_CATALOG)[number] => !!w)
   );
+  const componentTemplates = $derived($project?.component_templates ?? []);
 
   function persistFavorites() {
     localStorage.setItem(FAVORITES_KEY, JSON.stringify(favorites));
@@ -146,8 +159,14 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="panel" style:height="100%;border:none" onpointermove={onPointerMove}>
-  <div class="panel-header">Toolbox (Click + or Drag)</div>
-  <div class="panel-body">
+  <div class="panel-header">
+    <span>Toolbox (Click + or Drag)</span>
+    <div class="header-actions">
+      <span class="catalog-total">{CANONICAL_WIDGETS.length}/35</span>
+      <VerticalScrollControls target={scrollContainer} />
+    </div>
+  </div>
+  <div class="panel-body scrollable-panel-body" bind:this={scrollContainer}>
     <!-- Favorites (always first) -->
     <button
       type="button"
@@ -171,7 +190,7 @@
             class="toolbox-item"
             onpointerdown={(e) => onPointerDown(e, item.type)}
             onpointerup={onPointerUp}
-            title="Click to add or drag onto canvas"
+            title={`${item.canonicalId} · ${item.description}`}
             role="button"
             tabindex="0"
           >
@@ -204,6 +223,36 @@
       {/if}
     {/if}
 
+    <button
+      type="button"
+      class="tree-group collapsible"
+      class:collapsed={isCollapsed("Custom Components")}
+      onclick={() => toggleCollapsed("Custom Components")}
+      aria-expanded={!isCollapsed("Custom Components")}
+    >
+      <span class="chevron">{isCollapsed("Custom Components") ? "▸" : "▾"}</span>
+      <span>◆ Custom Components</span>
+      <span class="count">{componentTemplates.length}</span>
+    </button>
+    {#if !isCollapsed("Custom Components")}
+      {#each componentTemplates as component (component.id)}
+        <div class="toolbox-item custom-component" title={`${component.description} · v${component.version}`}>
+          <span class="icon">◆</span>
+          <span class="item-label">{component.name}</span>
+          <button
+            type="button"
+            class="btn-quick-add"
+            title="Add {component.name}"
+            onclick={() => instantiateComponentTemplate(component.id)}
+          >
+            +
+          </button>
+        </div>
+      {:else}
+        <div class="empty-favorites">Use Components to create or import reusable controls</div>
+      {/each}
+    {/if}
+
     {#each categories as cat}
       <button
         type="button"
@@ -224,7 +273,7 @@
             class="toolbox-item"
             onpointerdown={(e) => onPointerDown(e, item.type)}
             onpointerup={onPointerUp}
-            title="Click to add or drag onto canvas"
+            title={`${item.canonicalId} · ${item.description}`}
             role="button"
             tabindex="0"
           >
@@ -276,6 +325,22 @@
     letter-spacing: 0.04em;
     cursor: pointer;
     text-align: left;
+  }
+  .panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .catalog-total {
+    color: #86efac;
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+  }
+  .header-actions {
+    display: flex;
+    align-items: center;
+    gap: 5px;
   }
   .tree-group.collapsible:hover {
     color: var(--vs-text, #cccccc);

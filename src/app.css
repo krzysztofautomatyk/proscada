@@ -215,6 +215,35 @@ textarea:focus {
   min-height: 0;
 }
 
+.scrollable-panel-body {
+  overflow-x: hidden;
+  overflow-y: scroll;
+  overscroll-behavior: contain;
+  scrollbar-color: #6b7280 #1e1e1e;
+  scrollbar-gutter: stable;
+  scrollbar-width: auto;
+}
+
+.scrollable-panel-body::-webkit-scrollbar {
+  width: 14px;
+}
+
+.scrollable-panel-body::-webkit-scrollbar-track {
+  background: #1e1e1e;
+  border-left: 1px solid #333;
+}
+
+.scrollable-panel-body::-webkit-scrollbar-thumb {
+  min-height: 36px;
+  border: 3px solid #1e1e1e;
+  border-radius: 8px;
+  background: #6b7280;
+}
+
+.scrollable-panel-body::-webkit-scrollbar-thumb:hover {
+  background: #9ca3af;
+}
+
 .solution {
   grid-row: 1;
   grid-column: 1;

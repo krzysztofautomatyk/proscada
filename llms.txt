@@ -1,0 +1,28 @@
+# ProScada
+
+> High-assurance SCADA Designer and Runtime built with Tauri v2, Rust, Svelte 5 and Modbus TCP.
+
+## Start here
+
+- [Repository agent instructions](AGENTS.md)
+- [Documentation index](docs/README.md)
+- [AI work guide](docs/ai/README.md)
+- [Skills catalog](.github/skills/README.md)
+- [Architecture](docs/architecture/overview.md)
+- [Toolbox 45/45](docs/toolbox/README.md)
+
+## Critical invariants
+
+- Designer never writes process values.
+- Backend checks Runtime, role, writable and Good quality.
+- Holding-register bits are 0..15, bit 0 is LSB.
+- Prefer FC22; RMW requires single-writer ownership.
+- UI transport feedback is not process confirmation.
+- Alarm state belongs to the Rust engine.
+- PLC retains watchdog, interlock and safety logic.
+
+## Validation
+
+`npm run check && npm run validate:widgets && npm run validate:docs && npm run validate:ai && npm run build`
+
+`cargo test --manifest-path src-tauri/Cargo.toml`

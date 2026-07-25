@@ -4,10 +4,18 @@
   "private": true,
   "description": "ProScada — high-assurance SCADA designer & runtime with Modbus TCP master",
   "license": "MIT",
+  "engines": {
+    "node": ">=22 <23"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "validate:widgets": "node scripts/validate-widget-catalog.mjs",
+    "validate:docs": "node scripts/validate-docs.mjs",
+    "validate:ai": "node scripts/validate-ai-config.mjs",
+    "validate:yaml": "node scripts/validate-yaml.mjs",
+    "test:pump-template": "tsx --test src/lib/stores/pumpStationTemplate.test.ts",
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "tauri": "tauri",
@@ -17,16 +25,20 @@
   "dependencies": {
     "@tauri-apps/api": "^2.2.0",
     "@tauri-apps/plugin-dialog": "^2.7.2",
-    "@tauri-apps/plugin-fs": "^2.5.1"
+    "@tauri-apps/plugin-fs": "^2.5.1",
+    "qrcode": "^1.5.4"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^5.0.3",
-    "@tauri-apps/cli": "^2.2.0",
+    "@tauri-apps/cli": "^2.11.4",
     "@tsconfig/svelte": "^5.0.4",
     "@types/node": "^22.10.0",
+    "@types/qrcode": "^1.5.6",
     "svelte": "^5.19.0",
     "svelte-check": "^4.1.4",
+    "tsx": "^4.23.1",
     "typescript": "^5.7.3",
-    "vite": "^6.0.7"
+    "vite": "^6.0.7",
+    "yaml": "^2.9.0"
   }
 }
