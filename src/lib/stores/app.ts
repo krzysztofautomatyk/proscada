@@ -1590,6 +1590,85 @@ export function addProjectDocument(
   return id;
 }
 
+export function addProjectImage(
+  name: string,
+  contentDataUrl: string,
+  parentId: string | null = null,
+) {
+  let id = "";
+  let isUpdate = false;
+  project.update((p) => {
+    if (!p) return p;
+    const normalized = ensureProjectTree(p);
+    let tree = [...(normalized.tree ?? [])];
+
+    let targetParent = parentId;
+    if (!targetParent) {
+      const imagesFolder = tree.find(
+        (n) => n.kind === "folder" && n.parent_id === null && n.name.toLowerCase() === "images",
+      );
+      if (imagesFolder) targetParent = imagesFolder.id;
+    }
+
+    const existing = tree.find(
+      (n) => n.parent_id === targetParent && n.name.toLowerCase() === name.toLowerCase(),
+    );
+
+    if (existing) {
+      id = existing.id;
+      isUpdate = true;
+      tree = tree.map((n) => (n.id === existing.id ? { ...n, content: contentDataUrl } : n));
+    } else {
+      id = uid("img");
+      tree.push({
+        id,
+        parent_id: targetParent,
+        kind: "image",
+        name,
+        order: nextOrder(tree, targetParent),
+        content: contentDataUrl,
+      });
+    }
+
+    dirty.set(true);
+    return { ...normalized, tree };
+  });
+  if (id) {
+    selectedNodeId.set(id);
+    log(isUpdate ? `Updated image: ${name}` : `Added image: ${name}`, "ok");
+  }
+  return id;
+}
+
+export async function importImageFiles(
+  files: FileList | File[],
+  parentId: string | null = null,
+): Promise<string[]> {
+  const ids: string[] = [];
+  for (const file of Array.from(files)) {
+    if (!file) continue;
+    const isImage = file.type.startsWith("image/") || /\.(svg|png|jpg|jpeg|gif|webp)$/i.test(file.name);
+    if (!isImage) continue;
+
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result ?? ""));
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+
+      if (dataUrl) {
+        const id = addProjectImage(file.name, dataUrl, parentId);
+        ids.push(id);
+      }
+    } catch {
+      /* skipped corrupt file */
+    }
+  }
+  return ids;
+}
+
 export function updateProjectNode(id: string, patch: Partial<ProjectNode>) {
   project.update((p) => {
     if (!p?.tree) return p;
@@ -1660,6 +1739,21 @@ export function deleteProjectNode(nodeId: string) {
 export function renameProjectNode(nodeId: string, name: string) {
   const trimmed = name.trim();
   if (!trimmed) return;
+
+  const p = get(project);
+  if (p?.tree) {
+    const cur = p.tree.find((n) => n.id === nodeId);
+    if (cur) {
+      const duplicate = p.tree.find(
+        (n) => n.id !== nodeId && n.parent_id === cur.parent_id && n.name.toLowerCase() === trimmed.toLowerCase(),
+      );
+      if (duplicate) {
+        log(`An item with name "${trimmed}" already exists in this folder`, "warn");
+        return;
+      }
+    }
+  }
+
   updateProjectNode(nodeId, { name: trimmed });
   log(`Renamed → ${trimmed}`, "ok");
 }

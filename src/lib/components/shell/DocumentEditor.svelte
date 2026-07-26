@@ -128,6 +128,23 @@
 
   {#if node.kind === "markdown" && previewMd}
     <div class="md-preview">{@html renderMd(draft)}</div>
+  {:else if node.kind === "image"}
+    <div class="image-viewer">
+      <div class="image-box">
+        {#if draft}
+          <img src={draft} alt={node.name} />
+        {:else}
+          <div class="no-image">No image data</div>
+        {/if}
+      </div>
+      <div class="image-info">
+        <div><strong>Name:</strong> {node.name}</div>
+        <div><strong>Kind:</strong> Graphic Asset</div>
+        {#if draft}
+          <div><strong>Data Size:</strong> {Math.round((draft.length * 0.75) / 1024)} KB</div>
+        {/if}
+      </div>
+    </div>
   {:else}
     <textarea
       class="editor"
@@ -250,5 +267,48 @@
   }
   .md-preview :global(ul) {
     padding-left: 1.4em;
+  }
+  .image-viewer {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    padding: 24px;
+    overflow: auto;
+    background: #181818;
+  }
+  .image-box {
+    max-width: 90%;
+    max-height: 70vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--vs-border);
+    border-radius: 6px;
+    padding: 12px;
+    background: radial-gradient(circle, #2a2a2a 0%, #1a1a1a 100%);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  }
+  .image-box img {
+    max-width: 100%;
+    max-height: 60vh;
+    object-fit: contain;
+  }
+  .no-image {
+    color: var(--vs-text-dim);
+    font-size: 12px;
+    padding: 32px;
+  }
+  .image-info {
+    display: flex;
+    gap: 18px;
+    font-size: 11px;
+    color: var(--vs-text-dim);
+    background: #252526;
+    padding: 8px 16px;
+    border-radius: 4px;
+    border: 1px solid var(--vs-border);
   }
 </style>

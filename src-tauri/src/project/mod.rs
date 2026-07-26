@@ -232,6 +232,7 @@ pub enum ProjectNodeKind {
     Script,
     Note,
     Markdown,
+    Image,
 }
 
 /// Solution Explorer node (folders, screens, scripts, docs).

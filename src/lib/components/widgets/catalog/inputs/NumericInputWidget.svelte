@@ -3,17 +3,30 @@
   import { clamp, configOf, invokeWrite, readNumber, readString, tagNumber } from "$lib/components/widgets/shared/config";
   import WidgetCard from "$lib/components/widgets/shared/WidgetCard.svelte";
 
+  import { project } from "$lib/stores/app";
+
   let { widget, tag = null, design = false, onWrite }: WidgetRendererProps = $props();
 
   const config = $derived(configOf(widget));
+  const boundTagDef = $derived(
+    widget.tag_id ? $project?.tags.find((t) => t.id === widget.tag_id) : undefined,
+  );
   const rawVariant = $derived(readString(config, "variant", "stepper").toLowerCase());
   const variant = $derived(["field", "slider", "stepper"].includes(rawVariant) ? rawVariant : "stepper");
-  const title = $derived(readString(config, "title", "SP VALUE"));
+  const title = $derived(readString(config, "title", boundTagDef?.name ?? "SP VALUE"));
   const min = $derived(readNumber(config, "min", 0));
   const max = $derived(readNumber(config, "max", 1000));
   const step = $derived(readNumber(config, "step", 10, Number.MIN_VALUE));
-  const decimals = $derived(Math.floor(readNumber(config, "decimals", 0, 0, 8)));
-  const unit = $derived(readString(config, "unit", ""));
+  const decimals = $derived(
+    config.decimals !== undefined && config.decimals !== ""
+      ? Math.floor(readNumber(config, "decimals", 0, 0, 8))
+      : (boundTagDef?.decimals ?? 0),
+  );
+  const unit = $derived(
+    config.unit !== undefined && config.unit !== ""
+      ? readString(config, "unit", "")
+      : (boundTagDef?.unit ?? ""),
+  );
   const accent = $derived(readString(config, "labelColor", "#0f766e"));
   const commitMode = $derived(readString(config, "commitMode", "change").toLowerCase());
   const invalidNumberKey = $derived(

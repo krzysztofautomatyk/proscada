@@ -16,9 +16,20 @@
   const str = (k: string, d = "") => String(cfg[k] ?? d);
   const num = (k: string, d = 0) => Number(cfg[k] ?? d);
 
-  const title = $derived(str("title", widget.tag_id ?? "Value"));
-  const decimals = $derived(num("decimals", 0));
-  const unit = $derived(str("unit", ""));
+  const boundTagDef = $derived(
+    widget.tag_id ? $project?.tags.find((t) => t.id === widget.tag_id) : undefined,
+  );
+  const title = $derived(str("title", boundTagDef?.name ?? widget.tag_id ?? "Value"));
+  const decimals = $derived(
+    cfg.decimals !== undefined && cfg.decimals !== ""
+      ? num("decimals", 0)
+      : (boundTagDef?.decimals ?? 0),
+  );
+  const unit = $derived(
+    cfg.unit !== undefined && cfg.unit !== ""
+      ? str("unit", "")
+      : (boundTagDef?.unit ?? ""),
+  );
   const designSystem = $derived(normalizeProjectDesignSystem($project?.design_system));
   const fontToken = $derived(
     cfg.fontTokenId && cfg.fontTokenId !== "none"
@@ -39,7 +50,7 @@
   const borderWidth = $derived(num("borderWidth", 1));
   const align = $derived(str("align", "left"));
 
-  const quality = $derived(tag?.quality ?? "bad");
+  const quality = $derived(tag?.quality ?? (design && widget.tag_id ? "good" : "bad"));
   const value = $derived(tag?.value ?? 0);
 </script>
 
@@ -65,7 +76,7 @@
     style:justify-content={align === "center" ? "center" : align === "right" ? "flex-end" : "flex-start"}
     style:text-align={align}
   >
-    {#if design && !tag}
+    {#if design && !tag && !widget.tag_id}
       — —
     {:else}
       {value.toFixed(decimals)}

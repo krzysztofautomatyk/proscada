@@ -27,6 +27,8 @@ export function iconFor(kind: ProjectNodeKind): string {
       return "📝";
     case "markdown":
       return "MD";
+    case "image":
+      return "🖼️";
     default:
       return "•";
   }
@@ -70,57 +72,69 @@ export function defaultExt(kind: ProjectNodeKind): string {
   }
 }
 
-/** Ensure project has a usable tree; migrate legacy flat forms. */
+/** Ensure project has a usable tree; migrate legacy flat forms and guarantee Images root folder. */
 export function ensureProjectTree(p: ScadaProject): ScadaProject {
-  const tree = [...(p.tree ?? [])];
+  let tree = [...(p.tree ?? [])];
   const normalized = {
     ...p,
     alarm_groups: Array.isArray(p.alarm_groups) ? p.alarm_groups : [],
     component_templates: Array.isArray(p.component_templates) ? p.component_templates : [],
     design_system: normalizeProjectDesignSystem(p.design_system),
   };
-  if (tree.length > 0) {
-    return {
-      ...normalized,
-      tree,
-      schema_version: Math.max(p.schema_version || 1, CURRENT_SCHEMA),
-    };
+
+  if (tree.length === 0) {
+    const screensId = uid("fld");
+    const scriptsId = uid("fld");
+    const docsId = uid("fld");
+    const imagesId = uid("fld");
+    const varsId = uid("var");
+
+    tree = [
+      { id: screensId, parent_id: null, kind: "folder", name: "Screens", order: 0 },
+      { id: scriptsId, parent_id: null, kind: "folder", name: "Scripts", order: 1 },
+      { id: imagesId, parent_id: null, kind: "folder", name: "Images", order: 2 },
+      { id: docsId, parent_id: null, kind: "folder", name: "Documents", order: 3 },
+      {
+        id: varsId,
+        parent_id: null,
+        kind: "variables",
+        name: "Variables",
+        order: 4,
+        content: "",
+      },
+    ];
+
+    normalized.forms.forEach((f, i) => {
+      tree.push({
+        id: uid("scr"),
+        parent_id: screensId,
+        kind: "screen",
+        name: f.name,
+        order: i,
+        ref_id: f.id,
+      });
+    });
   }
 
-  const screensId = uid("fld");
-  const scriptsId = uid("fld");
-  const docsId = uid("fld");
-  const varsId = uid("var");
-
-  const nodes: ProjectNode[] = [
-    { id: screensId, parent_id: null, kind: "folder", name: "Screens", order: 0 },
-    { id: scriptsId, parent_id: null, kind: "folder", name: "Scripts", order: 1 },
-    { id: docsId, parent_id: null, kind: "folder", name: "Documents", order: 2 },
-    {
-      id: varsId,
+  // Guarantee that a root 'Images' folder always exists
+  const hasImagesFolder = tree.some(
+    (n) => n.kind === "folder" && n.parent_id === null && n.name.toLowerCase() === "images",
+  );
+  if (!hasImagesFolder) {
+    tree.push({
+      id: uid("fld"),
       parent_id: null,
-      kind: "variables",
-      name: "Variables",
-      order: 3,
-      content: "",
-    },
-  ];
-
-  normalized.forms.forEach((f, i) => {
-    nodes.push({
-      id: uid("scr"),
-      parent_id: screensId,
-      kind: "screen",
-      name: f.name,
-      order: i,
-      ref_id: f.id,
+      kind: "folder",
+      name: "Images",
+      order: nextOrder(tree, null),
+      collapsed: false,
     });
-  });
+  }
 
   return {
     ...normalized,
-    schema_version: CURRENT_SCHEMA,
-    tree: nodes,
+    schema_version: Math.max(p.schema_version || 1, CURRENT_SCHEMA),
+    tree,
   };
 }
 
@@ -213,4 +227,34 @@ export function normalizeImportedProject(raw: unknown): ScadaProject {
   p.content_hash = p.content_hash ?? "";
   p.schema_version = Number(p.schema_version) || CURRENT_SCHEMA;
   return ensureProjectTree(p);
+}
+
+export interface ProjectImageItem {
+  id: string;
+  name: string;
+  path: string;
+  content: string;
+}
+
+export function getNodePath(tree: ProjectNode[], nodeId: string): string {
+  const parts: string[] = [];
+  let cur = findNode(tree, nodeId);
+  while (cur) {
+    parts.unshift(cur.name);
+    if (!cur.parent_id) break;
+    cur = findNode(tree, cur.parent_id);
+  }
+  return parts.join("/");
+}
+
+export function collectProjectImages(tree: ProjectNode[]): ProjectImageItem[] {
+  return tree
+    .filter((n) => n.kind === "image" && !!n.content)
+    .map((n) => ({
+      id: n.id,
+      name: n.name,
+      path: getNodePath(tree, n.id),
+      content: n.content ?? "",
+    }))
+    .sort((a, b) => a.path.localeCompare(b.path));
 }

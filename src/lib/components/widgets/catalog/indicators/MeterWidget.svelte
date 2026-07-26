@@ -3,18 +3,36 @@
   import { clamp, configOf, readNumber, readString, tagNumber } from "../../shared/config";
   import QualityBadge from "../../shared/QualityBadge.svelte";
 
+  import { project } from "$lib/stores/app";
+
   let { widget, tag = null }: WidgetRendererProps = $props();
 
   const config = $derived(configOf(widget));
+  const boundTagDef = $derived(
+    widget.tag_id ? $project?.tags.find((t) => t.id === widget.tag_id) : undefined,
+  );
   const variant = $derived(readString(config, "variant", "bar"));
-  const title = $derived(readString(config, "title", "METER"));
-  const unit = $derived(readString(config, "unit", ""));
+  const title = $derived(readString(config, "title", boundTagDef?.name ?? "METER"));
+  const unit = $derived(
+    config.unit !== undefined && config.unit !== ""
+      ? readString(config, "unit", "")
+      : (boundTagDef?.unit ?? ""),
+  );
+  const decimals = $derived(
+    config.decimals !== undefined && config.decimals !== ""
+      ? readNumber(config, "decimals", 0, 0, 6)
+      : (boundTagDef?.decimals ?? 0),
+  );
   const min = $derived(readNumber(config, "min", 0));
   const max = $derived(Math.max(min + 0.0001, readNumber(config, "max", 100)));
   const value = $derived(tagNumber(tag, readNumber(config, "value", 65)));
   const percent = $derived(clamp(((value - min) / (max - min)) * 100, 0, 100));
-  const warningAt = $derived(readNumber(config, "warningAt", 75));
-  const alarmAt = $derived(readNumber(config, "alarmAt", 90));
+  const warningAt = $derived(
+    config.warn !== undefined ? readNumber(config, "warn", 75) : readNumber(config, "warningAt", 75),
+  );
+  const alarmAt = $derived(
+    config.alarm !== undefined ? readNumber(config, "alarm", 90) : readNumber(config, "alarmAt", 90),
+  );
   const color = $derived(
     tag?.quality === "bad"
       ? "#b91c1c"
@@ -35,14 +53,14 @@
     <div class="gauge">
       <div class="arc" style:--percent="{percent * 1.8}deg"></div>
       <div class="gauge-value">
-        <strong>{value.toFixed(readNumber(config, "decimals", 0, 0, 6))}</strong>
+        <strong>{value.toFixed(decimals)}</strong>
         <small>{unit}</small>
       </div>
     </div>
   {:else}
     <div class:vertical={variant === "vertical"} class="track">
       <div class="fill" style:--percent="{percent}%"></div>
-      <span>{value.toFixed(readNumber(config, "decimals", 0, 0, 6))} {unit}</span>
+      <span>{value.toFixed(decimals)} {unit}</span>
     </div>
   {/if}
   <div class="range"><span>{min}</span><span>{max}</span></div>

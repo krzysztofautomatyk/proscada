@@ -7,6 +7,7 @@
     addNewForm,
     addProjectFolder,
     addProjectDocument,
+    importImageFiles,
     deleteProjectNode,
     renameProjectNode,
     toggleFolderCollapsed,
@@ -38,6 +39,15 @@
   let renamingId = $state<string | null>(null);
   let renameValue = $state("");
   let dragId = $state<string | null>(null);
+  let fileInputEl = $state<HTMLInputElement | null>(null);
+  let importTargetFolderId = $state<string | null>(null);
+
+  type HoverImage = {
+    node: ProjectNode;
+    x: number;
+    y: number;
+  };
+  let hoverImage = $state<HoverImage | null>(null);
 
   const tree = $derived(project.tree ?? []);
 
@@ -55,6 +65,37 @@
     if (ctx.node?.kind === "folder") return ctx.node.id;
     if (ctx.node?.parent_id) return ctx.node.parent_id;
     return null;
+  }
+
+  function triggerImportImage(parentId: string | null = null) {
+    importTargetFolderId = parentId;
+    fileInputEl?.click();
+  }
+
+  async function handleImageFileInput(e: Event) {
+    const input = e.target as HTMLInputElement;
+    if (input.files && input.files.length > 0) {
+      await importImageFiles(input.files, importTargetFolderId);
+      input.value = "";
+    }
+  }
+
+  function handleNodeMouseEnter(node: ProjectNode, e: MouseEvent) {
+    if (node.kind === "image" && node.content) {
+      hoverImage = { node, x: e.clientX, y: e.clientY };
+    }
+  }
+
+  function handleNodeMouseMove(node: ProjectNode, e: MouseEvent) {
+    if (hoverImage && hoverImage.node.id === node.id) {
+      hoverImage = { node, x: e.clientX, y: e.clientY };
+    }
+  }
+
+  function handleNodeMouseLeave(node: ProjectNode) {
+    if (hoverImage?.node.id === node.id) {
+      hoverImage = null;
+    }
   }
 
   function startRename(node: ProjectNode) {
@@ -101,17 +142,27 @@
   }
 
   function onDragOver(e: DragEvent) {
-    if (!design || !dragId) return;
+    if (!design) return;
     e.preventDefault();
-    e.dataTransfer!.dropEffect = "move";
+    if (e.dataTransfer) {
+      e.dataTransfer.dropEffect = "move";
+    }
   }
 
-  function onDrop(e: DragEvent, target: ProjectNode | null) {
+  async function onDrop(e: DragEvent, target: ProjectNode | null) {
     e.preventDefault();
     e.stopPropagation();
+    if (!design) return;
+
+    if (e.dataTransfer?.files && e.dataTransfer.files.length > 0) {
+      const parentId = target?.kind === "folder" ? target.id : target?.parent_id ?? null;
+      await importImageFiles(e.dataTransfer.files, parentId);
+      return;
+    }
+
     const id = e.dataTransfer?.getData("text/proscada-node") || dragId;
     dragId = null;
-    if (!id || !design) return;
+    if (!id) return;
     if (target?.kind === "folder") moveProjectNode(id, target.id);
     else if (target) moveProjectNode(id, target.parent_id);
     else moveProjectNode(id, null);
@@ -121,6 +172,15 @@
     return childrenOf(tree, parentId);
   }
 </script>
+
+<input
+  type="file"
+  accept="image/*,.svg,.png,.jpg,.jpeg,.gif,.webp"
+  multiple
+  bind:this={fileInputEl}
+  onchange={handleImageFileInput}
+  style="display:none;"
+/>
 
 {#snippet treeRows(parentId: string | null, depth: number)}
   {#each renderBranch(parentId, depth) as node (node.id)}
@@ -141,6 +201,9 @@
       ondragstart={(e) => onDragStart(e, node)}
       ondragover={onDragOver}
       ondrop={(e) => onDrop(e, node)}
+      onmouseenter={(e) => handleNodeMouseEnter(node, e)}
+      onmousemove={(e) => handleNodeMouseMove(node, e)}
+      onmouseleave={() => handleNodeMouseLeave(node)}
       onclick={(e) => {
         if (node.kind === "folder") onFolderClick(node, e);
         else onSelect(node);
@@ -195,6 +258,7 @@
     {#if design}
       <div class="se-actions">
         <button type="button" title="New folder" onclick={() => addProjectFolder(null)}>📁+</button>
+        <button type="button" title="Add image from disk..." onclick={() => triggerImportImage(null)}>🖼️+</button>
         <button type="button" title="New screen" onclick={() => addNewForm()}>🗂+</button>
         <button type="button" title="New script" onclick={() => addProjectDocument("script")}>📜+</button>
       </div>
@@ -272,6 +336,17 @@
     {#if design}
       <div class="ctx-label">Add</div>
       <button type="button" role="menuitem" onclick={() => runAdd("folder")}>New Folder</button>
+      <button
+        type="button"
+        role="menuitem"
+        onclick={() => {
+          const p = parentForAdd();
+          closeCtx();
+          triggerImportImage(p);
+        }}
+      >
+        🖼️ Import Image from Disk...
+      </button>
       <button type="button" role="menuitem" onclick={() => runAdd("screen")}>New HMI Screen</button>
       <button type="button" role="menuitem" onclick={() => runAdd("script")}>New Script (.js)</button>
       <button type="button" role="menuitem" onclick={() => runAdd("variables")}>New Variables List</button>
@@ -338,6 +413,24 @@
     {:else}
       <button type="button" role="menuitem" disabled>Read-only in Runtime</button>
     {/if}
+  </div>
+{/if}
+
+{#if hoverImage && hoverImage.node.content}
+  <div
+    class="image-hover-popover"
+    style:left="{Math.min(hoverImage.x + 16, (typeof window !== 'undefined' ? window.innerWidth : 800) - 220)}px"
+    style:top="{Math.min(hoverImage.y + 12, (typeof window !== 'undefined' ? window.innerHeight : 600) - 220)}px"
+  >
+    <div class="hover-img-wrap">
+      <img src={hoverImage.node.content} alt={hoverImage.node.name} />
+    </div>
+    <div class="hover-img-meta">
+      <span class="hover-img-name">{hoverImage.node.name}</span>
+      <span class="hover-img-size">
+        {Math.round((hoverImage.node.content.length * 0.75) / 1024)} KB
+      </span>
+    </div>
   </div>
 {/if}
 
@@ -478,5 +571,67 @@
     height: 1px;
     background: #3e3e42;
     margin: 4px 0;
+  }
+  .image-hover-popover {
+    position: fixed;
+    z-index: 10000;
+    pointer-events: none;
+    background: #1e1e24;
+    border: 1px solid #3b82f6;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.6);
+    border-radius: 6px;
+    padding: 8px;
+    width: 200px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    backdrop-filter: blur(8px);
+    animation: popover-fade-in 0.12s ease-out;
+  }
+  .hover-img-wrap {
+    width: 100%;
+    max-height: 160px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: radial-gradient(circle, #2a2a30 0%, #121214 100%);
+    border-radius: 4px;
+    overflow: hidden;
+    padding: 4px;
+  }
+  .hover-img-wrap img {
+    max-width: 100%;
+    max-height: 150px;
+    object-fit: contain;
+    display: block;
+  }
+  .hover-img-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 10px;
+    color: #ccc;
+  }
+  .hover-img-name {
+    font-weight: 700;
+    color: #fff;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .hover-img-size {
+    color: #93c5fd;
+    flex-shrink: 0;
+  }
+  @keyframes popover-fade-in {
+    from {
+      opacity: 0;
+      transform: scale(0.95);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
   }
 </style>

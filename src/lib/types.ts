@@ -157,7 +157,8 @@ export type ProjectNodeKind =
   | "variables"
   | "script"
   | "note"
-  | "markdown";
+  | "markdown"
+  | "image";
 
 export interface ProjectNode {
   id: string;

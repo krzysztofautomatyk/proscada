@@ -14,13 +14,44 @@
     onWrite?: (tagId: string, value: number) => void;
   }
 
-  let { widget, design = false }: Props = $props();
+  let { widget, tag = null, design = false }: Props = $props();
 
   const cfg = $derived((widget.config ?? {}) as Record<string, unknown>);
   const str = (k: string, d = "") => String(cfg[k] ?? d);
   const num = (k: string, d = 0) => Number(cfg[k] ?? d);
 
-  const text = $derived(str("text", "Label"));
+  const boundTagDef = $derived(
+    widget.tag_id ? $project?.tags.find((t) => t.id === widget.tag_id) : undefined,
+  );
+  const decimals = $derived(
+    cfg.decimals !== undefined && cfg.decimals !== ""
+      ? num("decimals", 0)
+      : (boundTagDef?.decimals ?? 0),
+  );
+  const unit = $derived(
+    cfg.unit !== undefined && cfg.unit !== ""
+      ? str("unit", "")
+      : (boundTagDef?.unit ?? ""),
+  );
+
+  const rawText = $derived(str("text", "Label"));
+  const displayText = $derived.by(() => {
+    if (!widget.tag_id) return rawText;
+
+    const valNum = tag?.value ?? 0;
+    const formattedVal = (design && !tag) ? "0" : valNum.toFixed(decimals);
+    const valWithUnit = unit ? `${formattedVal} ${unit}` : formattedVal;
+
+    if (rawText.includes("{value}")) {
+      return rawText.replace(/\{value\}/g, valWithUnit);
+    } else if (rawText.includes("{val}")) {
+      return rawText.replace(/\{val\}/g, formattedVal);
+    } else if (rawText === "Label" || !rawText) {
+      return valWithUnit;
+    } else {
+      return `${rawText} ${valWithUnit}`;
+    }
+  });
   const designSystem = $derived(normalizeProjectDesignSystem($project?.design_system));
   const fontToken = $derived(
     cfg.fontTokenId && cfg.fontTokenId !== "none"
@@ -67,12 +98,12 @@
         class:dir-right={scrollDir === "right"}
         style:animation-duration="{scrollSpeedSec}s"
       >
-        <span class="marquee-text">{text}</span>
-        <span class="marquee-text gap" aria-hidden="true">{text}</span>
+        <span class="marquee-text">{displayText}</span>
+        <span class="marquee-text gap" aria-hidden="true">{displayText}</span>
       </div>
     </div>
   {:else}
-    <span class="static-text">{text}</span>
+    <span class="static-text">{displayText}</span>
   {/if}
 </div>
 

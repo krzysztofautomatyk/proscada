@@ -8,12 +8,29 @@
     onWrite?: (tagId: string, value: number) => void;
   }
 
+  import { project } from "$lib/stores/app";
+
   let { widget, tag = null }: Props = $props();
 
   const cfg = $derived((widget.config ?? {}) as Record<string, unknown>);
   const str = (k: string, d = "") => String(cfg[k] ?? d);
   const num = (k: string, d = 0) => Number(cfg[k] ?? d);
   const bool = (k: string, d = false) => Boolean(cfg[k] ?? d);
+
+  const boundTagDef = $derived(
+    widget.tag_id ? $project?.tags.find((t) => t.id === widget.tag_id) : undefined,
+  );
+  const title = $derived(str("title", boundTagDef?.name ?? "LEVEL"));
+  const unit = $derived(
+    cfg.unit !== undefined && cfg.unit !== ""
+      ? str("unit", "")
+      : (boundTagDef?.unit ?? "cm"),
+  );
+  const decimals = $derived(
+    cfg.decimals !== undefined && cfg.decimals !== ""
+      ? num("decimals", 0)
+      : (boundTagDef?.decimals ?? 0),
+  );
 
   const quality = $derived(tag?.quality ?? "bad");
   const value = $derived(tag?.value ?? 0);
@@ -47,13 +64,13 @@
     style:font-size="{num("titleFontSize", 11)}px"
     style:font-weight={str("fontWeight", "700")}
   >
-    <span class="quality {quality}"></span>{str("title", "LEVEL")}
+    <span class="quality {quality}"></span>{title}
   </div>
   <div class="tank-fill" style:height="{tankPct()}%" style:background={tankFillColor()}></div>
   {#if bool("showValue", true)}
     <div class="tank-level-text" style:color={str("textColor", "#1F2937")}>
-      <div style:font-size="{num("fontSize", 20)}px" style:font-weight="800">{value.toFixed(0)}</div>
-      <div style:font-size="11px" style:opacity="0.85">{str("unit", "cm")}</div>
+      <div style:font-size="{num("fontSize", 20)}px" style:font-weight="800">{value.toFixed(decimals)}</div>
+      <div style:font-size="11px" style:opacity="0.85">{unit}</div>
     </div>
   {/if}
 </div>

@@ -12,10 +12,12 @@
     addNewForm,
     deleteForm,
     scriptNodes,
+    importImageFiles,
   } from "$lib/stores/app";
   import { FONT_OPTIONS } from "$lib/utils/dynamics";
   import ConditionEditor from "./ConditionEditor.svelte";
   import { normalizeProjectDesignSystem } from "$lib/utils/designSystem";
+  import { collectProjectImages } from "$lib/utils/projectTree";
   import VerticalScrollControls from "./VerticalScrollControls.svelte";
 
   interface Props {
@@ -26,7 +28,27 @@
 
   let { widget, form, tags }: Props = $props();
   let scrollContainer = $state<HTMLDivElement | null>(null);
+  let propsFileInputEl = $state<HTMLInputElement | null>(null);
   const designSystem = $derived(normalizeProjectDesignSystem($project?.design_system));
+
+  function triggerPropsImageUpload() {
+    propsFileInputEl?.click();
+  }
+
+  async function handlePropsImageUpload(e: Event) {
+    const input = e.target as HTMLInputElement;
+    if (input.files && input.files.length > 0) {
+      const ids = await importImageFiles(input.files, null);
+      if (ids.length > 0) {
+        const tree = $project?.tree ?? [];
+        const addedNode = tree.find((n) => n.id === ids[0]);
+        if (addedNode?.content) {
+          setCfg("src", addedNode.content);
+        }
+      }
+      input.value = "";
+    }
+  }
 
   function setCfg(key: string, value: unknown) {
     if (!widget) return;
@@ -87,6 +109,14 @@
     "alarmColor",
     "unit",
     "decimals",
+    "min",
+    "max",
+    "warn",
+    "alarm",
+    "warningAt",
+    "alarmAt",
+    "step",
+    "variant",
     "shadow",
     "blinkMode",
     "blinkTagId",
@@ -122,8 +152,13 @@
     "scale_mode",
     // image widget
     "src",
+    "trueSrc",
     "fit",
     "alt",
+    "stateMode",
+    "stateTagId",
+    "stateBit",
+    "stateVal",
     "styleClassId",
     "fontTokenId",
     "animationPresetId",
@@ -282,16 +317,18 @@
             </td>
           </tr>
           <tr>
-            <td>Tag</td>
+            <td>Tag (Variable)</td>
             <td>
               <select
                 value={widget.tag_id ?? ""}
                 onchange={(e) =>
                   setField("tag_id", e.currentTarget.value || null)}
               >
-                <option value="">(none)</option>
+                <option value="">(none - static)</option>
                 {#each tags as t}
-                  <option value={t.id}>{t.name}</option>
+                  <option value={t.id}>
+                    {t.name} ({t.id} · {t.data_type}{t.unit ? ` · ${t.unit}` : ""})
+                  </option>
                 {/each}
               </select>
             </td>
@@ -376,6 +413,115 @@
           {/if}
         </tbody>
       </table>
+
+      <!-- Analog Value & Range Settings for numeric, meter, bar, tank, numeric_input, label -->
+      {#if ["numeric", "meter", "bar", "tank", "numeric_input", "label"].includes(widget.widget_type)}
+        {@const boundTagDef = widget.tag_id ? tags.find((t) => t.id === widget.tag_id) : undefined}
+        <table class="props-table">
+          <thead>
+            <tr><th colspan="2">Analog Value & Range Settings</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Unit</td>
+              <td>
+                <input
+                  type="text"
+                  placeholder={boundTagDef?.unit ? `Default: ${boundTagDef.unit}` : "e.g. °C, bar, cm, %"}
+                  value={cfgStr("unit", "")}
+                  onchange={(e) => setCfg("unit", e.currentTarget.value)}
+                />
+              </td>
+            </tr>
+            <tr>
+              <td>Decimals</td>
+              <td>
+                <input
+                  type="number"
+                  min="0"
+                  max="8"
+                  placeholder={boundTagDef ? String(boundTagDef.decimals ?? 0) : "0"}
+                  value={widget.config?.decimals !== undefined ? cfgStr("decimals", "") : ""}
+                  onchange={(e) => setCfg("decimals", e.currentTarget.value === "" ? undefined : Number(e.currentTarget.value))}
+                />
+              </td>
+            </tr>
+            {#if ["meter", "bar", "tank", "numeric_input"].includes(widget.widget_type)}
+              <tr>
+                <td>Min / Max</td>
+                <td class="pair">
+                  <input
+                    type="number"
+                    placeholder="Min (0)"
+                    value={cfgNum("min", 0)}
+                    onchange={(e) => setCfg("min", Number(e.currentTarget.value))}
+                  />
+                  <input
+                    type="number"
+                    placeholder="Max (100)"
+                    value={cfgNum("max", 100)}
+                    onchange={(e) => setCfg("max", Number(e.currentTarget.value))}
+                  />
+                </td>
+              </tr>
+            {/if}
+            {#if ["meter", "bar", "tank"].includes(widget.widget_type)}
+              <tr>
+                <td>Warn / Alarm limit</td>
+                <td class="pair">
+                  <input
+                    type="number"
+                    placeholder="Warn"
+                    value={widget.config?.warn !== undefined ? cfgStr("warn", "") : widget.config?.warningAt !== undefined ? cfgStr("warningAt", "") : ""}
+                    onchange={(e) => {
+                      const val = e.currentTarget.value === "" ? undefined : Number(e.currentTarget.value);
+                      setCfg("warn", val);
+                      setCfg("warningAt", val);
+                    }}
+                  />
+                  <input
+                    type="number"
+                    placeholder="Alarm"
+                    value={widget.config?.alarm !== undefined ? cfgStr("alarm", "") : widget.config?.alarmAt !== undefined ? cfgStr("alarmAt", "") : ""}
+                    onchange={(e) => {
+                      const val = e.currentTarget.value === "" ? undefined : Number(e.currentTarget.value);
+                      setCfg("alarm", val);
+                      setCfg("alarmAt", val);
+                    }}
+                  />
+                </td>
+              </tr>
+            {/if}
+            {#if widget.widget_type === "numeric_input"}
+              <tr>
+                <td>Variant</td>
+                <td>
+                  <select
+                    value={cfgStr("variant", "stepper")}
+                    onchange={(e) => setCfg("variant", e.currentTarget.value)}
+                  >
+                    <option value="stepper">Stepper (−/+ buttons)</option>
+                    <option value="slider">Slider (range bar)</option>
+                    <option value="field">Field (direct input)</option>
+                  </select>
+                </td>
+              </tr>
+              <tr>
+                <td>Step</td>
+                <td>
+                  <input
+                    type="number"
+                    min="0.0001"
+                    step="any"
+                    value={cfgNum("step", 1)}
+                    onchange={(e) => setCfg("step", Number(e.currentTarget.value))}
+                  />
+                </td>
+              </tr>
+            {/if}
+          </tbody>
+        </table>
+      {/if}
 
       <!-- Shared typography for text-like controls (not Label — Label has full editor) -->
       {#if ["numeric", "lamp", "write_button", "bool_display", "panel", "bar", "tank", "shape"].includes(widget.widget_type)}
@@ -972,13 +1118,56 @@
 
       <!-- IMAGE WIDGET -->
       {#if widget.widget_type === "image"}
+        {@const projectImages = collectProjectImages($project?.tree ?? [])}
+        {@const currentSrc = cfgStr("src", "")}
+        {@const currentTrueSrc = cfgStr("trueSrc", "")}
+        {@const stateMode = cfgStr("stateMode", "none")}
+        <input
+          type="file"
+          accept="image/*,.svg,.png,.jpg,.jpeg,.gif,.webp"
+          multiple
+          bind:this={propsFileInputEl}
+          onchange={handlePropsImageUpload}
+          style="display:none;"
+        />
         <table class="props-table">
           <thead>
-            <tr><th colspan="2">Image / Icon Properties</th></tr>
+            <tr><th colspan="2">Image / Graphic Properties</th></tr>
           </thead>
           <tbody>
             <tr>
-              <td>Image Source (URL / SVG)</td>
+              <td>Import Image</td>
+              <td>
+                <button
+                  type="button"
+                  style="width:100%;padding:4px 8px;cursor:pointer;background:#094771;border:1px solid #007acc;color:#fff;border-radius:3px;font-size:11px;"
+                  onclick={triggerPropsImageUpload}
+                >
+                  🖼️ Add Image from Disk...
+                </button>
+              </td>
+            </tr>
+
+            <!-- Primary Image (Default / FALSE) -->
+            <tr>
+              <td>Project Image (Default)</td>
+              <td>
+                <select
+                  value={projectImages.find((img) => img.content === currentSrc)?.id ?? ""}
+                  onchange={(e) => {
+                    const sel = projectImages.find((img) => img.id === e.currentTarget.value);
+                    if (sel) setCfg("src", sel.content);
+                  }}
+                >
+                  <option value="">(Custom URL / SVG or default)</option>
+                  {#each projectImages as img (img.id)}
+                    <option value={img.id}>{img.path}</option>
+                  {/each}
+                </select>
+              </td>
+            </tr>
+            <tr>
+              <td>Source / URL (Default)</td>
               <td>
                 <input
                   type="text"
@@ -987,6 +1176,105 @@
                   onchange={(e) => setCfg("src", e.currentTarget.value)}
                 />
               </td>
+            </tr>
+
+            <!-- 2-State Image Switching -->
+            <tr>
+              <td colspan="2" class="section">2-State Image Switching</td>
+            </tr>
+            <tr>
+              <td>Condition Mode</td>
+              <td>
+                <select
+                  value={stateMode}
+                  onchange={(e) => setCfg("stateMode", e.currentTarget.value)}
+                >
+                  <option value="none">None (off - single image)</option>
+                  <option value="tag_true">Bit / BOOL = true (1)</option>
+                  <option value="tag_false">Bit / BOOL = false (0)</option>
+                  <option value="tag_bit">Register bit (N)</option>
+                  <option value="tag_val_eq">Register value ==</option>
+                  <option value="tag_val_gt">Register value ></option>
+                  <option value="tag_val_lt">Register value &lt;</option>
+                  <option value="tag_val_neq">Register value !=</option>
+                </select>
+              </td>
+            </tr>
+
+            {#if stateMode !== "none"}
+              <tr>
+                <td>Tag for state switch</td>
+                <td>
+                  <select
+                    value={cfgStr("stateTagId", "")}
+                    onchange={(e) => setCfg("stateTagId", e.currentTarget.value)}
+                  >
+                    <option value="">(Use widget main tag)</option>
+                    {#each tags as t (t.id)}
+                      <option value={t.id}>{t.name} ({t.id})</option>
+                    {/each}
+                  </select>
+                </td>
+              </tr>
+              {#if stateMode === "tag_bit"}
+                <tr>
+                  <td>Bit Index (0..15)</td>
+                  <td>
+                    <input
+                      type="number"
+                      min="0"
+                      max="15"
+                      value={cfgNum("stateBit", 0)}
+                      onchange={(e) => setCfg("stateBit", Number(e.currentTarget.value))}
+                    />
+                  </td>
+                </tr>
+              {/if}
+              {#if ["tag_val_eq", "tag_val_gt", "tag_val_lt", "tag_val_neq"].includes(stateMode)}
+                <tr>
+                  <td>Target Value</td>
+                  <td>
+                    <input
+                      type="number"
+                      value={cfgNum("stateVal", 1)}
+                      onchange={(e) => setCfg("stateVal", Number(e.currentTarget.value))}
+                    />
+                  </td>
+                </tr>
+              {/if}
+
+              <tr>
+                <td>Project Image (TRUE)</td>
+                <td>
+                  <select
+                    value={projectImages.find((img) => img.content === currentTrueSrc)?.id ?? ""}
+                    onchange={(e) => {
+                      const sel = projectImages.find((img) => img.id === e.currentTarget.value);
+                      if (sel) setCfg("trueSrc", sel.content);
+                    }}
+                  >
+                    <option value="">(Select graphic for TRUE state)</option>
+                    {#each projectImages as img (img.id)}
+                      <option value={img.id}>{img.path}</option>
+                    {/each}
+                  </select>
+                </td>
+              </tr>
+              <tr>
+                <td>Source (TRUE state)</td>
+                <td>
+                  <input
+                    type="text"
+                    placeholder="Image source for TRUE state"
+                    value={cfgStr("trueSrc", "")}
+                    onchange={(e) => setCfg("trueSrc", e.currentTarget.value)}
+                  />
+                </td>
+              </tr>
+            {/if}
+
+            <tr>
+              <td colspan="2" class="section">Display Options</td>
             </tr>
             <tr>
               <td>Object Fit</td>
@@ -1007,7 +1295,7 @@
               <td>
                 <input
                   type="text"
-                  value={cfgStr("alt", "Pump Graphic")}
+                  value={cfgStr("alt", "Process image")}
                   onchange={(e) => setCfg("alt", e.currentTarget.value)}
                 />
               </td>
@@ -1193,47 +1481,49 @@
         </tbody>
       </table>
 
-      <ConditionEditor
-        title="Marquee / scroll text (train)"
-        mode={cfgStr("scrollMode", "none")}
-        tagId={cfgStr("scrollTagId", "")}
-        bit={cfgNum("scrollBit", 0)}
-        val={cfgNum("scrollVal", 1)}
-        {tags}
-        onMode={(v) => setCfg("scrollMode", v)}
-        onTag={(v) => setCfg("scrollTagId", v)}
-        onBit={(v) => setCfg("scrollBit", v)}
-        onVal={(v) => setCfg("scrollVal", v)}
-      />
-      <table class="props-table">
-        <tbody>
-          <tr>
-            <td>Scroll speed (s)</td>
-            <td>
-              <input
-                type="number"
-                min="1"
-                max="60"
-                step="0.5"
-                value={cfgNum("scrollSpeedSec", 8)}
-                onchange={(e) => setCfg("scrollSpeedSec", Number(e.currentTarget.value))}
-              />
-            </td>
-          </tr>
-          <tr>
-            <td>Scroll direction</td>
-            <td>
-              <select
-                value={cfgStr("scrollDir", "left")}
-                onchange={(e) => setCfg("scrollDir", e.currentTarget.value)}
-              >
-                <option value="left">← Left (train)</option>
-                <option value="right">→ Right</option>
-              </select>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+      {#if widget.widget_type === "label"}
+        <ConditionEditor
+          title="Marquee / scroll text (train)"
+          mode={cfgStr("scrollMode", "none")}
+          tagId={cfgStr("scrollTagId", "")}
+          bit={cfgNum("scrollBit", 0)}
+          val={cfgNum("scrollVal", 1)}
+          {tags}
+          onMode={(v) => setCfg("scrollMode", v)}
+          onTag={(v) => setCfg("scrollTagId", v)}
+          onBit={(v) => setCfg("scrollBit", v)}
+          onVal={(v) => setCfg("scrollVal", v)}
+        />
+        <table class="props-table">
+          <tbody>
+            <tr>
+              <td>Scroll speed (s)</td>
+              <td>
+                <input
+                  type="number"
+                  min="1"
+                  max="60"
+                  step="0.5"
+                  value={cfgNum("scrollSpeedSec", 8)}
+                  onchange={(e) => setCfg("scrollSpeedSec", Number(e.currentTarget.value))}
+                />
+              </td>
+            </tr>
+            <tr>
+              <td>Scroll direction</td>
+              <td>
+                <select
+                  value={cfgStr("scrollDir", "left")}
+                  onchange={(e) => setCfg("scrollDir", e.currentTarget.value)}
+                >
+                  <option value="left">← Left (train)</option>
+                  <option value="right">→ Right</option>
+                </select>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      {/if}
 
       <ConditionEditor
         title="Visibility (show / hide)"
