@@ -309,6 +309,8 @@ impl Engine {
                     .devices
                     .iter()
                     .find(|d| d.id == *id)
+                    .or_else(|| project.devices.iter().find(|d| d.enabled))
+                    .or_else(|| project.devices.first())
                     .cloned()
                     .ok_or_else(|| format!("Device not found: {id}"))?
             } else {
@@ -316,8 +318,9 @@ impl Engine {
                     .devices
                     .iter()
                     .find(|d| d.enabled)
+                    .or_else(|| project.devices.first())
                     .cloned()
-                    .ok_or_else(|| "No enabled device".to_string())?
+                    .ok_or_else(|| "No enabled device in project".to_string())?
             };
             (project, device)
         };

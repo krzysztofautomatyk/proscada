@@ -18,6 +18,16 @@ export type AlarmState =
   | "active_acked"
   | "cleared_unacked";
 
+export interface ModbusQueryConfig {
+  id: string;
+  name: string;
+  table: "holding" | "input" | "coil" | "discrete";
+  start_address: number;
+  count: number;
+  poll_ms?: number | null;
+  enabled: boolean;
+}
+
 export interface DeviceConfig {
   id: string;
   name: string;
@@ -27,6 +37,7 @@ export interface DeviceConfig {
   poll_ms: number;
   timeout_ms: number;
   enabled: boolean;
+  queries?: ModbusQueryConfig[];
 }
 
 export interface TagBinding {
@@ -158,7 +169,17 @@ export type ProjectNodeKind =
   | "script"
   | "note"
   | "markdown"
-  | "image";
+  | "image"
+  | "style";
+
+export interface AppSettings {
+  autosaveEnabled: boolean;
+  autosaveIntervalMinutes: number;
+  autosaveOnlyIfNoError: boolean;
+  lastAutosaveTs: string | null;
+  lastAutosaveStatus: "ok" | "skipped_errors" | "error" | null;
+  showStartWindowOnStart?: boolean;
+}
 
 export interface ProjectNode {
   id: string;

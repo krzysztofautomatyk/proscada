@@ -74,6 +74,23 @@ pub enum TagDataType {
     F32,
 }
 
+fn default_query_enabled() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModbusQueryConfig {
+    pub id: String,
+    pub name: String,
+    pub table: ModbusTable,
+    pub start_address: u16,
+    pub count: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub poll_ms: Option<u64>,
+    #[serde(default = "default_query_enabled")]
+    pub enabled: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceConfig {
     pub id: String,
@@ -84,6 +101,8 @@ pub struct DeviceConfig {
     pub poll_ms: u64,
     pub timeout_ms: u64,
     pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub queries: Vec<ModbusQueryConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -309,6 +328,7 @@ pub fn water_tank_project() -> ScadaProject {
         poll_ms: 250,
         timeout_ms: 800,
         enabled: true,
+        queries: Vec::new(),
     };
 
     let mut tags = Vec::new();

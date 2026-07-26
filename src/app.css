@@ -801,8 +801,6 @@ textarea:focus {
 .modal {
   background: var(--vs-bg-2);
   border: 1px solid var(--vs-border);
-  min-width: 360px;
-  max-width: 480px;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
 }
 

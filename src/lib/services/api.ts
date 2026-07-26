@@ -22,7 +22,14 @@ const mockAudit: AuditEntry[] = [];
 
 function mockSnap(): EngineSnapshot {
   const tags: TagValue[] = (mockProject?.tags ?? []).map((t, i) => {
-    const level = t.id === "wt.level_cm" ? 420 + (mockPoll % 40) * 5 : 0;
+    const isLevelTag =
+      t.binding.address === 104 ||
+      t.id.toLowerCase().includes("level") ||
+      t.id.toLowerCase().includes("poziom") ||
+      t.name.toLowerCase().includes("poziom");
+
+    const baseLevel = 420 + (mockPoll % 40) * 5;
+    const rawVal = isLevelTag ? baseLevel : t.id.includes("sp") ? 200 + i * 50 : 10 + i * 5;
     const isBool = t.data_type === "bool";
     const on =
       t.id === "wt.p1_run" ||
@@ -30,14 +37,17 @@ function mockSnap(): EngineSnapshot {
       t.id === "wt.sim_en" ||
       t.id === "wt.p1_ok" ||
       t.id === "wt.p2_ok";
+
+    const computedVal = isBool ? (on ? 1 : 0) : rawVal * (t.scale || 1) + (t.offset || 0);
+
     return {
       tag_id: t.id,
-      value: isBool ? (on ? 1 : 0) : t.id.includes("level") ? level : t.id.includes("sp") ? 200 + i * 50 : i,
+      value: computedVal,
       bool_value: isBool ? on : false,
       quality: mockConnected ? "good" : "bad",
       ts: new Date().toISOString(),
       age_ms: mockConnected ? 50 : 9999,
-      raw: 0,
+      raw: rawVal,
     };
   });
   return {

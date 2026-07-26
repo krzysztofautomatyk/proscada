@@ -1,9 +1,10 @@
 import type { FormDef, ProjectNode, ProjectNodeKind, ScadaProject } from "$lib/types";
 import { defaultProjectDesignSystem, normalizeProjectDesignSystem } from "$lib/utils/designSystem";
+import { ensureMainFormExists } from "$lib/utils/screenProtection";
 
 export const CURRENT_SCHEMA = 3;
 
-const DOC_KINDS: ProjectNodeKind[] = ["script", "note", "markdown", "variables"];
+const DOC_KINDS: ProjectNodeKind[] = ["script", "note", "markdown", "variables", "style"];
 
 export function uid(prefix = "n"): string {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
@@ -29,6 +30,8 @@ export function iconFor(kind: ProjectNodeKind): string {
       return "MD";
     case "image":
       return "🖼️";
+    case "style":
+      return "🎨";
     default:
       return "•";
   }
@@ -46,6 +49,13 @@ async function onEvent(event) {
   // Example: await writeTag("wt.sim_en", 1);
 }
 `;
+    case "style":
+      return `/* ProScada Style Sheet — ${name} */
+.custom-panel {
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+`;
     case "note":
       return `Note: ${name}\n\n`;
     case "markdown":
@@ -59,6 +69,8 @@ export function defaultExt(kind: ProjectNodeKind): string {
   switch (kind) {
     case "script":
       return ".js";
+    case "style":
+      return ".css";
     case "note":
       return ".txt";
     case "markdown":
@@ -72,64 +84,162 @@ export function defaultExt(kind: ProjectNodeKind): string {
   }
 }
 
-/** Ensure project has a usable tree; migrate legacy flat forms and guarantee Images root folder. */
+function isChildOfFolder(tree: ProjectNode[], folderId: string, targetRootFolderId: string): boolean {
+  const folders = new Map(tree.filter((node) => node.kind === "folder").map((node) => [node.id, node]));
+  let current = folders.get(folderId);
+  const visited = new Set<string>();
+
+  while (current) {
+    if (visited.has(current.id)) return false;
+    visited.add(current.id);
+    if (current.id === targetRootFolderId) return true;
+    if (current.parent_id == null) return false;
+    current = folders.get(current.parent_id);
+  }
+
+  return false;
+}
+
+/** Ensure project has a usable tree; migrate legacy flat forms, deduplicate system folders, and guarantee all root folders and screens. */
 export function ensureProjectTree(p: ScadaProject): ScadaProject {
   let tree = [...(p.tree ?? [])];
+  const guaranteedForms = ensureMainFormExists(Array.isArray(p.forms) ? p.forms : []);
   const normalized = {
     ...p,
+    forms: guaranteedForms,
     alarm_groups: Array.isArray(p.alarm_groups) ? p.alarm_groups : [],
     component_templates: Array.isArray(p.component_templates) ? p.component_templates : [],
     design_system: normalizeProjectDesignSystem(p.design_system),
   };
 
-  if (tree.length === 0) {
-    const screensId = uid("fld");
-    const scriptsId = uid("fld");
-    const docsId = uid("fld");
-    const imagesId = uid("fld");
-    const varsId = uid("var");
+  // 1. Deduplicate system root folders (Screens, Scripts, Styles, Images, Documents)
+  const systemNames = ["screens", "scripts", "styles", "images", "documents"];
+  const canonicalFolderIds: Record<string, string> = {};
+  const duplicateIdMap: Record<string, string> = {};
+  const duplicateFolderIds = new Set<string>();
 
-    tree = [
-      { id: screensId, parent_id: null, kind: "folder", name: "Screens", order: 0 },
-      { id: scriptsId, parent_id: null, kind: "folder", name: "Scripts", order: 1 },
-      { id: imagesId, parent_id: null, kind: "folder", name: "Images", order: 2 },
-      { id: docsId, parent_id: null, kind: "folder", name: "Documents", order: 3 },
-      {
-        id: varsId,
+  for (const rawName of systemNames) {
+    const canonicalName = rawName.charAt(0).toUpperCase() + rawName.slice(1);
+    const matches = tree.filter(
+      (n) =>
+        n.kind === "folder" &&
+        n.parent_id == null &&
+        (n.name.toLowerCase() === rawName || (rawName === "documents" && n.name.toLowerCase() === "docs")),
+    );
+
+    if (matches.length > 0) {
+      const canonical = matches[0];
+      canonical.name = canonicalName;
+      canonical.parent_id = null;
+      if (rawName === "screens") {
+        canonical.collapsed = false; // Always force Screens to be expanded
+      }
+      canonicalFolderIds[rawName] = canonical.id;
+
+      for (let i = 1; i < matches.length; i++) {
+        duplicateIdMap[matches[i].id] = canonical.id;
+        duplicateFolderIds.add(matches[i].id);
+      }
+    }
+  }
+
+  // Re-parent nodes that were pointing to duplicate root system folders
+  tree = tree.map((node) => {
+    if (node.parent_id && duplicateIdMap[node.parent_id]) {
+      return {
+        ...node,
+        parent_id: duplicateIdMap[node.parent_id],
+      };
+    }
+    return node;
+  });
+
+  // Remove the duplicate root system folders
+  tree = tree.filter((n) => !duplicateFolderIds.has(n.id));
+
+  // 2. Guarantee that each system root folder exists
+  for (const rawName of systemNames) {
+    const canonicalName = rawName.charAt(0).toUpperCase() + rawName.slice(1);
+    let canonical = tree.find(
+      (n) => n.kind === "folder" && n.parent_id == null && n.name.toLowerCase() === rawName,
+    );
+    if (!canonical) {
+      const newId = uid("fld");
+      canonical = {
+        id: newId,
         parent_id: null,
-        kind: "variables",
-        name: "Variables",
-        order: 4,
-        content: "",
-      },
-    ];
+        kind: "folder",
+        name: canonicalName,
+        order: nextOrder(tree, null),
+        collapsed: false,
+      };
+      if (rawName === "screens") {
+        tree.unshift(canonical);
+      } else {
+        tree.push(canonical);
+      }
+    } else if (rawName === "screens") {
+      canonical.collapsed = false;
+    }
+    canonicalFolderIds[rawName] = canonical.id;
+  }
 
-    normalized.forms.forEach((f, i) => {
+  const screensFolderId = canonicalFolderIds["screens"];
+
+  // 3. Guarantee root 'Variables' item
+  const hasVarsItem = tree.some((n) => n.kind === "variables");
+  if (!hasVarsItem) {
+    tree.push({
+      id: uid("var"),
+      parent_id: null,
+      kind: "variables",
+      name: "Variables",
+      order: nextOrder(tree, null),
+      content: "",
+    });
+  }
+
+  // 4. Synchronize EVERY form in p.forms with tree — ref_id is canonical key
+  for (let i = 0; i < normalized.forms.length; i++) {
+    const f = normalized.forms[i];
+    let existingNodeIndex = tree.findIndex(
+      (n) => n.kind === "screen" && n.ref_id === f.id,
+    );
+    if (existingNodeIndex < 0) {
+      existingNodeIndex = tree.findIndex(
+        (n) => n.kind === "screen" && !n.ref_id && n.name === f.name,
+      );
+    }
+    if (existingNodeIndex >= 0) {
+      const existing = tree[existingNodeIndex];
+      // A screen must be parented either directly to Screens folder or to a subfolder inside Screens
+      const parentValid = !!existing.parent_id && isChildOfFolder(tree, existing.parent_id, screensFolderId);
+      tree[existingNodeIndex] = {
+        ...existing,
+        ref_id: f.id,
+        name: f.name,
+        parent_id: parentValid ? existing.parent_id : screensFolderId,
+      };
+    } else {
       tree.push({
         id: uid("scr"),
-        parent_id: screensId,
+        parent_id: screensFolderId,
         kind: "screen",
         name: f.name,
         order: i,
         ref_id: f.id,
       });
-    });
+    }
   }
 
-  // Guarantee that a root 'Images' folder always exists
-  const hasImagesFolder = tree.some(
-    (n) => n.kind === "folder" && n.parent_id === null && n.name.toLowerCase() === "images",
-  );
-  if (!hasImagesFolder) {
-    tree.push({
-      id: uid("fld"),
-      parent_id: null,
-      kind: "folder",
-      name: "Images",
-      order: nextOrder(tree, null),
-      collapsed: false,
-    });
-  }
+  // 5. Remove screen nodes whose ref_id no longer exists in p.forms
+  const formIds = new Set(normalized.forms.map((f) => f.id));
+  tree = tree.filter((n) => {
+    if (n.kind === "screen" && n.ref_id) {
+      return formIds.has(n.ref_id);
+    }
+    return true;
+  });
 
   return {
     ...normalized,

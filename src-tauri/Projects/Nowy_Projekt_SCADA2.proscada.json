@@ -1,0 +1,310 @@
+{
+  "schema_version": 3,
+  "id": "proj_ms1kww6f_26kna",
+  "name": "Nowy Projekt SCADA2",
+  "description": "",
+  "devices": [
+    {
+      "id": "dev_ms1kxidc_c9608",
+      "name": "PLC_SIEMENS_S7",
+      "host": "127.0.0.1",
+      "port": 5020,
+      "unit_id": 1,
+      "poll_ms": 250,
+      "timeout_ms": 1000,
+      "enabled": true,
+      "queries": [
+        {
+          "id": "q_holding_01",
+          "name": "Odczyt Rejestrów Holding 100-120",
+          "table": "holding",
+          "start_address": 100,
+          "count": 20,
+          "enabled": true
+        }
+      ]
+    }
+  ],
+  "tags": [
+    {
+      "id": "p",
+      "name": "Poziom",
+      "device_id": "dev_ms1kxidc_c9608",
+      "data_type": "u16",
+      "binding": {
+        "address": 104,
+        "table": "holding",
+        "writable": true
+      },
+      "unit": "m",
+      "description": "",
+      "scale": 1,
+      "offset": 0,
+      "decimals": 2
+    }
+  ],
+  "forms": [
+    {
+      "id": "form_ms1kww6f_h07qe",
+      "name": "Main",
+      "width": 1040,
+      "height": 700,
+      "background": "#F4F5F7",
+      "grid": 8,
+      "widgets": [
+        {
+          "id": "w_ms1lu3nc_bhsd4",
+          "widget_type": "numeric",
+          "x": 60,
+          "y": 60,
+          "w": 160,
+          "h": 56,
+          "z": 1,
+          "tag_id": "p",
+          "locked": false,
+          "config": {
+            "animationBit": 0,
+            "animationMode": "none",
+            "animationPresetId": "anim-none",
+            "animationTagId": "",
+            "animationVal": 1,
+            "bgColor": "#ffffff",
+            "blinkBit": 0,
+            "blinkMode": "none",
+            "blinkSpeedMs": 600,
+            "blinkTagId": "",
+            "blinkVal": 1,
+            "decimals": 0,
+            "fontTokenId": "font-value",
+            "scrollBit": 0,
+            "scrollDir": "left",
+            "scrollMode": "none",
+            "scrollSpeedSec": 8,
+            "scrollTagId": "",
+            "scrollVal": 1,
+            "textColor": "#1f2937",
+            "title": "VALUE",
+            "unit": "",
+            "visibilityBit": 0,
+            "visibilityMode": "always",
+            "visibilityTagId": "",
+            "visibilityVal": 1
+          }
+        }
+      ]
+    },
+    {
+      "id": "form_ms1v4fg7_4f8bb",
+      "name": "Screen_2",
+      "width": 1040,
+      "height": 700,
+      "background": "#F4F5F7",
+      "grid": 8,
+      "widgets": [
+        {
+          "id": "w_ms1v4k0f_kipyj",
+          "widget_type": "image",
+          "x": 60,
+          "y": 60,
+          "w": 120,
+          "h": 120,
+          "z": 1,
+          "locked": false,
+          "config": {
+            "alt": "Process image",
+            "animationBit": 0,
+            "animationMode": "none",
+            "animationPresetId": "anim-none",
+            "animationTagId": "",
+            "animationVal": 1,
+            "bgColor": "transparent",
+            "blinkBit": 0,
+            "blinkMode": "none",
+            "blinkSpeedMs": 600,
+            "blinkTagId": "",
+            "blinkVal": 1,
+            "borderColor": "transparent",
+            "borderRadius": 0,
+            "borderStyle": "none",
+            "borderWidth": 0,
+            "fit": "contain",
+            "scrollBit": 0,
+            "scrollDir": "left",
+            "scrollMode": "none",
+            "scrollSpeedSec": 8,
+            "scrollTagId": "",
+            "scrollVal": 1,
+            "src": "",
+            "visibilityBit": 0,
+            "visibilityMode": "always",
+            "visibilityTagId": "",
+            "visibilityVal": 1
+          }
+        }
+      ]
+    }
+  ],
+  "alarms": [],
+  "design_system": {
+    "version": 1,
+    "fonts": [
+      {
+        "fallback": "system-ui, sans-serif",
+        "family": "Segoe UI",
+        "id": "font-label",
+        "lineHeight": 1.2,
+        "name": "Label",
+        "size": 11,
+        "weight": "600"
+      },
+      {
+        "fallback": "system-ui, sans-serif",
+        "family": "Segoe UI",
+        "id": "font-value",
+        "lineHeight": 1.1,
+        "name": "Process Value",
+        "size": 16,
+        "weight": "800"
+      },
+      {
+        "fallback": "system-ui, sans-serif",
+        "family": "Segoe UI",
+        "id": "font-alarm",
+        "lineHeight": 1.2,
+        "name": "Alarm",
+        "size": 11,
+        "weight": "800"
+      }
+    ],
+    "styles": [
+      {
+        "accent": "#2563eb",
+        "border": "#cbd5e1",
+        "id": "style-default",
+        "name": "Default HMI",
+        "surface": "#ffffff",
+        "target": "*",
+        "text": "#1f2937"
+      },
+      {
+        "accent": "#2563eb",
+        "border": "#94a3b8",
+        "id": "style-equipment",
+        "name": "Equipment",
+        "surface": "#f8fafc",
+        "target": "process_symbol,faceplate",
+        "text": "#334155"
+      },
+      {
+        "accent": "#00e5ff",
+        "border": "#ffffff",
+        "id": "style-high-contrast",
+        "name": "High Contrast",
+        "surface": "#000000",
+        "target": "*",
+        "text": "#ffffff"
+      }
+    ],
+    "animations": [
+      {
+        "durationMs": 0,
+        "easing": "linear",
+        "id": "anim-none",
+        "kind": "none",
+        "name": "None"
+      },
+      {
+        "durationMs": 1200,
+        "easing": "ease-in-out",
+        "id": "anim-pulse",
+        "kind": "pulse",
+        "name": "Attention Pulse"
+      },
+      {
+        "durationMs": 1600,
+        "easing": "linear",
+        "id": "anim-rotate",
+        "kind": "rotate",
+        "name": "Running Rotation"
+      },
+      {
+        "durationMs": 1000,
+        "easing": "ease-in-out",
+        "id": "anim-fade",
+        "kind": "fade",
+        "name": "Soft Fade"
+      },
+      {
+        "durationMs": 1400,
+        "easing": "linear",
+        "id": "anim-slide",
+        "kind": "slide",
+        "name": "Flow Slide"
+      }
+    ]
+  },
+  "tree": [
+    {
+      "id": "fld_ms1v8ci7_ph0ry",
+      "parent_id": null,
+      "kind": "folder",
+      "name": "Screens",
+      "order": 0,
+      "collapsed": false
+    },
+    {
+      "id": "fld_ms1kww6f_0cg98",
+      "kind": "folder",
+      "name": "Scripts",
+      "order": 1,
+      "parent_id": null
+    },
+    {
+      "id": "fld_ms1kww6f_zhgtz",
+      "kind": "folder",
+      "name": "Styles",
+      "order": 2,
+      "parent_id": null
+    },
+    {
+      "id": "fld_ms1kww6f_qqzi8",
+      "kind": "folder",
+      "name": "Images",
+      "order": 3,
+      "parent_id": null
+    },
+    {
+      "id": "fld_ms1kww6f_umf3v",
+      "kind": "folder",
+      "name": "Documents",
+      "order": 4,
+      "parent_id": null
+    },
+    {
+      "id": "var_ms1kww6f_7hfgx",
+      "kind": "variables",
+      "name": "Variables",
+      "order": 5,
+      "content": ""
+    },
+    {
+      "id": "scr_ms1kww6f_zpszl",
+      "parent_id": "fld_ms1v8ci7_ph0ry",
+      "kind": "screen",
+      "name": "Main",
+      "order": 0,
+      "ref_id": "form_ms1kww6f_h07qe"
+    },
+    {
+      "id": "scr_ms1v4fg8_s5zsa",
+      "parent_id": "fld_ms1v8ci7_ph0ry",
+      "kind": "screen",
+      "name": "Screen_2",
+      "order": 0,
+      "ref_id": "form_ms1v4fg7_4f8bb"
+    }
+  ],
+  "content_hash": "a5882f4a3964e0c39a5a0b7ffb54d47d69f30177e4a9ef34d0ca30d813173aa5",
+  "alarm_groups": [],
+  "component_templates": []
+}

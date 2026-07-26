@@ -16,6 +16,13 @@
     importProjectFile,
     exportProjectJson,
     persistProject,
+    addDeviceModalOpen,
+    addAlarmModalOpen,
+    addVariableModalOpen,
+    openAddDeviceModal,
+    openEditDeviceModal,
+    deleteDeviceFromProject,
+    isMainScreen,
   } from "$lib/stores/app";
   import { childrenOf, iconFor } from "$lib/utils/projectTree";
 
@@ -99,6 +106,7 @@
   }
 
   function startRename(node: ProjectNode) {
+    if (node.kind === "screen" && isMainScreen(node)) return;
     renamingId = node.id;
     renameValue = node.name;
     closeCtx();
@@ -259,6 +267,7 @@
       <div class="se-actions">
         <button type="button" title="New folder" onclick={() => addProjectFolder(null)}>📁+</button>
         <button type="button" title="Add image from disk..." onclick={() => triggerImportImage(null)}>🖼️+</button>
+        <button type="button" title="New style sheet" onclick={() => addProjectDocument("style")}>🎨+</button>
         <button type="button" title="New screen" onclick={() => addNewForm()}>🗂+</button>
         <button type="button" title="New script" onclick={() => addProjectDocument("script")}>📜+</button>
       </div>
@@ -297,15 +306,47 @@
 
     {@render treeRows(null, 1)}
 
-    <div class="tree-group">Devices ({project.devices.length})</div>
+    <div class="tree-group-header">
+      <span class="tree-group">Devices ({project.devices.length})</span>
+      {#if design}
+        <button type="button" class="btn-group-add" title="Dodaj Nowe Urządzenie..." onclick={() => openAddDeviceModal()}>🔌+</button>
+      {/if}
+    </div>
     {#each project.devices as d}
-      <div class="tree-item" style:padding-left="24px">
-        <span>🔌</span>
-        <span>{d.name} · {d.host}:{d.port}</span>
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="tree-item device-row"
+        style:padding-left="24px"
+        role="button"
+        tabindex="0"
+        title="Kliknij, aby edytować urządzenie {d.name}"
+        onclick={() => design && openEditDeviceModal(d.id)}
+        onkeydown={(e) => (e.key === "Enter" || e.key === " ") && design && openEditDeviceModal(d.id)}
+      >
+        <span class="ico">🔌</span>
+        <span class="label">{d.name} · {d.host}:{d.port}</span>
+        {#if design}
+          <button
+            type="button"
+            class="btn-device-edit"
+            title="Edytuj urządzenia..."
+            onclick={(e) => {
+              e.stopPropagation();
+              openEditDeviceModal(d.id);
+            }}
+          >
+            ✏️
+          </button>
+        {/if}
       </div>
     {/each}
 
-    <div class="tree-group">Alarms ({project.alarms.length})</div>
+    <div class="tree-group-header">
+      <span class="tree-group">Alarms ({project.alarms.length})</span>
+      {#if design}
+        <button type="button" class="btn-group-add" title="Dodaj Nowy Alarm..." onclick={() => addAlarmModalOpen.set(true)}>🔔+</button>
+      {/if}
+    </div>
     {#each project.alarms as a}
       <div class="tree-item" style:padding-left="24px">
         <span>🔔</span>
@@ -347,19 +388,56 @@
       >
         🖼️ Import Image from Disk...
       </button>
+      <button type="button" role="menuitem" onclick={() => runAdd("style")}>New Style Sheet (.css)</button>
       <button type="button" role="menuitem" onclick={() => runAdd("screen")}>New HMI Screen</button>
       <button type="button" role="menuitem" onclick={() => runAdd("script")}>New Script (.js)</button>
       <button type="button" role="menuitem" onclick={() => runAdd("variables")}>New Variables List</button>
+      <button
+        type="button"
+        role="menuitem"
+        onclick={() => {
+          closeCtx();
+          addDeviceModalOpen.set(true);
+        }}
+      >
+        🔌 New Modbus Device…
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        onclick={() => {
+          closeCtx();
+          addAlarmModalOpen.set(true);
+        }}
+      >
+        🔔 New Alarm Rules / List…
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        onclick={() => {
+          closeCtx();
+          addVariableModalOpen.set(true);
+        }}
+      >
+        🏷️ New Variables / Tag List…
+      </button>
       <button type="button" role="menuitem" onclick={() => runAdd("note")}>New Note</button>
       <button type="button" role="menuitem" onclick={() => runAdd("markdown")}>New Markdown</button>
       <div class="sep"></div>
       {#if ctx.node}
-        <button type="button" role="menuitem" onclick={() => ctx.node && startRename(ctx.node)}>
+        <button
+          type="button"
+          role="menuitem"
+          disabled={ctx.node.kind === "screen" && isMainScreen(ctx.node)}
+          onclick={() => ctx.node && startRename(ctx.node)}
+        >
           Rename<span class="kbd">F2</span>
         </button>
         <button
           type="button"
           role="menuitem"
+          disabled={ctx.node.kind === "screen" && isMainScreen(ctx.node)}
           onclick={() => {
             if (ctx.node) deleteProjectNode(ctx.node.id);
             closeCtx();
@@ -633,5 +711,48 @@
       opacity: 1;
       transform: scale(1);
     }
+  }
+  .tree-group-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-right: 8px;
+  }
+  .btn-group-add {
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--vs-text-dim);
+    font-size: 11px;
+    cursor: pointer;
+    border-radius: 3px;
+    padding: 0 4px;
+    line-height: 16px;
+  }
+  .btn-group-add:hover {
+    background: var(--vs-bg-4);
+    border-color: var(--vs-border);
+    color: #fff;
+  }
+  .device-row {
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-right: 8px;
+  }
+  .device-row:hover .btn-device-edit {
+    opacity: 1;
+  }
+  .btn-device-edit {
+    opacity: 0.4;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    font-size: 11px;
+    padding: 0 4px;
+    transition: opacity 0.12s;
+  }
+  .btn-device-edit:hover {
+    opacity: 1;
   }
 </style>

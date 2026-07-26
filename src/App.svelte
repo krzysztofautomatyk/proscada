@@ -36,6 +36,9 @@
     focusPropertiesTick,
     alignSelectedWidgets,
     moveSelectedWidgets,
+    undoAction,
+    redoAction,
+    startWindowOpen,
   } from "$lib/stores/app";
   import { api } from "$lib/services/api";
   import type { LeftPanelTab, Role } from "$lib/types";
@@ -51,13 +54,24 @@
   import DesignSystemManager from "$lib/components/designer/DesignSystemManager.svelte";
   import ComponentLibraryManager from "$lib/components/designer/ComponentLibraryManager.svelte";
   import AlarmManagerEditor from "$lib/components/designer/AlarmManagerEditor.svelte";
+  import SettingsModal from "$lib/components/shell/SettingsModal.svelte";
+  import StartWindow from "$lib/components/shell/StartWindow.svelte";
+  import AddDeviceModal from "$lib/components/shell/AddDeviceModal.svelte";
+  import AddAlarmModal from "$lib/components/shell/AddAlarmModal.svelte";
+  import AddVariableModal from "$lib/components/shell/AddVariableModal.svelte";
+  import { addDeviceModalOpen, addAlarmModalOpen, addVariableModalOpen } from "$lib/stores/app";
   import { ensureProjectTree, isDocKind } from "$lib/utils/projectTree";
+  import { appSettings } from "$lib/stores/settings";
+  import { validateProject } from "$lib/utils/validation";
   import { getCurrentWindow } from "@tauri-apps/api/window";
 
   let role = $state<Role>("engineer");
   let leftTab = $state<LeftPanelTab>("solution");
+  let settingsOpen = $state(false);
   let propertiesEl = $state<HTMLDivElement | null>(null);
   let workspaceEl = $state<HTMLDivElement | null>(null);
+
+  const validation = $derived(validateProject($project));
 
   const PANE_DEFAULTS = { left: 240, right: 280, bottom: 160 };
   const PANE_MIN = { left: 160, right: 200, bottom: 72 };
@@ -183,6 +197,17 @@
           t.isContentEditable);
       if (typing && e.key !== "Escape") return;
 
+      if (mod && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        if (e.shiftKey) redoAction();
+        else undoAction();
+        return;
+      }
+      if (mod && e.key.toLowerCase() === "y") {
+        e.preventDefault();
+        redoAction();
+        return;
+      }
       if (e.key === "Delete" || e.key === "Backspace") {
         if (!typing) {
           e.preventDefault();
@@ -218,6 +243,11 @@
       if (mod && e.key.toLowerCase() === "a") {
         e.preventDefault();
         selectAllWidgets();
+        return;
+      }
+      if (mod && e.shiftKey && e.key.toLowerCase() === "w") {
+        e.preventDefault();
+        startWindowOpen.update((v) => !v);
         return;
       }
       if (mod && e.shiftKey && e.key.toLowerCase() === "g") {
@@ -361,11 +391,18 @@
   );
 </script>
 
+<SettingsModal open={settingsOpen} onClose={() => (settingsOpen = false)} />
+<StartWindow />
+<AddDeviceModal open={$addDeviceModalOpen} onClose={() => addDeviceModalOpen.set(false)} />
+<AddAlarmModal open={$addAlarmModalOpen} onClose={() => addAlarmModalOpen.set(false)} />
+<AddVariableModal open={$addVariableModalOpen} onClose={() => addVariableModalOpen.set(false)} />
+
 <div class="shell">
   <MenuBar
     {leftTab}
     onLeftTab={(t) => (leftTab = t)}
     onNewWaterTank={reloadWaterTank}
+    onOpenSettings={() => (settingsOpen = true)}
   />
 
   <div class="toolbar">
@@ -389,6 +426,7 @@
     </button>
     <div class="sep"></div>
     <button class="tb" title="Save (Ctrl+S)" onclick={() => persistProject()}>Save</button>
+    <button class="tb" title="Application Settings" onclick={() => (settingsOpen = true)}>⚙️ Settings</button>
     {#if $mode === "designer"}
       <button class="tb" title="Add New Screen" onclick={() => addNewForm()}>+ Screen</button>
     {/if}
@@ -646,6 +684,23 @@
       </span>
     {/if}
     <span class="item">Mode: {$mode}</span>
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <span
+      class="item sb-autosave-item"
+      title="AutoSave Status · Click to open Application Settings"
+      onclick={() => (settingsOpen = true)}
+    >
+      {#if !$appSettings.autosaveEnabled}
+        <span class="sb-badge off">💾 AutoSave: OFF</span>
+      {:else if !validation.valid}
+        <span class="sb-badge warn">💾 AutoSave: ⚠️ {validation.errors.length} err (Skipped)</span>
+      {:else if $appSettings.lastAutosaveStatus === 'ok'}
+        <span class="sb-badge ok">💾 AutoSave: ON ({$appSettings.autosaveIntervalMinutes}m) · OK</span>
+      {:else}
+        <span class="sb-badge ok">💾 AutoSave: ON ({$appSettings.autosaveIntervalMinutes}m)</span>
+      {/if}
+    </span>
     <span class="item" style:margin-left="auto">
       IEC 62443 / ISA-18.2 practices · Lab use only · Not certified
     </span>
@@ -653,6 +708,33 @@
 </div>
 
 <style>
+  .sb-autosave-item {
+    cursor: pointer;
+  }
+  .sb-badge {
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-weight: 700;
+    font-size: 10.5px;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .sb-badge.ok {
+    background: rgba(22, 163, 74, 0.35);
+    border-color: #4ade80;
+    color: #ffffff;
+  }
+  .sb-badge.warn {
+    background: rgba(234, 179, 8, 0.35);
+    border-color: #facc15;
+    color: #ffffff;
+  }
+  .sb-badge.off {
+    opacity: 0.75;
+  }
   .tab-close {
     margin-left: 6px;
     font-size: 11px;

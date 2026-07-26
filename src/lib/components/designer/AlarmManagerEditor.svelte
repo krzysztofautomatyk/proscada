@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { AlarmDefinition, AlarmGroupDefinition, AlarmPriority } from "$lib/types";
-  import { dirty, log, project } from "$lib/stores/app";
+  import { dirty, log, project, addAlarmModalOpen } from "$lib/stores/app";
 
   const groups = $derived($project?.alarm_groups ?? []);
   const alarms = $derived($project?.alarms ?? []);
@@ -83,7 +83,7 @@
     {/each}
   </section>
   <section>
-    <div class="section-title"><span>Alarm Definitions ({alarms.length})</span><button type="button" onclick={addAlarm}>+</button></div>
+    <div class="section-title"><span>Alarm Definitions ({alarms.length})</span><button type="button" title="Dodaj Alarm / Listę Alarmów..." onclick={() => addAlarmModalOpen.set(true)}>+ Dodaj / Listę</button></div>
     {#each alarms as alarm (alarm.id)}
       <article>
         <input aria-label="Alarm name" value={alarm.name} onchange={(event) => updateAlarm(alarm.id, { name: event.currentTarget.value })} />

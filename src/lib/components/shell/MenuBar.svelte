@@ -27,15 +27,26 @@
     selectAllWidgets,
     groupSelectedWidgets,
     ungroupSelectedWidgets,
+    undoAction,
+    redoAction,
+    startWindowOpen,
+    canUndo,
+    canRedo,
+    undoLabel,
+    redoLabel,
+    addDeviceModalOpen,
+    addAlarmModalOpen,
+    addVariableModalOpen,
   } from "$lib/stores/app";
 
   interface Props {
     leftTab: LeftPanelTab;
     onLeftTab: (tab: LeftPanelTab) => void;
     onNewWaterTank: () => void;
+    onOpenSettings?: () => void;
   }
 
-  let { leftTab, onLeftTab, onNewWaterTank }: Props = $props();
+  let { leftTab, onLeftTab, onNewWaterTank, onOpenSettings }: Props = $props();
 
   type MenuId = "file" | "edit" | "view" | "project" | "debug" | "tools" | "help";
 
@@ -124,6 +135,10 @@
       {#if openMenu === m.id}
         <div class="vs-menu-drop" role="menu">
           {#if m.id === "file"}
+            <button type="button" role="menuitem" onclick={() => run(() => startWindowOpen.set(true))}>
+              <span>Start Window / Ekran startowy…</span><kbd>Ctrl+Shift+W</kbd>
+            </button>
+            <div class="vs-menu-sep"></div>
             <button type="button" role="menuitem" onclick={() => run(newProject)}>
               <span>New Project…</span><kbd>Ctrl+Shift+N</kbd>
             </button>
@@ -140,11 +155,32 @@
             <button type="button" role="menuitem" onclick={() => run(exportProjectJson)}>
               <span>Export JSON…</span>
             </button>
+            <div class="vs-menu-sep"></div>
+            <button type="button" role="menuitem" onclick={() => run(() => onOpenSettings?.())}>
+              <span>⚙️ Application Settings…</span>
+            </button>
             {#if $dirty}
               <div class="vs-menu-hint">Unsaved changes</div>
             {/if}
 
           {:else if m.id === "edit"}
+            <button
+              type="button"
+              role="menuitem"
+              disabled={!design || !$canUndo}
+              onclick={() => run(undoAction)}
+            >
+              <span>Undo {$undoLabel ? `(${ $undoLabel })` : ""}</span><kbd>Ctrl+Z</kbd>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              disabled={!design || !$canRedo}
+              onclick={() => run(redoAction)}
+            >
+              <span>Redo {$redoLabel ? `(${ $redoLabel })` : ""}</span><kbd>Ctrl+Y</kbd>
+            </button>
+            <div class="vs-menu-sep"></div>
             <button
               type="button"
               role="menuitem"
@@ -292,8 +328,40 @@
               disabled={!design}
               onclick={() => run(addNewForm)}
             >
-              <span>Add New Screen…</span>
+              <span>🗂 Add New Screen…</span>
             </button>
+
+            <div class="vs-menu-sep"></div>
+
+            <button
+              type="button"
+              role="menuitem"
+              disabled={!design}
+              onclick={() => run(() => addDeviceModalOpen.set(true))}
+            >
+              <span>🔌 Add Modbus Device…</span>
+            </button>
+
+            <button
+              type="button"
+              role="menuitem"
+              disabled={!design}
+              onclick={() => run(() => addAlarmModalOpen.set(true))}
+            >
+              <span>🔔 Add Alarm Rules / List…</span>
+            </button>
+
+            <button
+              type="button"
+              role="menuitem"
+              disabled={!design}
+              onclick={() => run(() => addVariableModalOpen.set(true))}
+            >
+              <span>🏷️ Add Variables / Tag List…</span>
+            </button>
+
+            <div class="vs-menu-sep"></div>
+
             <button
               type="button"
               role="menuitem"

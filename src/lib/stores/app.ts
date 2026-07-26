@@ -10,6 +10,7 @@ import type {
   AlarmDefinition,
   AlarmGroupDefinition,
   ComponentTemplate,
+  DeviceConfig,
   ProjectDesignSystem,
   TagDefinition,
 } from "$lib/types";
@@ -30,6 +31,29 @@ import {
   uid,
 } from "$lib/utils/projectTree";
 import { expandSelectionWithGroups } from "$lib/stores/selection";
+import {
+  recordHistoryState,
+  performUndo,
+  performRedo,
+  canUndo,
+  canRedo,
+  undoLabel,
+  redoLabel,
+  clearHistory,
+} from "$lib/stores/history";
+import { appSettings, updateAppSettings } from "$lib/stores/settings";
+import { validateProject } from "$lib/utils/validation";
+import { recordRecentProject } from "$lib/stores/recentProjects";
+import {
+  activeProjectPath,
+  setActiveProjectPath,
+  saveProjectToDisk,
+  createAndSaveNewProject,
+  openProjectFromDisk,
+} from "$lib/stores/projectStorage";
+import { canDeleteForm, isMainScreen } from "$lib/utils/screenProtection";
+
+export { canUndo, canRedo, undoLabel, redoLabel, activeProjectPath, isMainScreen, canDeleteForm };
 
 export type AppMode = "designer" | "runtime";
 
@@ -41,6 +65,17 @@ export const selectedWidgetIds = writable<string[]>([]);
 export const selectedFormId = writable<string | null>(null);
 /** Solution Explorer selection (folder / screen / script / note / …). */
 export const selectedNodeId = writable<string | null>(null);
+export interface DeviceModalState {
+  open: boolean;
+  mode: "add" | "edit";
+  deviceId?: string;
+}
+
+export const startWindowOpen = writable(false);
+export const deviceModalState = writable<DeviceModalState>({ open: false, mode: "add" });
+export const addDeviceModalOpen = writable(false);
+export const addAlarmModalOpen = writable(false);
+export const addVariableModalOpen = writable(false);
 export const logs = writable<{ t: string; level: "info" | "ok" | "warn" | "err"; msg: string }[]>(
   [],
 );
@@ -93,9 +128,92 @@ export const tagMap = derived(snapshot, ($s) => {
   return m;
 });
 
-let pollTimer: ReturnType<typeof setInterval> | null = null;
+function recordUndo(label = "Edit", forceNewStep = false) {
+  const p = get(project);
+  if (p) {
+    recordHistoryState(p, label, get(selectedFormId), selectionIds(), forceNewStep);
+  }
+}
 
-function applyLoadedProject(p: ScadaProject, msg?: string) {
+export function undoAction() {
+  const curP = get(project);
+  const curFormId = get(selectedFormId);
+  const curWidgets = selectionIds();
+  const snapshot = performUndo(curP, curFormId, curWidgets);
+  if (snapshot) {
+    project.set(ensureProjectTree(snapshot.project));
+    if (snapshot.selectedFormId) selectedFormId.set(snapshot.selectedFormId);
+    setSelection(snapshot.selectedWidgetIds);
+    dirty.set(true);
+    log(`Undo: ${snapshot.actionLabel}`, "info");
+  }
+}
+
+export function redoAction() {
+  const curP = get(project);
+  const curFormId = get(selectedFormId);
+  const curWidgets = selectionIds();
+  const snapshot = performRedo(curP, curFormId, curWidgets);
+  if (snapshot) {
+    project.set(ensureProjectTree(snapshot.project));
+    if (snapshot.selectedFormId) selectedFormId.set(snapshot.selectedFormId);
+    setSelection(snapshot.selectedWidgetIds);
+    dirty.set(true);
+    log(`Redo: ${snapshot.actionLabel}`, "info");
+  }
+}
+
+let pollTimer: ReturnType<typeof setInterval> | null = null;
+let autosaveTimer: ReturnType<typeof setInterval> | null = null;
+let lastAutosaveCheckTime = Date.now();
+
+export function startAutosaveLoop() {
+  if (autosaveTimer) clearInterval(autosaveTimer);
+  autosaveTimer = setInterval(async () => {
+    const settings = get(appSettings);
+    if (!settings.autosaveEnabled) return;
+
+    const intervalMs = (settings.autosaveIntervalMinutes || 10) * 60 * 1000;
+    const now = Date.now();
+    if (now - lastAutosaveCheckTime < intervalMs) return;
+
+    lastAutosaveCheckTime = now;
+    const isDirty = get(dirty);
+    const p = get(project);
+
+    if (!isDirty || !p) return;
+
+    // Validate project before auto-saving
+    const validation = validateProject(p);
+    const timeStr = new Date().toLocaleTimeString();
+
+    if (settings.autosaveOnlyIfNoError && !validation.valid) {
+      updateAppSettings({
+        lastAutosaveTs: timeStr,
+        lastAutosaveStatus: "skipped_errors",
+      });
+      log(`AutoSave skipped (${timeStr}): project has ${validation.errors.length} error(s)`, "warn");
+      return;
+    }
+
+    const ok = await persistProject();
+    if (ok) {
+      updateAppSettings({
+        lastAutosaveTs: timeStr,
+        lastAutosaveStatus: "ok",
+      });
+      log(`AutoSave (${timeStr}): project auto-saved successfully (0 errors)`, "ok");
+    } else {
+      updateAppSettings({
+        lastAutosaveTs: timeStr,
+        lastAutosaveStatus: "error",
+      });
+      log(`AutoSave (${timeStr}): save failed`, "err");
+    }
+  }, 15000); // Check every 15s
+}
+
+export function applyLoadedProject(p: ScadaProject, msg?: string, path?: string | null) {
   const normalized = ensureProjectTree(p);
   project.set(normalized);
   selectedFormId.set(normalized.forms[0]?.id ?? null);
@@ -103,6 +221,17 @@ function applyLoadedProject(p: ScadaProject, msg?: string) {
   selectedWidgetId.set(null);
   selectedWidgetIds.set([]);
   dirty.set(false);
+  clearHistory();
+  if (path !== undefined) {
+    setActiveProjectPath(path);
+  }
+  const currentPath = path ?? get(activeProjectPath) ?? undefined;
+  recordRecentProject({
+    id: normalized.id,
+    name: normalized.name,
+    path: currentPath,
+    description: normalized.description,
+  });
   if (msg) log(msg, "ok");
 }
 
@@ -115,15 +244,20 @@ export async function initApp() {
     } else {
       applyLoadedProject(p, `Project loaded: ${p.name}`);
     }
+    if (get(appSettings).showStartWindowOnStart !== false) {
+      startWindowOpen.set(true);
+    }
     const chainOk = await api.verifyAudit();
     log(chainOk ? "Audit chain verified" : "Audit chain BROKEN", chainOk ? "ok" : "err");
     startUiPoll();
+    startAutosaveLoop();
   } catch (e) {
     log(`Init error: ${e}`, "err");
     try {
       const p = await api.loadBuiltinWaterTank();
       applyLoadedProject(p);
       startUiPoll();
+      startAutosaveLoop();
     } catch (e2) {
       log(`Fallback failed: ${e2}`, "err");
     }
@@ -144,18 +278,27 @@ export function startUiPoll() {
 
 export async function connectDevice() {
   const p = get(project);
-  const dev = p?.devices.find((d) => d.enabled) ?? p?.devices[0];
+  if (!p) return;
+
+  // Sync project definition with backend so the polling engine has updated device list
+  try {
+    await api.saveProject(p);
+  } catch {
+    /* fallback for mock */
+  }
+
+  const dev = p.devices.find((d) => d.enabled) ?? p.devices[0];
   try {
     const test = dev
       ? await api.testDevice(dev.host, dev.port, dev.unit_id, dev.timeout_ms)
-      : { ok: false, message: "No device" };
+      : { ok: false, message: "No device configured" };
     if (!test.ok) {
       log(`Device test failed: ${test.message}`, "warn");
     } else {
       log(`Device reachable ${dev?.host}:${dev?.port}`, "ok");
     }
     await api.startPolling(dev?.id);
-    log(`Polling started → ${dev?.name ?? "device"}`, "ok");
+    log(`Polling started → ${dev?.name ?? "device"} (${dev?.host}:${dev?.port})`, "ok");
   } catch (e) {
     log(`Connect error: ${e}`, "err");
   }
@@ -188,6 +331,7 @@ export async function switchMode(m: AppMode) {
 }
 
 export function updateWidget(patch: Partial<WidgetDef> & { id: string }) {
+  recordUndo("Update Widget");
   project.update((p) => {
     if (!p) return p;
     const formId = get(selectedFormId) ?? p.forms[0]?.id;
@@ -278,6 +422,7 @@ export function applyMultiMove(
 ) {
   const ids = Object.keys(origins);
   if (ids.length === 0) return;
+  recordUndo("Move Widgets");
   project.update((p) => {
     if (!p) return p;
     const formId = get(selectedFormId) ?? p.forms[0]?.id;
@@ -363,6 +508,7 @@ export function generateUniqueWidgetId(): string {
 }
 
 export function addWidget(w: WidgetDef) {
+  recordUndo("Add Widget", true);
   project.update((p) => {
     if (!p) return p;
     const formId = get(selectedFormId) ?? p.forms[0]?.id;
@@ -412,6 +558,7 @@ export function addCatalogWidget(type: string, posX?: number, posY?: number) {
 }
 
 export function updateProjectDesignSystem(next: ProjectDesignSystem) {
+  recordUndo("Update Design System", true);
   project.update((current) => {
     if (!current) return current;
     dirty.set(true);
@@ -1344,6 +1491,7 @@ export function alignSelectedWidgets(
   const centerX = minX + (maxX - minX) / 2;
   const centerY = minY + (maxY - minY) / 2;
 
+  recordUndo("Align Widgets", true);
   project.update((p) => {
     if (!p) return p;
     const formId = get(selectedFormId) ?? p.forms[0]?.id;
@@ -1384,6 +1532,7 @@ export function moveSelectedWidgets(dx: number, dy: number) {
     return;
   }
 
+  recordUndo("Nudge Widgets");
   project.update((p) => {
     if (!p) return p;
     const formId = get(selectedFormId) ?? p.forms[0]?.id;
@@ -1403,14 +1552,19 @@ export function moveSelectedWidgets(dx: number, dy: number) {
   });
 }
 
-export async function persistProject(): Promise<boolean> {
+export async function persistProject(forceDialog = false): Promise<boolean> {
   const p = get(project);
   if (!p) return false;
   try {
     const saved = await api.saveProject(p);
     project.set(saved);
+    const diskResult = await saveProjectToDisk(saved, forceDialog);
     dirty.set(false);
-    log("Project saved (in-memory + hash recomputed)", "ok");
+    if (diskResult.path) {
+      log(`Project saved to disk → ${diskResult.path}`, "ok");
+    } else {
+      log("Project saved (in-memory)", "ok");
+    }
     return true;
   } catch (e) {
     log(`Save failed: ${e}`, "err");
@@ -1419,12 +1573,29 @@ export async function persistProject(): Promise<boolean> {
 }
 
 export function updateFormMeta(patch: Partial<FormDef>) {
+  recordUndo("Update Screen", true);
   project.update((p) => {
     if (!p) return p;
     const formId = get(selectedFormId) ?? p.forms[0]?.id;
-    const forms = p.forms.map((f) => (f.id === formId ? { ...f, ...patch } : f));
+    const targetForm = p.forms.find((f) => f.id === formId);
+    const safePatch = { ...patch };
+    if (targetForm && isMainScreen(targetForm) && safePatch.name && safePatch.name.trim().toLowerCase() !== "main") {
+      log("Nazwa głównego ekranu 'Main' jest zablokowana i nie może zostać zmieniona!", "warn");
+      delete safePatch.name;
+    }
+    // Block renaming any non-Main screen TO "Main"
+    if (targetForm && !isMainScreen(targetForm) && safePatch.name && isMainScreen({ id: "", name: safePatch.name })) {
+      log("Nazwa 'Main' jest zarezerwowana dla głównego ekranu!", "warn");
+      delete safePatch.name;
+    }
+    const forms = p.forms.map((f) => (f.id === formId ? { ...f, ...safePatch } : f));
+    const tree = (p.tree ?? []).map((n) =>
+      n.kind === "screen" && n.ref_id === formId && safePatch.name
+        ? { ...n, name: safePatch.name }
+        : n,
+    );
     dirty.set(true);
-    return { ...p, forms };
+    return { ...p, forms, tree };
   });
 }
 
@@ -1443,6 +1614,13 @@ export function addNewForm(
   grid = 8,
   parentFolderId?: string | null,
 ) {
+  // Block reserved Main screen name
+  if (name && isMainScreen({ id: "", name })) {
+    log("Nazwa 'Main' jest zarezerwowana dla głównego ekranu i nie może być użyta!", "warn");
+    return;
+  }
+
+  recordUndo("Add Screen", true);
   let newFormId = "";
   let formName = "";
   let nodeId = "";
@@ -1488,14 +1666,25 @@ export function addNewForm(
 }
 
 export function deleteForm(formId: string) {
+  const currentProject = get(project);
+  if (!currentProject) return;
+
+  const targetForm = currentProject.forms.find((f) => f.id === formId);
+  if (targetForm && isMainScreen(targetForm)) {
+    log(`Główny ekran (${targetForm.name}) jest chroniony i nigdy nie może zostać usunięty!`, "warn");
+    return;
+  }
+
+  if (!canDeleteForm(formId, currentProject.forms)) {
+    log("Nie można usunąć ostatniego ani głównego ekranu w projekcie", "warn");
+    return;
+  }
+
   let deletedName = "";
   let nextFormId: string | null = null;
+  recordUndo("Delete Screen", true);
   project.update((p) => {
     if (!p) return p;
-    if (p.forms.length <= 1) {
-      log("Cannot delete the only screen in project", "warn");
-      return p;
-    }
     const targetIdx = p.forms.findIndex((f) => f.id === formId);
     if (targetIdx === -1) return p;
 
@@ -1532,6 +1721,7 @@ export function selectSolutionNode(nodeId: string | null) {
 }
 
 export function addProjectFolder(parentId: string | null = null, name?: string) {
+  recordUndo("Add Folder", true);
   let id = "";
   project.update((p) => {
     if (!p) return p;
@@ -1562,6 +1752,7 @@ export function addProjectDocument(
   parentId: string | null = null,
   name?: string,
 ) {
+  recordUndo(`Add ${kind}`, true);
   let id = "";
   let docName = "";
   project.update((p) => {
@@ -1595,6 +1786,7 @@ export function addProjectImage(
   contentDataUrl: string,
   parentId: string | null = null,
 ) {
+  recordUndo("Add Image", true);
   let id = "";
   let isUpdate = false;
   project.update((p) => {
@@ -1703,15 +1895,22 @@ export function deleteProjectNode(nodeId: string) {
   const node = findNode(p.tree, nodeId);
   if (!node) return;
 
+  // Protect Main screen from deletion via tree node
+  if (node.kind === "screen" && isMainScreen(node)) {
+    log("Główny ekran 'Main' nie może zostać usunięty!", "warn");
+    return;
+  }
+
   if (node.kind === "screen" && node.ref_id) {
     deleteForm(node.ref_id);
     return;
   }
 
+  recordUndo("Delete Item", true);
   const removeIds = new Set(collectDescendantIds(p.tree, nodeId));
-  // If deleting folder that contains screens, also remove those forms (keep ≥1 form)
+  // If deleting folder that contains screens, also remove those forms (keep ≥1 form, never delete Main)
   const screenFormIds = p.tree
-    .filter((n) => removeIds.has(n.id) && n.kind === "screen" && n.ref_id)
+    .filter((n) => removeIds.has(n.id) && n.kind === "screen" && n.ref_id && !isMainScreen(n))
     .map((n) => n.ref_id!);
 
   project.update((cur) => {
@@ -1743,6 +1942,15 @@ export function renameProjectNode(nodeId: string, name: string) {
   const p = get(project);
   if (p?.tree) {
     const cur = p.tree.find((n) => n.id === nodeId);
+    if (cur && cur.kind === "screen" && isMainScreen(cur)) {
+      log("Nazwa głównego ekranu 'Main' jest zablokowana i nie może zostać zmieniona!", "warn");
+      return;
+    }
+    // Block renaming any screen TO the reserved "Main" name
+    if (cur && cur.kind === "screen" && isMainScreen({ id: "", name: trimmed })) {
+      log("Nazwa 'Main' jest zarezerwowana dla głównego ekranu!", "warn");
+      return;
+    }
     if (cur) {
       const duplicate = p.tree.find(
         (n) => n.id !== nodeId && n.parent_id === cur.parent_id && n.name.toLowerCase() === trimmed.toLowerCase(),
@@ -1754,13 +1962,20 @@ export function renameProjectNode(nodeId: string, name: string) {
     }
   }
 
+  recordUndo("Rename Item", true);
   updateProjectNode(nodeId, { name: trimmed });
   log(`Renamed → ${trimmed}`, "ok");
 }
 
 export function moveProjectNode(nodeId: string, newParentId: string | null) {
+  recordUndo("Move Item", true);
   project.update((p) => {
     if (!p?.tree) return p;
+    const node = findNode(p.tree, nodeId);
+    if (node?.kind === "folder" && node.parent_id == null && node.name.toLowerCase() === "screens") {
+      log("The root Screens folder cannot be moved", "warn");
+      return p;
+    }
     if (newParentId === nodeId) return p;
     if (newParentId && isAncestor(p.tree, nodeId, newParentId)) {
       log("Cannot move folder into its descendant", "warn");
@@ -1783,18 +1998,20 @@ export function moveProjectNode(nodeId: string, newParentId: string | null) {
   });
 }
 
-export async function newBlankProject(name?: string) {
-  const p = createEmptyProject(name || "New Project");
+export async function newBlankProject(name?: string, description?: string) {
+  const result = await createAndSaveNewProject(name || "New Project", description || "");
+  if (!result) return;
+  const { project: p, path } = result;
   try {
     await api.loadProject(p);
   } catch {
     /* browser mock */
   }
-  applyLoadedProject(p, `Created project: ${p.name}`);
-  dirty.set(true);
+  applyLoadedProject(p, `Created project: ${p.name}`, path);
+  dirty.set(false);
 }
 
-export async function importProjectFromJson(text: string) {
+export async function importProjectFromJson(text: string, path?: string) {
   const raw = JSON.parse(text) as unknown;
   const p = normalizeImportedProject(raw);
   try {
@@ -1802,20 +2019,23 @@ export async function importProjectFromJson(text: string) {
   } catch {
     /* browser mock — keep in UI store */
   }
-  applyLoadedProject(p, `Imported project: ${p.name}`);
-  dirty.set(true);
+  applyLoadedProject(p, `Imported project: ${p.name}`, path);
+  dirty.set(false);
 }
 
 export async function importProjectFile() {
   try {
-    const { openTextFile } = await import("$lib/services/fileIo");
-    const picked = await openTextFile();
-    if (!picked) {
+    const res = await openProjectFromDisk();
+    if (!res) {
       log("Import cancelled", "warn");
       return;
     }
-    await importProjectFromJson(picked.text);
-    log(`Imported from ${picked.path}`, "ok");
+    try {
+      await api.loadProject(res.project);
+    } catch {
+      /* browser mock */
+    }
+    applyLoadedProject(res.project, `Loaded project: ${res.project.name}`, res.path);
   } catch (e) {
     log(`Import failed: ${e}`, "err");
   }
@@ -1857,4 +2077,145 @@ export async function exportProjectJson() {
   } catch (e) {
     log(`Export failed: ${e}`, "err");
   }
+}
+
+export function navigateToValidationIssue(issue: {
+  targetFormId?: string;
+  targetWidgetId?: string;
+  targetNodeId?: string;
+  targetTagId?: string;
+  targetDeviceId?: string;
+}) {
+  const p = get(project);
+  if (!p) return;
+
+  if (issue.targetFormId) {
+    switchMode("designer");
+    selectedFormId.set(issue.targetFormId);
+    if (issue.targetWidgetId) {
+      setSelection([issue.targetWidgetId]);
+      selectedWidgetId.set(issue.targetWidgetId);
+      log(`Navigated to widget '${issue.targetWidgetId}' on screen`, "info");
+    } else {
+      selectedWidgetId.set(null);
+      selectedWidgetIds.set([]);
+      log(`Navigated to screen '${issue.targetFormId}'`, "info");
+    }
+    return;
+  }
+
+  if (issue.targetNodeId) {
+    switchMode("designer");
+    selectSolutionNode(issue.targetNodeId);
+    log(`Navigated to item '${issue.targetNodeId}'`, "info");
+    return;
+  }
+
+  if (issue.targetTagId) {
+    const varsNode = p.tree?.find((n) => n.kind === "variables");
+    if (varsNode) {
+      switchMode("designer");
+      selectSolutionNode(varsNode.id);
+      log(`Navigated to Variables editor for tag '${issue.targetTagId}'`, "info");
+    }
+    return;
+  }
+}
+
+export function addDeviceToProject(dev: DeviceConfig) {
+  recordUndo("Add Device", true);
+  project.update((p) => {
+    if (!p) return p;
+    dirty.set(true);
+    const existing = p.devices.filter((d) => d.id !== dev.id);
+    return { ...p, devices: [...existing, dev] };
+  });
+  log(`Device added: ${dev.name} (${dev.host}:${dev.port})`, "ok");
+}
+
+export function addAlarmToProject(alarm: AlarmDefinition, group?: AlarmGroupDefinition) {
+  recordUndo("Add Alarm", true);
+  project.update((p) => {
+    if (!p) return p;
+    dirty.set(true);
+    const alarms = p.alarms.filter((a) => a.id !== alarm.id);
+    let groups = p.alarm_groups ?? [];
+    if (group && !groups.some((g) => g.id === group.id)) {
+      groups = [...groups, group];
+    }
+    return { ...p, alarms: [...alarms, alarm], alarm_groups: groups };
+  });
+  log(`Alarm added: ${alarm.name} [${alarm.priority.toUpperCase()}]`, "ok");
+}
+
+export function addAlarmsToProject(newAlarms: AlarmDefinition[]) {
+  recordUndo("Add Alarm List", true);
+  project.update((p) => {
+    if (!p) return p;
+    dirty.set(true);
+    const alarmMap = new Map(p.alarms.map((a) => [a.id, a]));
+    for (const a of newAlarms) alarmMap.set(a.id, a);
+    return { ...p, alarms: Array.from(alarmMap.values()) };
+  });
+  log(`Batch added ${newAlarms.length} alarm(s)`, "ok");
+}
+
+export function addTagToProject(tag: TagDefinition) {
+  recordUndo("Add Tag", true);
+  project.update((p) => {
+    if (!p) return p;
+    dirty.set(true);
+    const tags = p.tags.filter((t) => t.id !== tag.id);
+    return { ...p, tags: [...tags, tag] };
+  });
+  log(`Tag added: ${tag.name} (${tag.id})`, "ok");
+}
+
+export function addTagsToProject(newTags: TagDefinition[]) {
+  recordUndo("Add Variable List", true);
+  project.update((p) => {
+    if (!p) return p;
+    dirty.set(true);
+    const tagMap = new Map(p.tags.map((t) => [t.id, t]));
+    for (const t of newTags) tagMap.set(t.id, t);
+    return { ...p, tags: Array.from(tagMap.values()) };
+  });
+  log(`Batch added ${newTags.length} variable(s)`, "ok");
+}
+
+export function openAddDeviceModal() {
+  deviceModalState.set({ open: true, mode: "add" });
+  addDeviceModalOpen.set(true);
+}
+
+export function openEditDeviceModal(deviceId: string) {
+  deviceModalState.set({ open: true, mode: "edit", deviceId });
+  addDeviceModalOpen.set(true);
+}
+
+export function closeDeviceModal() {
+  deviceModalState.set({ open: false, mode: "add" });
+  addDeviceModalOpen.set(false);
+}
+
+export function updateDeviceInProject(id: string, dev: DeviceConfig) {
+  recordUndo("Edit Device", true);
+  project.update((p) => {
+    if (!p) return p;
+    dirty.set(true);
+    const devices = p.devices.map((d) => (d.id === id ? dev : d));
+    return { ...p, devices };
+  });
+  log(`Device updated: ${dev.name} (${dev.host}:${dev.port})`, "ok");
+}
+
+export function deleteDeviceFromProject(id: string) {
+  recordUndo("Delete Device", true);
+  project.update((p) => {
+    if (!p) return p;
+    dirty.set(true);
+    const devices = p.devices.filter((d) => d.id !== id);
+    return { ...p, devices };
+  });
+  log(`Device deleted: ${id}`, "warn");
 }

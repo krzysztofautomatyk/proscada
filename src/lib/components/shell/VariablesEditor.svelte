@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { ScadaProject, TagDefinition } from "$lib/types";
-  import { project, dirty, log } from "$lib/stores/app";
+  import { project, dirty, log, addVariableModalOpen } from "$lib/stores/app";
   import { uid } from "$lib/utils/projectTree";
 
   interface Props {
@@ -75,7 +75,7 @@
     <input class="filter" placeholder="Filter…" bind:value={filter} />
     <span class="spacer"></span>
     {#if design}
-      <button type="button" class="primary" onclick={addTag}>+ Add Tag</button>
+      <button type="button" class="primary" onclick={() => addVariableModalOpen.set(true)}>➕ Add Variable / Tag List…</button>
     {/if}
   </div>
   <div class="table-wrap">

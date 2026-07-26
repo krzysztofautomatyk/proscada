@@ -26,6 +26,10 @@ export async function saveTextFile(
   }
 
   // Browser / Vite-only fallback
+  if (typeof document === "undefined") {
+    return defaultName;
+  }
+
   const blob = new Blob([contents], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -85,6 +89,31 @@ export async function openTextFile(
     document.body.appendChild(input);
     input.click();
   });
+}
+
+/** Direct write to known file path without prompting dialog (Tauri mode). */
+export async function writeDirectTextFile(path: string, contents: string): Promise<boolean> {
+  if (isTauri()) {
+    try {
+      await writeTextFile(path, contents);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+/** Direct read from known file path without prompting dialog (Tauri mode). */
+export async function readDirectTextFile(path: string): Promise<string | null> {
+  if (isTauri()) {
+    try {
+      return await readTextFile(path);
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 export type { ScadaProject };

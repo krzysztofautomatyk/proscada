@@ -13,6 +13,8 @@
     deleteForm,
     scriptNodes,
     importImageFiles,
+    isMainScreen,
+    canDeleteForm,
   } from "$lib/stores/app";
   import { FONT_OPTIONS } from "$lib/utils/dynamics";
   import ConditionEditor from "./ConditionEditor.svelte";
@@ -1623,6 +1625,8 @@
             <td>
               <input
                 value={form.name}
+                disabled={form ? isMainScreen(form) : false}
+                title={form && isMainScreen(form) ? "Nazwa głównego ekranu 'Main' jest zablokowana" : ""}
                 onchange={(e) => updateFormMeta({ name: e.currentTarget.value })}
               />
             </td>
@@ -1709,6 +1713,8 @@
         <button
           class="danger"
           style:width="100%"
+          disabled={!canDeleteForm(form.id, $project?.forms ?? [])}
+          title={form && isMainScreen(form) ? "Główny ekran 'Main' nie może zostać usunięty" : ""}
           onclick={() => deleteForm(form.id)}
         >
           🗑 Delete Current Screen

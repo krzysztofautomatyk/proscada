@@ -1,0 +1,174 @@
+{
+  "schema_version": 3,
+  "id": "proj_ms1pzwnp_jft9e",
+  "name": "Nowy Projekt SCADA",
+  "description": "",
+  "devices": [],
+  "tags": [],
+  "forms": [
+    {
+      "id": "form_ms1pzwnp_382mg",
+      "name": "Main",
+      "width": 1040,
+      "height": 700,
+      "background": "#F4F5F7",
+      "grid": 8,
+      "widgets": []
+    }
+  ],
+  "alarms": [],
+  "alarm_groups": [],
+  "design_system": {
+    "version": 1,
+    "fonts": [
+      {
+        "id": "font-label",
+        "name": "Label",
+        "family": "Segoe UI",
+        "fallback": "system-ui, sans-serif",
+        "size": 11,
+        "weight": "600",
+        "lineHeight": 1.2
+      },
+      {
+        "id": "font-value",
+        "name": "Process Value",
+        "family": "Segoe UI",
+        "fallback": "system-ui, sans-serif",
+        "size": 16,
+        "weight": "800",
+        "lineHeight": 1.1
+      },
+      {
+        "id": "font-alarm",
+        "name": "Alarm",
+        "family": "Segoe UI",
+        "fallback": "system-ui, sans-serif",
+        "size": 11,
+        "weight": "800",
+        "lineHeight": 1.2
+      }
+    ],
+    "styles": [
+      {
+        "id": "style-default",
+        "name": "Default HMI",
+        "target": "*",
+        "surface": "#ffffff",
+        "text": "#1f2937",
+        "accent": "#2563eb",
+        "border": "#cbd5e1"
+      },
+      {
+        "id": "style-equipment",
+        "name": "Equipment",
+        "target": "process_symbol,faceplate",
+        "surface": "#f8fafc",
+        "text": "#334155",
+        "accent": "#2563eb",
+        "border": "#94a3b8"
+      },
+      {
+        "id": "style-high-contrast",
+        "name": "High Contrast",
+        "target": "*",
+        "surface": "#000000",
+        "text": "#ffffff",
+        "accent": "#00e5ff",
+        "border": "#ffffff"
+      }
+    ],
+    "animations": [
+      {
+        "id": "anim-none",
+        "name": "None",
+        "kind": "none",
+        "durationMs": 0,
+        "easing": "linear"
+      },
+      {
+        "id": "anim-pulse",
+        "name": "Attention Pulse",
+        "kind": "pulse",
+        "durationMs": 1200,
+        "easing": "ease-in-out"
+      },
+      {
+        "id": "anim-rotate",
+        "name": "Running Rotation",
+        "kind": "rotate",
+        "durationMs": 1600,
+        "easing": "linear"
+      },
+      {
+        "id": "anim-fade",
+        "name": "Soft Fade",
+        "kind": "fade",
+        "durationMs": 1000,
+        "easing": "ease-in-out"
+      },
+      {
+        "id": "anim-slide",
+        "name": "Flow Slide",
+        "kind": "slide",
+        "durationMs": 1400,
+        "easing": "linear"
+      }
+    ]
+  },
+  "component_templates": [],
+  "tree": [
+    {
+      "id": "fld_ms1pzwnp_ej439",
+      "parent_id": null,
+      "kind": "folder",
+      "name": "Screens",
+      "order": 0
+    },
+    {
+      "id": "fld_ms1pzwnp_fa5ld",
+      "parent_id": null,
+      "kind": "folder",
+      "name": "Scripts",
+      "order": 1
+    },
+    {
+      "id": "fld_ms1pzwnp_subzk",
+      "parent_id": null,
+      "kind": "folder",
+      "name": "Styles",
+      "order": 2
+    },
+    {
+      "id": "fld_ms1pzwnp_ne02h",
+      "parent_id": null,
+      "kind": "folder",
+      "name": "Images",
+      "order": 3
+    },
+    {
+      "id": "fld_ms1pzwnp_crwu8",
+      "parent_id": null,
+      "kind": "folder",
+      "name": "Documents",
+      "order": 4
+    },
+    {
+      "id": "var_ms1pzwnp_mwcbl",
+      "parent_id": null,
+      "kind": "variables",
+      "name": "Variables",
+      "order": 5,
+      "content": ""
+    },
+    {
+      "id": "scr_ms1pzwnp_knfuz",
+      "parent_id": "fld_ms1pzwnp_ej439",
+      "kind": "screen",
+      "name": "Main",
+      "order": 0,
+      "ref_id": "form_ms1pzwnp_382mg"
+    }
+  ],
+  "content_hash": ""
+}

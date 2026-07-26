@@ -32,6 +32,7 @@ Dokumentacja jest celowo podzielona na małe pliki tematyczne. Ten plik jest jed
 ## Funkcje
 
 - [Designer](features/designer.md)
+- [Ekran Startowy](features/start-window.md)
 - [Style i czcionki projektu](features/design-system.md)
 - [Dynamika i animacje](features/dynamics.md)
 - [Centralny Alarm Manager](features/alarm-manager.md)
