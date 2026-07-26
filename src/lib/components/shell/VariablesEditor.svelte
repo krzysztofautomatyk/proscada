@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { ScadaProject, TagDefinition } from "$lib/types";
-  import { project, dirty, log, addVariableModalOpen } from "$lib/stores/app";
-  import { uid } from "$lib/utils/projectTree";
+  import { project, snapshot, dirty, log, addVariableModalOpen } from "$lib/stores/app";
+  import { SYSTEM_TAG_DEFINITIONS } from "$lib/services/systemTagsService";
 
   interface Props {
     scada: ScadaProject;
@@ -11,20 +11,63 @@
   let { scada, design = true }: Props = $props();
 
   let filter = $state("");
+  let categoryTab = $state<"all" | "plc" | "memory" | "system">("all");
 
-  const tags = $derived(
-    scada.tags.filter((t) => {
+  const tagValueMap = $derived.by(() => {
+    const map = new Map<string, { value: number; boolValue: boolean; stringValue?: string; quality: string }>();
+    if ($snapshot?.tags) {
+      for (const tv of $snapshot.tags) {
+        map.set(tv.tag_id, {
+          value: tv.value,
+          boolValue: tv.bool_value,
+          stringValue: tv.string_value,
+          quality: tv.quality,
+        });
+      }
+    }
+    return map;
+  });
+
+  const combinedTags = $derived.by(() => {
+    const plcAndMemTags = scada.tags ?? [];
+    const sysTags = SYSTEM_TAG_DEFINITIONS;
+    return [...plcAndMemTags, ...sysTags];
+  });
+
+  const filteredTags = $derived(
+    combinedTags.filter((t) => {
+      // Category filter
+      if (categoryTab === "plc" && (t.binding.table === "memory" || t.binding.table === "system")) {
+        return false;
+      }
+      if (categoryTab === "memory" && t.binding.table !== "memory") {
+        return false;
+      }
+      if (categoryTab === "system" && t.binding.table !== "system") {
+        return false;
+      }
+
+      // Text query filter
       if (!filter.trim()) return true;
       const q = filter.toLowerCase();
       return (
         t.name.toLowerCase().includes(q) ||
         t.id.toLowerCase().includes(q) ||
+        t.binding.table.toLowerCase().includes(q) ||
+        t.data_type.toLowerCase().includes(q) ||
         (t.description ?? "").toLowerCase().includes(q)
       );
-    }),
+    })
   );
 
+  const plcCount = $derived(scada.tags.filter((t) => t.binding.table !== "memory" && t.binding.table !== "system").length);
+  const memoryCount = $derived(scada.tags.filter((t) => t.binding.table === "memory").length);
+  const systemCount = $derived(SYSTEM_TAG_DEFINITIONS.length);
+  const totalCount = $derived(scada.tags.length + systemCount);
+
   function patchTag(id: string, patch: Partial<TagDefinition>) {
+    // System tags are read-only
+    if (SYSTEM_TAG_DEFINITIONS.some((st) => st.id === id)) return;
     project.update((p) => {
       if (!p) return p;
       dirty.set(true);
@@ -35,31 +78,12 @@
     });
   }
 
-  function addTag() {
-    const deviceId = scada.devices[0]?.id ?? "";
-    const id = uid("tag");
-    const tag: TagDefinition = {
-      id,
-      name: `TAG_${scada.tags.length + 1}`,
-      device_id: deviceId,
-      data_type: "u16",
-      binding: { address: 0, table: "holding", writable: false },
-      unit: "",
-      description: "",
-      scale: 1,
-      offset: 0,
-      decimals: 0,
-    };
-    project.update((p) => {
-      if (!p) return p;
-      dirty.set(true);
-      return { ...p, tags: [...p.tags, tag] };
-    });
-    log(`Tag added: ${tag.name}`, "ok");
-  }
-
   function removeTag(id: string) {
-    if (!confirm(`Delete tag ${id}?`)) return;
+    if (SYSTEM_TAG_DEFINITIONS.some((st) => st.id === id)) {
+      alert("Zmienne systemowe są chronione i nie mogą zostać usunięte!");
+      return;
+    }
+    if (!confirm(`Czy na pewno chcesz usunąć zmienną '${id}'?`)) return;
     project.update((p) => {
       if (!p) return p;
       dirty.set(true);
@@ -67,214 +91,228 @@
     });
     log(`Tag deleted: ${id}`, "warn");
   }
+
+  function formatLiveValue(tag: TagDefinition): string {
+    const live = tagValueMap.get(tag.id);
+    if (!live) return "—";
+
+    if (live.stringValue !== undefined) {
+      return live.stringValue;
+    }
+    if (tag.data_type === "bool") {
+      return live.boolValue ? "1 (TRUE)" : "0 (FALSE)";
+    }
+    const numVal = live.value;
+    const formatted = numVal.toFixed(tag.decimals ?? 0);
+    return tag.unit ? `${formatted} ${tag.unit}` : formatted;
+  }
 </script>
 
-<div class="vars">
+<div class="vars-manager">
+  <!-- Header Toolbar -->
   <div class="toolbar">
-    <span class="title">🏷 Variables / Tags ({scada.tags.length})</span>
-    <input class="filter" placeholder="Filter…" bind:value={filter} />
-    <span class="spacer"></span>
+    <div class="title-group">
+      <span class="title-icon">🏷️</span>
+      <span class="title-text">Centralna Baza Zmiennych SCADA</span>
+      <span class="badge count-badge">{totalCount} zmiennych</span>
+    </div>
+
+    <!-- Category Tabs -->
+    <div class="cat-tabs">
+      <button
+        type="button"
+        class="cat-tab"
+        class:active={categoryTab === "all"}
+        onclick={() => (categoryTab = "all")}
+      >
+        Wszystkie ({totalCount})
+      </button>
+      <button
+        type="button"
+        class="cat-tab"
+        class:active={categoryTab === "plc"}
+        onclick={() => (categoryTab = "plc")}
+      >
+        🌐 PLC Modbus ({plcCount})
+      </button>
+      <button
+        type="button"
+        class="cat-tab"
+        class:active={categoryTab === "memory"}
+        onclick={() => (categoryTab = "memory")}
+      >
+        🧠 Pamięć ({memoryCount})
+      </button>
+      <button
+        type="button"
+        class="cat-tab"
+        class:active={categoryTab === "system"}
+        onclick={() => (categoryTab = "system")}
+      >
+        ⚙️ Systemowe ({systemCount})
+      </button>
+    </div>
+
+    <div class="search-box">
+      <input
+        type="text"
+        class="filter-input"
+        placeholder="Filtruj (ID, nazwa, typ, tabela, opis)..."
+        bind:value={filter}
+      />
+    </div>
+
     {#if design}
-      <button type="button" class="primary" onclick={() => addVariableModalOpen.set(true)}>➕ Add Variable / Tag List…</button>
+      <button
+        type="button"
+        class="btn-add"
+        onclick={() => addVariableModalOpen.set(true)}
+      >
+        ➕ Konfigurator Zmiennych / Menedżer Mapy…
+      </button>
     {/if}
   </div>
+
+  <!-- Data Table -->
   <div class="table-wrap">
     <table>
       <thead>
         <tr>
-          <th>Name</th>
-          <th>Id</th>
-          <th>Type</th>
-          <th>Addr</th>
-          <th>Bit</th>
-          <th>Table</th>
-          <th>W</th>
-          <th>Verify</th>
-          <th>Bit write</th>
-          <th>Single writer</th>
-          <th>Unit</th>
-          <th>Description</th>
-          {#if design}<th></th>{/if}
+          <th style:width="90px">Status</th>
+          <th style:width="140px">Wartość Żywa (Live)</th>
+          <th>Nazwa Zmiennej</th>
+          <th>Tag ID</th>
+          <th style:width="90px">Typ</th>
+          <th style:width="100px">Tabela / Źródło</th>
+          <th style:width="80px">Adres / Bit</th>
+          <th style:width="70px">Dostęp</th>
+          <th style:width="80px">Jednostka</th>
+          <th>Opis Zmiennej</th>
+          {#if design}<th style:width="70px">Akcje</th>{/if}
         </tr>
       </thead>
       <tbody>
-        {#each tags as t (t.id)}
+        {#each filteredTags as t (t.id)}
+          {@const isSys = t.is_system || t.binding.table === "system"}
+          {@const live = tagValueMap.get(t.id)}
+          {@const qualityClass = isSys ? "good" : (live?.quality ?? "bad")}
           <tr>
+            <!-- Status Badge -->
             <td>
-              {#if design}
-                <input value={t.name} onchange={(e) => patchTag(t.id, { name: e.currentTarget.value })} />
-              {:else}
-                {t.name}
-              {/if}
+              <span class="status-badge {qualityClass}">
+                <span class="dot"></span>
+                {isSys ? "SYS" : (live?.quality?.toUpperCase() ?? "OFFLINE")}
+              </span>
             </td>
-            <td class="mono">{t.id}</td>
-            <td>
-              {#if design}
-                <select
-                  value={t.data_type}
-                  onchange={(e) =>
-                    patchTag(t.id, {
-                      data_type: e.currentTarget.value as TagDefinition["data_type"],
-                    })}
-                >
-                  <option value="bool">bool</option>
-                  <option value="u16">u16</option>
-                  <option value="i16">i16</option>
-                  <option value="f32">f32</option>
-                </select>
-              {:else}
-                {t.data_type}
-              {/if}
+
+            <!-- Live Value -->
+            <td class="live-val-cell">
+              <span class="live-val-text">{formatLiveValue(t)}</span>
             </td>
+
+            <!-- Name -->
             <td>
-              {#if design && t.binding.writable}
+              {#if design && !isSys}
                 <input
-                  type="checkbox"
-                  checked={t.binding.verify_readback ?? true}
-                  title="Require the value to persist during immediate read-back. Disable for self-clearing command points."
-                  onchange={(e) =>
-                    patchTag(t.id, {
-                      binding: { ...t.binding, verify_readback: e.currentTarget.checked },
-                    })}
+                  class="edit-input"
+                  value={t.name}
+                  onchange={(e) => patchTag(t.id, { name: e.currentTarget.value })}
                 />
               {:else}
-                {t.binding.writable ? ((t.binding.verify_readback ?? true) ? "✓" : "observe") : "—"}
+                <span class="tag-name">{t.name}</span>
               {/if}
             </td>
+
+            <!-- Tag ID -->
             <td>
-              {#if design}
-                <input
-                  type="number"
-                  class="addr"
-                  value={t.binding.address}
-                  onchange={(e) =>
-                    patchTag(t.id, {
-                      binding: { ...t.binding, address: Number(e.currentTarget.value) },
-                    })}
-                />
-              {:else}
-                {t.binding.address}
-              {/if}
+              <span class="tag-id-code">{t.id}</span>
             </td>
+
+            <!-- Data Type -->
             <td>
-              {#if design}
-                <input
-                  type="number"
-                  class="bit"
-                  min="0"
-                  max="15"
-                  placeholder="—"
-                  value={t.binding.bit ?? ""}
-                  disabled={t.data_type !== "bool" || t.binding.table !== "holding"}
-                  onchange={(e) =>
-                    patchTag(t.id, {
-                      binding: {
-                        ...t.binding,
-                        bit: e.currentTarget.value === "" ? null : Number(e.currentTarget.value),
-                      },
-                    })}
-                />
-              {:else}
-                {t.binding.bit ?? "—"}
-              {/if}
+              <span class="type-pill">{t.data_type}</span>
             </td>
+
+            <!-- Table / Source -->
             <td>
-              {#if design}
-                <select
-                  value={t.binding.table}
-                  onchange={(e) =>
-                    patchTag(t.id, {
-                      binding: {
-                        ...t.binding,
-                        table: e.currentTarget.value as TagDefinition["binding"]["table"],
-                        bit: e.currentTarget.value === "holding" ? t.binding.bit : null,
-                      },
-                    })}
-                >
-                  <option value="holding">holding</option>
-                  <option value="input">input</option>
-                  <option value="coil">coil</option>
-                  <option value="discrete">discrete</option>
-                </select>
-              {:else}
-                {t.binding.table}
-              {/if}
+              <span class="table-pill {t.binding.table}">
+                {#if t.binding.table === "memory"}
+                  🧠 Memory
+                {:else if t.binding.table === "system"}
+                  ⚙️ System
+                {:else}
+                  🌐 {t.binding.table}
+                {/if}
+              </span>
             </td>
-            <td>
-              {#if design}
-                <input
-                  type="checkbox"
-                  checked={t.binding.writable ?? false}
-                  disabled={t.binding.table === "input" || t.binding.table === "discrete"}
-                  onchange={(e) =>
-                    patchTag(t.id, {
-                      binding: { ...t.binding, writable: e.currentTarget.checked },
-                    })}
-                />
-              {:else}
-                {t.binding.writable ? "✓" : ""}
-              {/if}
-            </td>
-            <td>
-              {#if design && t.binding.table === "holding" && t.binding.bit !== null && t.binding.bit !== undefined}
-                <select
-                  value={t.binding.bit_write_mode ?? "mask_write"}
-                  onchange={(e) =>
-                    patchTag(t.id, {
-                      binding: {
-                        ...t.binding,
-                        bit_write_mode: e.currentTarget.value as "mask_write" | "read_modify_write",
-                      },
-                    })}
-                >
-                  <option value="mask_write">FC22 mask</option>
-                  <option value="read_modify_write">FC03+FC06 RMW</option>
-                </select>
-              {:else}
+
+            <!-- Address / Bit -->
+            <td class="mono">
+              {#if t.binding.table === "system" || t.binding.table === "memory"}
                 —
-              {/if}
-            </td>
-            <td>
-              {#if design && t.binding.bit_write_mode === "read_modify_write"}
-                <input
-                  type="checkbox"
-                  checked={t.binding.single_writer ?? false}
-                  title="Required for RMW; confirms no other master or PLC logic writes this register."
-                  onchange={(e) =>
-                    patchTag(t.id, {
-                      binding: { ...t.binding, single_writer: e.currentTarget.checked },
-                    })}
-                />
               {:else}
-                {t.binding.single_writer ? "✓" : "—"}
+                R{t.binding.address}{t.binding.bit !== null && t.binding.bit !== undefined ? `.B${t.binding.bit}` : ""}
               {/if}
             </td>
+
+            <!-- Access (R/W vs Read-Only) -->
             <td>
-              {#if design}
+              {#if t.binding.writable && !isSys}
+                <span class="access-badge rw">R/W</span>
+              {:else}
+                <span class="access-badge ro">🔒 Read-Only</span>
+              {/if}
+            </td>
+
+            <!-- Unit -->
+            <td>
+              {#if design && !isSys}
                 <input
-                  class="unit"
-                  value={t.unit}
+                  class="edit-input-sm"
+                  value={t.unit ?? ""}
+                  placeholder="—"
                   onchange={(e) => patchTag(t.id, { unit: e.currentTarget.value })}
                 />
               {:else}
-                {t.unit}
+                {t.unit || "—"}
               {/if}
             </td>
+
+            <!-- Description -->
             <td>
-              {#if design}
+              {#if design && !isSys}
                 <input
-                  value={t.description}
+                  class="edit-input"
+                  value={t.description ?? ""}
+                  placeholder="Brak opisu..."
                   onchange={(e) => patchTag(t.id, { description: e.currentTarget.value })}
                 />
               {:else}
-                {t.description}
+                <span class="desc-text">{t.description || "—"}</span>
               {/if}
             </td>
+
+            <!-- Actions -->
             {#if design}
               <td>
-                <button type="button" class="del" onclick={() => removeTag(t.id)}>✕</button>
+                {#if !isSys}
+                  <button
+                    type="button"
+                    class="btn-del"
+                    title="Usuń zmienną"
+                    onclick={() => removeTag(t.id)}
+                  >
+                    🗑️
+                  </button>
+                {/if}
               </td>
             {/if}
+          </tr>
+        {:else}
+          <tr>
+            <td colspan={design ? 11 : 10} class="empty-cell">
+              Brak zmiennych spełniających kryteria wyszukiwania.
+            </td>
           </tr>
         {/each}
       </tbody>
@@ -283,102 +321,253 @@
 </div>
 
 <style>
-  .vars {
+  .vars-manager {
     display: flex;
     flex-direction: column;
     height: 100%;
-    min-height: 0;
-    background: #1e1e1e;
+    background: var(--vs-bg, #1e1e1e);
+    color: var(--vs-text, #cccccc);
+    font-family: var(--font-ui, sans-serif);
   }
+
   .toolbar {
     display: flex;
     align-items: center;
+    gap: 12px;
+    padding: 8px 14px;
+    background: var(--vs-bg-2, #252526);
+    border-bottom: 1px solid var(--vs-border, #3e3e42);
+    flex-wrap: wrap;
+  }
+
+  .title-group {
+    display: flex;
+    align-items: center;
     gap: 8px;
-    padding: 6px 10px;
-    border-bottom: 1px solid var(--vs-border);
-    background: var(--vs-bg-3);
   }
-  .title {
+
+  .title-icon { font-size: 16px; }
+
+  .title-text {
+    font-size: 13px;
     font-weight: 700;
-    font-size: 12px;
-    color: var(--vs-text-bright);
+    color: var(--vs-text-bright, #f3f3f3);
   }
-  .filter {
-    background: #3c3c3c;
-    border: 1px solid var(--vs-border);
-    color: #fff;
+
+  .count-badge {
+    background: var(--vs-accent, #007acc);
+    color: #ffffff;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 10px;
+  }
+
+  .cat-tabs {
+    display: flex;
+    gap: 4px;
+    background: var(--vs-bg, #1e1e1e);
+    padding: 2px;
+    border-radius: 4px;
+    border: 1px solid var(--vs-border, #3e3e42);
+  }
+
+  .cat-tab {
+    background: transparent;
+    border: none;
+    color: var(--vs-text-dim, #9d9d9d);
     font-size: 11px;
-    padding: 3px 8px;
-    border-radius: 3px;
-    width: 160px;
-  }
-  .spacer {
-    flex: 1;
-  }
-  .toolbar button.primary {
-    background: var(--vs-accent-2);
-    border: 1px solid var(--vs-accent);
-    color: #fff;
-    font-size: 11px;
-    font-weight: 700;
-    padding: 3px 10px;
+    font-weight: 600;
+    padding: 4px 10px;
     border-radius: 3px;
     cursor: pointer;
+    transition: all 0.12s ease;
   }
+
+  .cat-tab:hover {
+    color: var(--vs-text-bright, #ffffff);
+    background: rgba(255, 255, 255, 0.06);
+  }
+
+  .cat-tab.active {
+    background: var(--vs-accent, #007acc);
+    color: #ffffff;
+    font-weight: 700;
+  }
+
+  .search-box {
+    flex: 1;
+    min-width: 200px;
+  }
+
+  .filter-input {
+    width: 100%;
+    background: var(--vs-bg, #1e1e1e);
+    border: 1px solid var(--vs-border, #3e3e42);
+    border-radius: 4px;
+    color: var(--vs-text-bright, #f3f3f3);
+    padding: 5px 10px;
+    font-size: 12px;
+    outline: none;
+  }
+
+  .filter-input:focus {
+    border-color: var(--vs-accent, #007acc);
+  }
+
+  .btn-add {
+    background: var(--vs-accent, #007acc);
+    border: 1px solid var(--vs-accent-2, #0e639c);
+    color: #ffffff;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 5px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.12s ease;
+  }
+
+  .btn-add:hover {
+    background: var(--vs-accent-2, #0e639c);
+  }
+
   .table-wrap {
     flex: 1;
     overflow: auto;
   }
+
   table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 11px;
+    font-size: 12px;
+    text-align: left;
   }
+
   th {
     position: sticky;
     top: 0;
-    background: #2d2d30;
-    text-align: left;
-    padding: 6px 8px;
-    color: var(--vs-text-dim);
+    background: var(--vs-bg-3, #2d2d30);
+    color: var(--vs-text-dim, #9d9d9d);
+    font-size: 10px;
     font-weight: 700;
-    border-bottom: 1px solid var(--vs-border);
+    text-transform: uppercase;
+    padding: 7px 10px;
+    border-bottom: 1px solid var(--vs-border, #3e3e42);
+    z-index: 10;
   }
+
   td {
-    padding: 3px 6px;
-    border-bottom: 1px solid #2a2a2a;
+    padding: 5px 10px;
+    border-bottom: 1px solid var(--vs-border-soft, #2b2b2b);
     vertical-align: middle;
   }
-  td input,
-  td select {
+
+  tr:hover td {
+    background: var(--vs-selection, #264f78);
+    color: #ffffff;
+  }
+
+  .status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 6px;
+    border-radius: 3px;
+  }
+
+  .status-badge .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+
+  .status-badge.good { background: rgba(34, 197, 94, 0.2); color: #4ade80; }
+  .status-badge.bad { background: rgba(239, 68, 68, 0.2); color: #fca5a5; }
+
+  .live-val-cell {
+    font-family: var(--font-mono, monospace);
+    font-weight: 700;
+    color: #4ec9b0;
+  }
+
+  .tag-name { font-weight: 600; color: var(--vs-text-bright, #f3f3f3); }
+  .tag-id-code { font-family: var(--font-mono, monospace); color: #ce9178; font-size: 11px; }
+
+  .type-pill {
+    background: var(--vs-bg-3, #2d2d30);
+    border: 1px solid var(--vs-border, #3e3e42);
+    color: #4ec9b0;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-family: var(--font-mono, monospace);
+  }
+
+  .table-pill {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 600;
+  }
+
+  .table-pill.holding { background: rgba(0, 122, 204, 0.2); color: #9cdcfe; }
+  .table-pill.input { background: rgba(197, 134, 192, 0.2); color: #c586c0; }
+  .table-pill.coil { background: rgba(220, 220, 170, 0.2); color: #dcdcaa; }
+  .table-pill.discrete { background: rgba(128, 128, 128, 0.2); color: #cccccc; }
+  .table-pill.memory { background: rgba(78, 201, 176, 0.2); color: #4ec9b0; }
+  .table-pill.system { background: rgba(86, 156, 214, 0.2); color: #569cd6; }
+
+  .access-badge {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 700;
+  }
+
+  .access-badge.rw { background: rgba(78, 201, 176, 0.2); color: #4ec9b0; }
+  .access-badge.ro { background: rgba(206, 145, 120, 0.2); color: #ce9178; }
+
+  .mono { font-family: var(--font-mono, monospace); font-size: 11px; }
+
+  .edit-input {
     width: 100%;
-    background: #252526;
-    border: 1px solid transparent;
-    color: #ccc;
-    font-size: 11px;
-    padding: 2px 4px;
-    border-radius: 2px;
+    background: var(--vs-bg, #1e1e1e);
+    border: 1px solid var(--vs-border, #3e3e42);
+    color: var(--vs-text-bright, #f3f3f3);
+    padding: 3px 6px;
+    font-size: 12px;
+    border-radius: 3px;
   }
-  td input:focus,
-  td select:focus {
-    border-color: var(--vs-accent);
-    outline: none;
+
+  .edit-input-sm {
+    width: 60px;
+    background: var(--vs-bg, #1e1e1e);
+    border: 1px solid var(--vs-border, #3e3e42);
+    color: var(--vs-text-bright, #f3f3f3);
+    padding: 3px 6px;
+    font-size: 12px;
+    border-radius: 3px;
   }
-  .addr {
-    width: 64px !important;
-  }
-  .unit {
-    width: 48px !important;
-  }
-  .mono {
-    font-family: ui-monospace, monospace;
-    color: #9cdcfe;
-  }
-  .del {
+
+  .btn-del {
     background: transparent;
     border: none;
-    color: #ef4444;
     cursor: pointer;
-    font-weight: 800;
+    font-size: 13px;
+    opacity: 0.7;
+    transition: opacity 0.1s;
+  }
+
+  .btn-del:hover { opacity: 1; }
+
+  .empty-cell {
+    text-align: center;
+    padding: 24px;
+    color: var(--vs-text-dim, #9d9d9d);
   }
 </style>

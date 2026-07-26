@@ -1,5 +1,26 @@
-import type { TagDefinition, DeviceConfig } from "$lib/types";
+import type { TagDefinition, DeviceConfig, TagDataType } from "$lib/types";
 import type { DevicePollQuery, RegisterMapEntry, RegisterBitEntry, RegisterValidationResult } from "../types/registerMap";
+import { SYSTEM_DEVICE_ID } from "./systemTagsService";
+
+/**
+ * Calculates how many 16-bit registers a data type occupies.
+ */
+export function getDataTypeRegisterSpan(dataType?: TagDataType | string, stringLength?: number): number {
+  switch (dataType) {
+    case "u32":
+    case "i32":
+    case "f32":
+      return 2;
+    case "u64":
+    case "i64":
+    case "f64":
+      return 4;
+    case "string":
+      return Math.max(1, Math.ceil((stringLength || 32) / 2));
+    default:
+      return 1;
+  }
+}
 
 /**
  * Extracts available poll query blocks for a given PLC device.
@@ -93,7 +114,8 @@ export function extractDevicePollQueries(device?: DeviceConfig | null): DevicePo
 
 /**
  * Builds register map rows for the specified poll query range and tags,
- * supporting MULTIPLE tags per single register address (e.g. word tag + 16 bit tags).
+ * supporting MULTIPLE tags per single register address (e.g. word tag + 16 bit tags)
+ * and extended multi-register data types (u32/i32/f32, u64/i64/f64, string).
  */
 export function buildRegisterMap(query: DevicePollQuery, tags: TagDefinition[]): RegisterMapEntry[] {
   const result: RegisterMapEntry[] = [];
@@ -101,9 +123,8 @@ export function buildRegisterMap(query: DevicePollQuery, tags: TagDefinition[]):
     (t) => t.device_id === query.deviceId && t.binding.table === query.table
   );
 
-  // Group tags by register address: Map<address, TagDefinition[]>
   const addrToTagsMap = new Map<number, TagDefinition[]>();
-  const f32Continuations = new Set<number>();
+  const multiRegContinuations = new Map<number, { parentAddr: number; tag: TagDefinition }>();
 
   for (const tag of queryTags) {
     const addr = tag.binding.address;
@@ -112,14 +133,18 @@ export function buildRegisterMap(query: DevicePollQuery, tags: TagDefinition[]):
     }
     addrToTagsMap.get(addr)!.push(tag);
 
-    if (tag.data_type === "f32") {
-      f32Continuations.add(addr + 1);
+    const span = getDataTypeRegisterSpan(tag.data_type, tag.binding.string_length);
+    if (span > 1) {
+      for (let offset = 1; offset < span; offset++) {
+        multiRegContinuations.set(addr + offset, { parentAddr: addr, tag });
+      }
     }
   }
 
   for (let addr = query.startAddress; addr <= query.endAddress; addr++) {
     const registeredTags = addrToTagsMap.get(addr) ?? [];
-    const isContinuation = f32Continuations.has(addr) && registeredTags.length === 0;
+    const continuation = multiRegContinuations.get(addr);
+    const isContinuation = !!continuation && registeredTags.length === 0;
 
     if (registeredTags.length === 0 && !isContinuation) {
       // Unmapped register
@@ -146,43 +171,45 @@ export function buildRegisterMap(query: DevicePollQuery, tags: TagDefinition[]):
       continue;
     }
 
-    if (isContinuation) {
-      // Continuation row of an f32 Float register at (addr - 1)
-      const parentAddr = addr - 1;
-      const parentTags = addrToTagsMap.get(parentAddr) ?? [];
-      const parentTag = parentTags.find((t) => t.data_type === "f32");
+    if (isContinuation && continuation) {
+      const parentTag = continuation.tag;
+      const totalSpan = getDataTypeRegisterSpan(parentTag.data_type, parentTag.binding.string_length);
+      const partIndex = addr - continuation.parentAddr + 1;
 
       result.push({
         address: addr,
         table: query.table,
         deviceId: query.deviceId,
         queryId: query.id,
-        tags: parentTag ? [parentTag] : [],
+        tags: [parentTag],
         primaryTag: parentTag,
-        symbol: parentTag ? `↳ (część 2 Float ${parentTag.name})` : "↳ continuation",
-        tagId: parentTag?.id ?? "",
-        dataType: "f32",
-        readonly: parentTag ? !parentTag.binding.writable : true,
-        span: 2,
+        symbol: `↳ (część ${partIndex}/${totalSpan} ${parentTag.data_type.toUpperCase()} ${parentTag.name})`,
+        tagId: parentTag.id,
+        dataType: parentTag.data_type,
+        readonly: !parentTag.binding.writable,
+        span: totalSpan,
         isSpanContinuation: true,
-        parentAddress: parentAddr,
-        unit: parentTag?.unit || "",
-        scale: parentTag?.scale ?? 1,
-        offset: parentTag?.offset ?? 0,
-        decimals: parentTag?.decimals ?? 0,
-        description: parentTag ? `Rejestr kontynuacji f32 dla ${parentTag.id}` : "",
+        parentAddress: continuation.parentAddr,
+        unit: parentTag.unit || "",
+        scale: parentTag.scale ?? 1,
+        offset: parentTag.offset ?? 0,
+        decimals: parentTag.decimals ?? 0,
+        description: `Rejestr kontynuacji ${parentTag.data_type} dla ${parentTag.id}`,
         liveValue: undefined,
         hexValue: `0x0000`,
       });
       continue;
     }
 
-    // Register has one or more tags mapped to it!
     const primaryTag = registeredTags.find((t) => t.data_type !== "bool") || registeredTags[0];
-    const isReadonly = query.table === "input" || query.table === "discrete" || registeredTags.every((t) => !t.binding.writable);
+    const isReadonly =
+      query.table === "input" ||
+      query.table === "discrete" ||
+      query.table === "system" ||
+      registeredTags.every((t) => !t.binding.writable);
 
     let bits: RegisterBitEntry[] | undefined = undefined;
-    if (query.table === "holding" || query.table === "input") {
+    if (query.table === "holding" || query.table === "input" || query.table === "memory") {
       bits = Array.from({ length: 16 }, (_, i) => {
         const bitTag = registeredTags.find((t) => t.data_type === "bool" && t.binding.bit === i);
         return {
@@ -213,6 +240,8 @@ export function buildRegisterMap(query: DevicePollQuery, tags: TagDefinition[]):
           ? "bool"
           : "multi";
 
+    const span = getDataTypeRegisterSpan(primaryTag.data_type, primaryTag.binding.string_length);
+
     result.push({
       address: addr,
       table: query.table,
@@ -224,7 +253,7 @@ export function buildRegisterMap(query: DevicePollQuery, tags: TagDefinition[]):
       tagId: primaryTag.id,
       dataType: overallType,
       readonly: isReadonly,
-      span: primaryTag.data_type === "f32" ? 2 : 1,
+      span,
       isSpanContinuation: false,
       unit: primaryTag.unit || "",
       scale: primaryTag.scale ?? 1,
@@ -259,40 +288,45 @@ export function validateRegisterTag(
     errors.push("Identyfikator tagu (Tag ID) jest wymagany.");
   } else {
     const isDuplicateId = existingTags.some(
-      (t) => t.id === tag.id
+      (t) => t.id.toLowerCase() === tag.id!.toLowerCase()
     );
     if (isDuplicateId) {
       errors.push(`Tag o ID '${tag.id}' już istnieje w projekcie.`);
     }
   }
 
-  if (!tag.device_id) {
+  if (!tag.device_id && tag.binding?.table !== "memory" && tag.binding?.table !== "system") {
     errors.push("Wymagany jest wybór urządzenia (Device ID).");
   }
 
   const addr = tag.binding?.address;
-  if (addr === undefined || addr < 0 || addr > 65535) {
-    errors.push("Adres rejestru Modbus musi zawierać się w przedziale 0..65535.");
+  if (tag.binding?.table !== "memory" && tag.binding?.table !== "system") {
+    if (addr === undefined || addr < 0 || addr > 65535) {
+      errors.push("Adres rejestru Modbus musi zawierać się w przedziale 0..65535.");
+    }
   }
 
-  if (query) {
-    if (addr !== undefined && (addr < query.startAddress || addr > query.endAddress)) {
+  const span = getDataTypeRegisterSpan(tag.data_type, tag.binding?.string_length);
+
+  if (query && addr !== undefined) {
+    if (addr < query.startAddress || addr > query.endAddress) {
       warnings.push(
         `Adres ${addr} znajduje się poza domyślnym zakresem zapytania (${query.startAddress}..${query.endAddress}).`
       );
     }
 
-    if (tag.data_type === "f32" && addr !== undefined && addr + 1 > query.endAddress) {
-      warnings.push(`Zmienna f32 zajmuje 2 rejestry (${addr} i ${addr + 1}) - przekracza koniec bloku.`);
+    if (span > 1 && addr + span - 1 > query.endAddress) {
+      warnings.push(
+        `Zmienna ${tag.data_type} zajmuje ${span} rejestry (${addr}..${addr + span - 1}) - przekracza koniec bloku.`
+      );
     }
   }
 
-  if (tag.data_type === "bool" && tag.binding?.table === "holding") {
+  if (tag.data_type === "bool" && (tag.binding?.table === "holding" || tag.binding?.table === "memory")) {
     const bit = tag.binding.bit;
     if (bit === undefined || bit === null || bit < 0 || bit > 15) {
-      errors.push("Dla zmiennej bitowej w rejestrze Holding Bit Index musi wynosić 0..15 (LSB=0).");
-    } else {
-      // Check if another bit tag is using the exact same bit on this address
+      errors.push("Dla zmiennej bitowej Bit Index musi wynosić 0..15 (LSB=0).");
+    } else if (tag.binding?.table === "holding") {
       const sameBitTag = existingTags.find(
         (t) =>
           t.device_id === tag.device_id &&
@@ -308,7 +342,6 @@ export function validateRegisterTag(
     }
   }
 
-  // Read-Modify-Write check for holding register bits
   if (
     tag.binding?.table === "holding" &&
     tag.binding?.bit !== undefined &&

@@ -38,6 +38,14 @@
   const displayText = $derived.by(() => {
     if (!widget.tag_id) return rawText;
 
+    if (tag?.string_value !== undefined) {
+      const strVal = tag.string_value;
+      if (rawText.includes("{value}")) return rawText.replace(/\{value\}/g, strVal);
+      if (rawText.includes("{val}")) return rawText.replace(/\{val\}/g, strVal);
+      if (rawText === "Label" || !rawText) return strVal;
+      return `${rawText} ${strVal}`;
+    }
+
     const valNum = tag?.value ?? 0;
     const formattedVal = (design && !tag) ? "0" : valNum.toFixed(decimals);
     const valWithUnit = unit ? `${formattedVal} ${unit}` : formattedVal;

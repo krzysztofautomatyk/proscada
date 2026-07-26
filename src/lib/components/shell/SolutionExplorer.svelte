@@ -25,6 +25,7 @@
     isMainScreen,
   } from "$lib/stores/app";
   import { childrenOf, iconFor } from "$lib/utils/projectTree";
+  import { SYSTEM_TAG_DEFINITIONS } from "$lib/services/systemTagsService";
 
   interface Props {
     project: ScadaProject;
@@ -49,6 +50,9 @@
   let fileInputEl = $state<HTMLInputElement | null>(null);
   let importTargetFolderId = $state<string | null>(null);
 
+  // Per-PLC device expand/collapse state (default expanded)
+  let expandedDevices = $state<Record<string, boolean>>({});
+
   type HoverImage = {
     node: ProjectNode;
     x: number;
@@ -57,6 +61,28 @@
   let hoverImage = $state<HoverImage | null>(null);
 
   const tree = $derived(project.tree ?? []);
+
+  const plcTagsCount = $derived((project.tags ?? []).filter((t) => t.binding.table !== "memory" && t.binding.table !== "system").length);
+  const memoryTagsCount = $derived((project.tags ?? []).filter((t) => t.binding.table === "memory").length);
+  const systemTagsCount = $derived(SYSTEM_TAG_DEFINITIONS.length);
+  const totalTagsCount = $derived((project.tags ?? []).length + systemTagsCount);
+
+  function toggleDevice(id: string) {
+    expandedDevices[id] = !(expandedDevices[id] ?? true);
+  }
+
+  function isDeviceExpanded(id: string): boolean {
+    return expandedDevices[id] ?? true;
+  }
+
+  function openVariablesManager() {
+    const varsNode = tree.find((n) => n.kind === "variables");
+    if (varsNode) {
+      selectSolutionNode(varsNode.id);
+    } else {
+      addVariableModalOpen.set(true);
+    }
+  }
 
   function closeCtx() {
     ctx = { ...ctx, open: false };
@@ -201,78 +227,64 @@
       class="tree-item tree-row"
       class:active
       class:folder={node.kind === "folder"}
-      style:padding-left="{10 + depth * 14}px"
-      role="treeitem"
-      tabindex="0"
-      aria-selected={active}
-      draggable={design}
+      style:padding-left="{depth * 12 + 12}px"
+      draggable={design && node.kind !== "folder"}
       ondragstart={(e) => onDragStart(e, node)}
       ondragover={onDragOver}
       ondrop={(e) => onDrop(e, node)}
+      onclick={() => (node.kind === "folder" ? toggleFolderCollapsed(node.id) : onSelect(node))}
       onmouseenter={(e) => handleNodeMouseEnter(node, e)}
       onmousemove={(e) => handleNodeMouseMove(node, e)}
       onmouseleave={() => handleNodeMouseLeave(node)}
-      onclick={(e) => {
-        if (node.kind === "folder") onFolderClick(node, e);
-        else onSelect(node);
-      }}
-      ondblclick={() => design && startRename(node)}
       oncontextmenu={(e) => openCtx(e, node)}
-      onkeydown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          if (node.kind === "folder") toggleFolderCollapsed(node.id);
-          else onSelect(node);
-        }
-        if (e.key === "F2" && design) startRename(node);
-        if ((e.key === "Delete" || e.key === "Backspace") && design && !renamingId) {
-          e.preventDefault();
-          deleteProjectNode(node.id);
-        }
-      }}
     >
       {#if node.kind === "folder"}
-        <span class="twist">{collapsed ? "▸" : "▾"}</span>
+        <!-- svelte-ignore a11y_click_events_have_key_events -->
+        <span class="twist" onclick={(e) => onFolderClick(node, e)} role="button" tabindex="0">
+          {collapsed ? "▶" : "▼"}
+        </span>
       {:else}
         <span class="twist spacer"></span>
       {/if}
+
       <span class="ico">{iconFor(node.kind)}</span>
+
       {#if renamingId === node.id}
         <input
           id="rename-{node.id}"
           class="rename-input"
           bind:value={renameValue}
-          onclick={(e) => e.stopPropagation()}
+          onblur={commitRename}
           onkeydown={(e) => {
             if (e.key === "Enter") commitRename();
             if (e.key === "Escape") renamingId = null;
-            e.stopPropagation();
           }}
-          onblur={commitRename}
         />
       {:else}
-        <span class="label">{node.name}{node.kind === "screen" && !node.name.endsWith(".form") ? ".form" : ""}</span>
+        <span class="label">{node.name}{node.kind === "screen" ? ".form" : ""}</span>
       {/if}
     </div>
+
     {#if node.kind === "folder" && !collapsed}
       {@render treeRows(node.id, depth + 1)}
     {/if}
   {/each}
 {/snippet}
 
-<div class="panel se-panel" style:height="100%;border:none;border-right:1px solid var(--vs-border)">
-  <div class="panel-header se-header">
+<div class="panel solution-explorer">
+  <div class="header">
     <span>Solution Explorer</span>
     {#if design}
-      <div class="se-actions">
-        <button type="button" title="New folder" onclick={() => addProjectFolder(null)}>📁+</button>
-        <button type="button" title="Add image from disk..." onclick={() => triggerImportImage(null)}>🖼️+</button>
+      <div class="header-actions">
+        <button type="button" title="New folder" onclick={() => addProjectFolder()}>📁+</button>
+        <button type="button" title="Import image(s)" onclick={() => triggerImportImage()}>🖼️+</button>
         <button type="button" title="New style sheet" onclick={() => addProjectDocument("style")}>🎨+</button>
         <button type="button" title="New screen" onclick={() => addNewForm()}>🗂+</button>
         <button type="button" title="New script" onclick={() => addProjectDocument("script")}>📜+</button>
       </div>
     {/if}
   </div>
+
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     class="panel-body se-body"
@@ -306,40 +318,155 @@
 
     {@render treeRows(null, 1)}
 
+    <!-- Expandable PLC Devices Hierarchy -->
     <div class="tree-group-header">
-      <span class="tree-group">Devices ({project.devices.length})</span>
+      <span class="tree-group">Sterowniki PLC / Devices ({project.devices.length})</span>
       {#if design}
-        <button type="button" class="btn-group-add" title="Dodaj Nowe Urządzenie..." onclick={() => openAddDeviceModal()}>🔌+</button>
+        <button type="button" class="btn-group-add" title="Dodaj Nowy Sterownik PLC..." onclick={() => openAddDeviceModal()}>🔌+</button>
       {/if}
     </div>
+
     {#each project.devices as d}
+      {@const expanded = isDeviceExpanded(d.id)}
+      {@const queriesList = d.queries ?? []}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
         class="tree-item device-row"
-        style:padding-left="24px"
+        style:padding-left="16px"
         role="button"
         tabindex="0"
-        title="Kliknij, aby edytować urządzenie {d.name}"
-        onclick={() => design && openEditDeviceModal(d.id)}
-        onkeydown={(e) => (e.key === "Enter" || e.key === " ") && design && openEditDeviceModal(d.id)}
+        title="Sterownik PLC: {d.name} ({d.host}:{d.port})"
+        onclick={() => design && openEditDeviceModal(d.id, "params")}
+        onkeydown={(e) => (e.key === "Enter" || e.key === " ") && design && openEditDeviceModal(d.id, "params")}
       >
+        <button
+          type="button"
+          class="tree-toggle"
+          onclick={(e) => {
+            e.stopPropagation();
+            toggleDevice(d.id);
+          }}
+        >
+          {expanded ? "▼" : "▶"}
+        </button>
         <span class="ico">🔌</span>
-        <span class="label">{d.name} · {d.host}:{d.port}</span>
+        <span class="label">{d.name} ({d.host}:{d.port})</span>
+        <span class="unit-badge">U:{d.unit_id}</span>
         {#if design}
-          <button
-            type="button"
-            class="btn-device-edit"
-            title="Edytuj urządzenia..."
-            onclick={(e) => {
-              e.stopPropagation();
-              openEditDeviceModal(d.id);
-            }}
-          >
-            ✏️
-          </button>
+          <div class="device-actions">
+            <button
+              type="button"
+              class="btn-device-act"
+              title="Dodaj / Edytuj zapytania Modbus..."
+              onclick={(e) => {
+                e.stopPropagation();
+                openEditDeviceModal(d.id, "queries");
+              }}
+            >
+              📡+
+            </button>
+            <button
+              type="button"
+              class="btn-device-act"
+              title="Edytuj parametry połączenia PLC..."
+              onclick={(e) => {
+                e.stopPropagation();
+                openEditDeviceModal(d.id, "params");
+              }}
+            >
+              ✏️
+            </button>
+            <button
+              type="button"
+              class="btn-device-act danger"
+              title="Usuń sterownik..."
+              onclick={(e) => {
+                e.stopPropagation();
+                if (confirm(`Czy na pewno usunąć sterownik ${d.name}?`)) {
+                  deleteDeviceFromProject(d.id);
+                }
+              }}
+            >
+              🗑️
+            </button>
+          </div>
         {/if}
       </div>
+
+      <!-- Nested Modbus Poll Queries under PLC Device -->
+      {#if expanded}
+        {#each queriesList as q}
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div
+            class="tree-item query-row"
+            style:padding-left="38px"
+            role="button"
+            tabindex="0"
+            title="Zapytanie Modbus: {q.name} ({q.table} R{q.start_address}..{q.start_address + Math.max(1, q.count) - 1})"
+            onclick={() => design && openEditDeviceModal(d.id, "queries")}
+            onkeydown={(e) => (e.key === "Enter" || e.key === " ") && design && openEditDeviceModal(d.id, "queries")}
+          >
+            <span class="ico">📡</span>
+            <span class="label">{q.name}</span>
+            <span class="query-meta">
+              ({q.table === 'holding' ? '4x' : q.table === 'input' ? '3x' : q.table === 'coil' ? '0x' : '1x'} R{q.start_address}..{q.start_address + Math.max(1, q.count) - 1})
+            </span>
+          </div>
+        {:else}
+          <div class="tree-item empty-query-row" style:padding-left="38px">
+            <span class="hint">Brak zapytań (Kliknij 📡+, aby dodać)</span>
+          </div>
+        {/each}
+      {/if}
     {/each}
+
+    <!-- Central Variables Management Group -->
+    <div class="tree-group-header">
+      <span class="tree-group">Zmienne / Variables ({totalTagsCount})</span>
+      <button type="button" class="btn-group-add" title="Otwórz Menedżer Zmiennych / Dodaj..." onclick={() => openVariablesManager()}>🏷️+</button>
+    </div>
+
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="tree-item device-row"
+      style:padding-left="24px"
+      role="button"
+      tabindex="0"
+      title="Otwórz Centralną Baza Zmiennych SCADA"
+      onclick={() => openVariablesManager()}
+      onkeydown={(e) => (e.key === "Enter" || e.key === " ") && openVariablesManager()}
+    >
+      <span class="ico">🏷️</span>
+      <span class="label">Centralna Baza Zmiennych ({totalTagsCount})</span>
+    </div>
+
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="tree-item device-row"
+      style:padding-left="24px"
+      role="button"
+      tabindex="0"
+      title="Zmienne Pamięci Wewnętrznej SCADA"
+      onclick={() => openVariablesManager()}
+      onkeydown={(e) => (e.key === "Enter" || e.key === " ") && openVariablesManager()}
+    >
+      <span class="ico">🧠</span>
+      <span class="label">Zmienne Pamięci ({memoryTagsCount})</span>
+    </div>
+
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="tree-item device-row"
+      style:padding-left="24px"
+      role="button"
+      tabindex="0"
+      title="Zmienne Systemowe SCADA (Czas, Uptime, Dysk, CPU, Rola)"
+      onclick={() => openVariablesManager()}
+      onkeydown={(e) => (e.key === "Enter" || e.key === " ") && openVariablesManager()}
+    >
+      <span class="ico">⚙️</span>
+      <span class="label">Zmienne Systemowe ({systemTagsCount})</span>
+    </div>
 
     <div class="tree-group-header">
       <span class="tree-group">Alarms ({project.alarms.length})</span>
@@ -355,82 +482,25 @@
     {/each}
 
     <div class="meta">
-      Schema v{project.schema_version}<br />
-      Hash: {(project.content_hash || "—").slice(0, 12)}…
+      Schema v{project.schema_version ?? 3} · Hash: {(project.content_hash ?? "").slice(0, 12)}…
     </div>
   </div>
 </div>
 
 {#if ctx.open}
   <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="ctx-backdrop" onpointerdown={closeCtx}></div>
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div
-    class="ctx-menu"
-    style:left="{ctx.x}px"
-    style:top="{ctx.y}px"
-    role="menu"
-    tabindex="-1"
-    onpointerdown={(e) => e.stopPropagation()}
-    onkeydown={(e) => e.key === "Escape" && closeCtx()}
-  >
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <div class="ctx-backdrop" onclick={closeCtx}></div>
+  <div class="ctx-menu" style:left="{ctx.x}px" style:top="{ctx.y}px">
     {#if design}
-      <div class="ctx-label">Add</div>
-      <button type="button" role="menuitem" onclick={() => runAdd("folder")}>New Folder</button>
-      <button
-        type="button"
-        role="menuitem"
-        onclick={() => {
-          const p = parentForAdd();
-          closeCtx();
-          triggerImportImage(p);
-        }}
-      >
-        🖼️ Import Image from Disk...
-      </button>
-      <button type="button" role="menuitem" onclick={() => runAdd("style")}>New Style Sheet (.css)</button>
-      <button type="button" role="menuitem" onclick={() => runAdd("screen")}>New HMI Screen</button>
-      <button type="button" role="menuitem" onclick={() => runAdd("script")}>New Script (.js)</button>
-      <button type="button" role="menuitem" onclick={() => runAdd("variables")}>New Variables List</button>
-      <button
-        type="button"
-        role="menuitem"
-        onclick={() => {
-          closeCtx();
-          addDeviceModalOpen.set(true);
-        }}
-      >
-        🔌 New Modbus Device…
-      </button>
-      <button
-        type="button"
-        role="menuitem"
-        onclick={() => {
-          closeCtx();
-          addAlarmModalOpen.set(true);
-        }}
-      >
-        🔔 New Alarm Rules / List…
-      </button>
-      <button
-        type="button"
-        role="menuitem"
-        onclick={() => {
-          closeCtx();
-          addVariableModalOpen.set(true);
-        }}
-      >
-        🏷️ New Variables / Tag List…
-      </button>
-      <button type="button" role="menuitem" onclick={() => runAdd("note")}>New Note</button>
-      <button type="button" role="menuitem" onclick={() => runAdd("markdown")}>New Markdown</button>
-      <div class="sep"></div>
       {#if ctx.node}
+        <div class="ctx-label">{ctx.node.name}</div>
         <button
           type="button"
           role="menuitem"
-          disabled={ctx.node.kind === "screen" && isMainScreen(ctx.node)}
-          onclick={() => ctx.node && startRename(ctx.node)}
+          onclick={() => {
+            if (ctx.node) startRename(ctx.node);
+          }}
         >
           Rename<span class="kbd">F2</span>
         </button>
@@ -447,6 +517,42 @@
         </button>
         <div class="sep"></div>
       {/if}
+
+      <div class="ctx-label">Add New Item</div>
+      <button type="button" role="menuitem" onclick={() => runAdd("screen")}>
+        🗂 New Screen…
+      </button>
+      <button type="button" role="menuitem" onclick={() => runAdd("folder")}>
+        📁 New Folder
+      </button>
+      <button type="button" role="menuitem" onclick={() => triggerImportImage(parentForAdd())}>
+        🖼️ Import Image(s)…
+      </button>
+      <button type="button" role="menuitem" onclick={() => runAdd("script")}>
+        📜 New Script (.js)…
+      </button>
+      <button type="button" role="menuitem" onclick={() => runAdd("style")}>
+        🎨 New Style (.css)…
+      </button>
+      <button type="button" role="menuitem" onclick={() => runAdd("note")}>
+        📝 New Text Note…
+      </button>
+      <button type="button" role="menuitem" onclick={() => runAdd("markdown")}>
+        MD New Markdown Doc…
+      </button>
+      <div class="sep"></div>
+      <button
+        type="button"
+        role="menuitem"
+        onclick={() => {
+          closeCtx();
+          openAddDeviceModal();
+        }}
+      >
+        🔌 Add PLC Device…
+      </button>
+
+      <div class="sep"></div>
       <button
         type="button"
         role="menuitem"
@@ -497,54 +603,166 @@
 {#if hoverImage && hoverImage.node.content}
   <div
     class="image-hover-popover"
-    style:left="{Math.min(hoverImage.x + 16, (typeof window !== 'undefined' ? window.innerWidth : 800) - 220)}px"
-    style:top="{Math.min(hoverImage.y + 12, (typeof window !== 'undefined' ? window.innerHeight : 600) - 220)}px"
+    style:left="{Math.min(hoverImage.x + 16, window.innerWidth - 220)}px"
+    style:top="{Math.min(hoverImage.y + 16, window.innerHeight - 200)}px"
   >
     <div class="hover-img-wrap">
       <img src={hoverImage.node.content} alt={hoverImage.node.name} />
     </div>
     <div class="hover-img-meta">
       <span class="hover-img-name">{hoverImage.node.name}</span>
-      <span class="hover-img-size">
-        {Math.round((hoverImage.node.content.length * 0.75) / 1024)} KB
-      </span>
     </div>
   </div>
 {/if}
 
 <style>
-  .se-panel {
+  .solution-explorer {
     display: flex;
     flex-direction: column;
-    min-height: 0;
+    height: 100%;
+    background: var(--vs-bg-2);
+    font-size: 12px;
   }
-  .se-header {
+  .header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 6px;
+    padding: 6px 8px;
+    background: var(--vs-bg-3);
+    border-bottom: 1px solid var(--vs-border);
+    font-weight: 700;
+    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0.05em;
   }
-  .se-actions {
+  .header-actions {
     display: flex;
     gap: 2px;
   }
-  .se-actions button {
+  .header-actions button {
     background: transparent;
-    border: 1px solid transparent;
-    color: var(--vs-text);
-    font-size: 11px;
-    padding: 0 4px;
+    border: none;
+    color: var(--vs-text-dim);
     cursor: pointer;
-    border-radius: 3px;
-    line-height: 18px;
+    font-size: 11px;
+    padding: 1px 4px;
   }
-  .se-actions button:hover {
-    background: var(--vs-bg-4);
-    border-color: var(--vs-border);
+  .header-actions button:hover {
+    color: var(--vs-text-bright);
   }
   .se-body {
-    overflow: auto;
     flex: 1;
+    overflow: auto;
+    padding: 4px 0;
+  }
+  .tree-group-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 8px 4px 10px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: var(--vs-text-dim);
+    letter-spacing: 0.05em;
+    margin-top: 6px;
+    border-top: 1px solid var(--vs-border-soft);
+  }
+  .btn-group-add {
+    background: transparent;
+    border: none;
+    color: var(--vs-text-dim);
+    font-size: 10px;
+    cursor: pointer;
+    padding: 0 4px;
+  }
+  .btn-group-add:hover {
+    color: var(--vs-text-bright);
+  }
+  .tree-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 8px;
+    cursor: default;
+    color: var(--vs-text);
+  }
+  .tree-item:hover {
+    background: rgba(255, 255, 255, 0.06);
+  }
+  .tree-item.active {
+    background: var(--vs-selection);
+    color: var(--vs-text-bright);
+  }
+  .device-row {
+    font-weight: 600;
+  }
+  .tree-toggle {
+    background: transparent;
+    border: none;
+    color: var(--vs-text-dim, #9d9d9d);
+    font-size: 9px;
+    width: 14px;
+    height: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    padding: 0;
+  }
+  .tree-toggle:hover {
+    color: #ffffff;
+  }
+  .device-actions {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    opacity: 0;
+    transition: opacity 0.12s ease;
+  }
+  .device-row:hover .device-actions {
+    opacity: 1;
+  }
+  .btn-device-act {
+    background: transparent;
+    border: none;
+    font-size: 10px;
+    padding: 1px 3px;
+    cursor: pointer;
+    border-radius: 2px;
+    opacity: 0.8;
+  }
+  .btn-device-act:hover {
+    opacity: 1;
+    background: rgba(255, 255, 255, 0.15);
+  }
+  .btn-device-act.danger:hover {
+    background: rgba(220, 38, 38, 0.3);
+  }
+  .query-row {
+    font-size: 11.5px;
+    color: var(--vs-text-dim, #9d9d9d);
+  }
+  .query-row:hover {
+    color: var(--vs-text-bright, #ffffff);
+  }
+  .query-meta {
+    font-size: 10px;
+    color: #64748b;
+    font-family: var(--font-mono, monospace);
+  }
+  .unit-badge {
+    font-size: 9px;
+    background: var(--vs-bg-3, #2d2d30);
+    border: 1px solid var(--vs-border, #3e3e42);
+    color: #9cdcfe;
+    padding: 0 4px;
+    border-radius: 3px;
+  }
+  .empty-query-row {
+    font-size: 11px;
+    color: #64748b;
+    font-style: italic;
   }
   .tree-row {
     user-select: none;
@@ -575,6 +793,7 @@
   .label {
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
     flex: 1;
   }
   .rename-input {
@@ -687,72 +906,17 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 8px;
-    font-size: 10px;
-    color: #ccc;
   }
   .hover-img-name {
-    font-weight: 700;
-    color: #fff;
-    white-space: nowrap;
+    font-size: 11px;
+    font-weight: 600;
+    color: #f1f5f9;
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
   }
-  .hover-img-size {
-    color: #93c5fd;
-    flex-shrink: 0;
-  }
-  @keyframes popover-fade-in {
-    from {
-      opacity: 0;
-      transform: scale(0.95);
-    }
-    to {
-      opacity: 1;
-      transform: scale(1);
-    }
-  }
-  .tree-group-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding-right: 8px;
-  }
-  .btn-group-add {
-    background: transparent;
-    border: 1px solid transparent;
-    color: var(--vs-text-dim);
-    font-size: 11px;
-    cursor: pointer;
-    border-radius: 3px;
-    padding: 0 4px;
-    line-height: 16px;
-  }
-  .btn-group-add:hover {
-    background: var(--vs-bg-4);
-    border-color: var(--vs-border);
-    color: #fff;
-  }
-  .device-row {
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding-right: 8px;
-  }
-  .device-row:hover .btn-device-edit {
-    opacity: 1;
-  }
-  .btn-device-edit {
-    opacity: 0.4;
-    background: transparent;
-    border: none;
-    cursor: pointer;
-    font-size: 11px;
-    padding: 0 4px;
-    transition: opacity 0.12s;
-  }
-  .btn-device-edit:hover {
-    opacity: 1;
+  .hint {
+    font-size: 10px;
+    color: #64748b;
   }
 </style>

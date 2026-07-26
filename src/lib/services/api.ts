@@ -7,6 +7,7 @@ import type {
   ScadaProject,
   TagValue,
 } from "$lib/types";
+import { computeSystemTagValues, SYSTEM_TAG_DEFINITIONS } from "./systemTagsService";
 
 const isTauri = () =>
   typeof window !== "undefined" &&
@@ -21,7 +22,14 @@ let mockMode = "designer";
 const mockAudit: AuditEntry[] = [];
 
 function mockSnap(): EngineSnapshot {
-  const tags: TagValue[] = (mockProject?.tags ?? []).map((t, i) => {
+  const sysTags = computeSystemTagValues({
+    connected: mockConnected,
+    pollCount: mockPoll,
+    mode: mockMode,
+    role: mockRole,
+  });
+
+  const plcTags: TagValue[] = (mockProject?.tags ?? []).map((t, i) => {
     const isLevelTag =
       t.binding.address === 104 ||
       t.id.toLowerCase().includes("level") ||
@@ -31,6 +39,7 @@ function mockSnap(): EngineSnapshot {
     const baseLevel = 420 + (mockPoll % 40) * 5;
     const rawVal = isLevelTag ? baseLevel : t.id.includes("sp") ? 200 + i * 50 : 10 + i * 5;
     const isBool = t.data_type === "bool";
+    const isString = t.data_type === "string";
     const on =
       t.id === "wt.p1_run" ||
       t.id === "wt.demand" ||
@@ -44,12 +53,15 @@ function mockSnap(): EngineSnapshot {
       tag_id: t.id,
       value: computedVal,
       bool_value: isBool ? on : false,
+      string_value: isString ? `MEM_${t.id}_${mockPoll}` : undefined,
       quality: mockConnected ? "good" : "bad",
       ts: new Date().toISOString(),
       age_ms: mockConnected ? 50 : 9999,
       raw: rawVal,
     };
   });
+
+  const tags = [...sysTags, ...plcTags];
   return {
     connected: mockConnected,
     device_id: mockProject?.devices[0]?.id ?? null,

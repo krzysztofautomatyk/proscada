@@ -51,6 +51,8 @@
 
   const unitPresets = ["", "bar", "°C", "m³/h", "Hz", "%", "kW", "RPM", "V", "A", "m", "m/s", "l/min", "kg/h", "Pa"];
 
+  let string_length = $state(32);
+
   $effect(() => {
     if (editingTag) {
       id = editingTag.id;
@@ -64,6 +66,7 @@
       bit_write_mode = editingTag.binding.bit_write_mode ?? "mask_write";
       single_writer = editingTag.binding.single_writer ?? false;
       verify_readback = editingTag.binding.verify_readback ?? true;
+      string_length = editingTag.binding.string_length ?? 32;
       unit = editingTag.unit ?? "";
       scale = editingTag.scale ?? 1;
       offset = editingTag.offset ?? 0;
@@ -81,6 +84,7 @@
       bit_write_mode = "mask_write";
       single_writer = false;
       verify_readback = true;
+      string_length = 32;
       unit = "";
       scale = 1;
       offset = 0;
@@ -100,12 +104,12 @@
   }
 
   function handleDataTypeChange() {
-    if (data_type === "f32") {
+    if (data_type === "f32" || data_type === "f64") {
       decimals = 2;
       bit = null;
     } else if (data_type === "bool") {
       decimals = 0;
-      if (table === "holding" && bit === null) bit = 0;
+      if ((table === "holding" || table === "memory") && bit === null) bit = 0;
     } else {
       decimals = 0;
       bit = null;
@@ -120,16 +124,17 @@
     const tagCandidate: TagDefinition = {
       id: id.trim(),
       name: name.trim(),
-      device_id,
+      device_id: (table === "memory" || table === "system") ? "SYS_INTERNAL" : device_id,
       data_type,
       binding: {
         address: Number(address),
-        bit: data_type === "bool" && table === "holding" ? (bit !== null ? Number(bit) : null) : null,
+        bit: data_type === "bool" && (table === "holding" || table === "memory") ? (bit !== null ? Number(bit) : null) : null,
         table,
-        writable: table === "input" || table === "discrete" ? false : !readonly,
+        writable: table === "input" || table === "discrete" || table === "system" ? false : !readonly,
         bit_write_mode: table === "holding" && bit !== null ? bit_write_mode : undefined,
         single_writer: bit_write_mode === "read_modify_write" ? single_writer : undefined,
         verify_readback: !readonly ? verify_readback : undefined,
+        string_length: data_type === "string" ? Number(string_length) || 32 : undefined,
       },
       unit: unit.trim(),
       description: description.trim(),
@@ -169,7 +174,7 @@
         type="text"
         bind:value={name}
         oninput={handleNameChange}
-        placeholder="np. Ciśnienie Wody P1"
+        placeholder="np. Ciśnienie Wody P1 lub Tekst Alfanumeryczny"
         required
       />
     </div>
@@ -181,43 +186,61 @@
         id="f-id"
         type="text"
         bind:value={id}
-        placeholder="np. PUMP01.Pressure"
+        placeholder="np. PUMP01.Pressure lub MEM.BatchCode"
         disabled={!!editingTag}
         required
       />
     </div>
 
-    <!-- PLC Device -->
+    <!-- Register Table -->
     <div class="form-group">
-      <label for="f-device">Urządzenie PLC (Device):</label>
-      <select id="f-device" bind:value={device_id} required>
-        {#each devices as d}
-          <option value={d.id}>{d.name} ({d.host}:{d.port})</option>
-        {/each}
+      <label for="f-table">Tabela / Źródło Zmiennej (Register Table / Source):</label>
+      <select id="f-table" bind:value={table} onchange={handleDataTypeChange}>
+        <option value="holding">Holding Register (4x Modbus)</option>
+        <option value="input">Input Register (3x Modbus - Tylko Odczyt)</option>
+        <option value="coil">Coil (0x Modbus)</option>
+        <option value="discrete">Discrete Input (1x Modbus - Tylko Odczyt)</option>
+        <option value="memory">Pamięć Wewnętrzna (Internal Memory Tag)</option>
+        <option value="system">Zmienna Systemowa SCADA (System Tag - Tylko Odczyt)</option>
       </select>
     </div>
+
+    <!-- PLC Device (if not memory/system) -->
+    {#if table !== "memory" && table !== "system"}
+      <div class="form-group">
+        <label for="f-device">Urządzenie PLC (Device):</label>
+        <select id="f-device" bind:value={device_id} required>
+          {#each devices as d}
+            <option value={d.id}>{d.name} ({d.host}:{d.port})</option>
+          {/each}
+        </select>
+      </div>
+    {/if}
 
     <!-- Data Type -->
     <div class="form-group">
       <label for="f-type">Typ Danych (Data Type):</label>
       <select id="f-type" bind:value={data_type} onchange={handleDataTypeChange}>
-        <option value="u16">u16 (Unsigned Int 16-bit)</option>
-        <option value="i16">i16 (Signed Int 16-bit)</option>
-        <option value="f32">f32 (Float 32-bit IEEE 754 - 2 rejestry)</option>
-        <option value="bool">bool (Logiczny - 1 bit)</option>
+        <option value="u16">u16 (Unsigned Int 16-bit - 1 rejestr)</option>
+        <option value="i16">i16 (Signed Int 16-bit - 1 rejestr)</option>
+        <option value="u32">u32 (Unsigned Int 32-bit - 2 rejestry)</option>
+        <option value="i32">i32 (Signed Int 32-bit - 2 rejestry)</option>
+        <option value="f32">f32 (Float 32-bit Single IEEE 754 - 2 rejestry)</option>
+        <option value="u64">u64 (Unsigned Int 64-bit - 4 rejestry)</option>
+        <option value="i64">i64 (Signed Int 64-bit - 4 rejestry)</option>
+        <option value="f64">f64 (Float 64-bit Double - 4 rejestry)</option>
+        <option value="string">string (Tekst / Bufor Alfanumeryczny)</option>
+        <option value="bool">bool (Logiczny - 1 bit / cewka)</option>
       </select>
     </div>
 
-    <!-- Register Table -->
-    <div class="form-group">
-      <label for="f-table">Tabela Modbus (Register Table):</label>
-      <select id="f-table" bind:value={table} onchange={handleDataTypeChange}>
-        <option value="holding">Holding Register (4x)</option>
-        <option value="input">Input Register (3x - Tylko Odczyt)</option>
-        <option value="coil">Coil (0x)</option>
-        <option value="discrete">Discrete Input (1x - Tylko Odczyt)</option>
-      </select>
-    </div>
+    <!-- String Length Input -->
+    {#if data_type === "string"}
+      <div class="form-group">
+        <label for="f-strlen">Długość Bufora Tekstowego (znaki ASCII):</label>
+        <input id="f-strlen" type="number" min="2" max="256" step="2" bind:value={string_length} required />
+      </div>
+    {/if}
 
     <!-- Modbus Address -->
     <div class="form-group">

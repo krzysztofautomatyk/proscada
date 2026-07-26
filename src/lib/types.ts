@@ -43,24 +43,38 @@ export interface DeviceConfig {
 export interface TagBinding {
   address: number;
   bit?: number | null;
-  table: "holding" | "input" | "coil" | "discrete";
+  table: "holding" | "input" | "coil" | "discrete" | "memory" | "system";
   writable?: boolean;
   bit_write_mode?: "mask_write" | "read_modify_write";
   single_writer?: boolean;
   verify_readback?: boolean;
+  string_length?: number;
 }
+
+export type TagDataType =
+  | "bool"
+  | "u16"
+  | "i16"
+  | "u32"
+  | "i32"
+  | "f32"
+  | "u64"
+  | "i64"
+  | "f64"
+  | "string";
 
 export interface TagDefinition {
   id: string;
   name: string;
   device_id: string;
-  data_type: "bool" | "u16" | "i16" | "f32";
+  data_type: TagDataType;
   binding: TagBinding;
   unit: string;
   description: string;
   scale: number;
   offset: number;
   decimals: number;
+  is_system?: boolean;
 }
 
 export interface WidgetDef {
@@ -218,6 +232,7 @@ export interface TagValue {
   tag_id: string;
   value: number;
   bool_value: boolean;
+  string_value?: string;
   quality: Quality;
   ts: string;
   age_ms: number;

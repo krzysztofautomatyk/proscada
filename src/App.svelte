@@ -10,6 +10,8 @@
     selectedWidgetId,
     selectedWidgetIds,
     selectedSolutionNode,
+    selectSolutionNode,
+    isMainScreen,
     tagMap,
     audit,
     dirty,
@@ -60,7 +62,7 @@
   import AddAlarmModal from "$lib/components/shell/AddAlarmModal.svelte";
   import AddVariableModal from "$lib/components/shell/AddVariableModal.svelte";
   import { addDeviceModalOpen, addAlarmModalOpen, addVariableModalOpen } from "$lib/stores/app";
-  import { ensureProjectTree, isDocKind } from "$lib/utils/projectTree";
+  import { ensureProjectTree, isDocKind, iconFor } from "$lib/utils/projectTree";
   import { appSettings } from "$lib/stores/settings";
   import { validateProject } from "$lib/utils/validation";
   import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -548,12 +550,81 @@
       ></div>
 
       <div class="center">
-        {#if centerDoc}
-          <div class="tabstrip" style:display="flex" style:align-items="center">
-            <div class="tab active">
-              <span>{centerDoc.name}</span>
+        <!-- Interactive Unified Multi-Tabstrip (Screens + Active Document/Variables) -->
+        <div class="tabstrip" style:display="flex" style:align-items="center">
+          {#each $project.forms as f}
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div
+              class="tab"
+              class:active={!centerDoc && $selectedFormId === f.id}
+              role="button"
+              tabindex="0"
+              onclick={() => {
+                selectSolutionNode(null);
+                selectedFormId.set(f.id);
+                selectedWidgetId.set(null);
+              }}
+              onkeydown={(e) => {
+                if (e.key === "Enter") {
+                  selectSolutionNode(null);
+                  selectedFormId.set(f.id);
+                }
+              }}
+            >
+              <span>{f.name}.form</span>
+              {#if $mode === "designer" && $project.forms.length > 1 && !isMainScreen(f)}
+                <!-- svelte-ignore a11y_click_events_have_key_events -->
+                <!-- svelte-ignore a11y_no_static_element_interactions -->
+                <span
+                  class="tab-close"
+                  title="Usuń ekran {f.name}"
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    deleteForm(f.id);
+                  }}
+                >
+                  ✕
+                </span>
+              {/if}
             </div>
-          </div>
+          {/each}
+
+          {#if centerDoc}
+            <!-- Active Document Tab (Variables / Script / Note) -->
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div
+              class="tab active"
+              role="button"
+              tabindex="0"
+            >
+              <span>{iconFor(centerDoc.kind)} {centerDoc.name}</span>
+              <!-- svelte-ignore a11y_click_events_have_key_events -->
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
+              <span
+                class="tab-close"
+                title="Zamknij zakładkę {centerDoc.name}"
+                onclick={(e) => {
+                  e.stopPropagation();
+                  selectSolutionNode(null);
+                }}
+              >
+                ✕
+              </span>
+            </div>
+          {/if}
+
+          {#if $mode === "designer"}
+            <button
+              class="btn-new-tab"
+              title="Add New Screen"
+              onclick={() => addNewForm()}
+            >
+              +
+            </button>
+          {/if}
+        </div>
+
+        {#if centerDoc}
           <div class="doc-host">
             {#if centerDoc.kind === "variables"}
               <VariablesEditor scada={$project} design={$mode === "designer"} />
@@ -562,48 +633,6 @@
             {/if}
           </div>
         {:else}
-          <!-- Interactive Multi-Screen Tabstrip -->
-          <div class="tabstrip" style:display="flex" style:align-items="center">
-            {#each $project.forms as f}
-              <!-- svelte-ignore a11y_no_static_element_interactions -->
-              <div
-                class="tab"
-                class:active={$selectedFormId === f.id}
-                role="button"
-                tabindex="0"
-                onclick={() => {
-                  selectedFormId.set(f.id);
-                  selectedWidgetId.set(null);
-                }}
-                onkeydown={(e) => e.key === "Enter" && selectedFormId.set(f.id)}
-              >
-                <span>{f.name}.form</span>
-                {#if $mode === "designer" && $project.forms.length > 1}
-                  <!-- svelte-ignore a11y_click_events_have_key_events -->
-                  <!-- svelte-ignore a11y_no_static_element_interactions -->
-                  <span
-                    class="tab-close"
-                    title="Close & Delete screen {f.name}"
-                    onclick={(e) => {
-                      e.stopPropagation();
-                      deleteForm(f.id);
-                    }}
-                  >
-                    ✕
-                  </span>
-                {/if}
-              </div>
-            {/each}
-            {#if $mode === "designer"}
-              <button
-                class="btn-new-tab"
-                title="Add New Screen"
-                onclick={() => addNewForm()}
-              >
-                + New Screen
-              </button>
-            {/if}
-          </div>
           {#if $activeForm}
             <!-- Design and Run: always the currently selected screen (tab). -->
             <DesignerCanvas

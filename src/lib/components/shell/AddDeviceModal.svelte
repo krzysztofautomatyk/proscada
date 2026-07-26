@@ -81,7 +81,7 @@
       } else {
         resetForm();
       }
-      activeTab = "params";
+      activeTab = $deviceModalState.initialTab ?? "params";
       editingQueryId = null;
       testStatus = "idle";
       testMessage = "";

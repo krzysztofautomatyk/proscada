@@ -78,6 +78,11 @@
   >
     {#if design && !tag && !widget.tag_id}
       — —
+    {:else if tag?.string_value !== undefined}
+      {tag.string_value}
+      {#if unit}
+        <span class="unit-text">{unit}</span>
+      {/if}
     {:else}
       {value.toFixed(decimals)}
       {#if unit}

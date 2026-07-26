@@ -1,11 +1,11 @@
-import type { TagDefinition, DeviceConfig, ModbusQueryConfig } from "../types";
+import type { TagDefinition, DeviceConfig, ModbusQueryConfig, TagDataType, TagBinding } from "../types";
 
 export interface DevicePollQuery {
   id: string;
   name: string;
   deviceId: string;
   deviceName: string;
-  table: "holding" | "input" | "coil" | "discrete";
+  table: TagBinding["table"];
   startAddress: number;
   count: number;
   endAddress: number;
@@ -24,16 +24,16 @@ export interface RegisterBitEntry {
 
 export interface RegisterMapEntry {
   address: number;
-  table: "holding" | "input" | "coil" | "discrete";
+  table: TagBinding["table"];
   deviceId: string;
   queryId: string;
   tags: TagDefinition[]; // All tags sharing this physical register address
   primaryTag?: TagDefinition;
   symbol: string;
   tagId: string;
-  dataType: "bool" | "u16" | "i16" | "f32" | "multi" | "unmapped";
+  dataType: TagDataType | "multi" | "unmapped";
   readonly: boolean; // true = app cannot write
-  span: number; // 1 for u16/i16/bool, 2 for f32
+  span: number; // 1 for u16/i16/bool, 2 for f32/u32/i32, 4 for f64/u64/i64
   isSpanContinuation: boolean;
   parentAddress?: number;
   unit: string;

@@ -69,6 +69,7 @@ export interface DeviceModalState {
   open: boolean;
   mode: "add" | "edit";
   deviceId?: string;
+  initialTab?: "params" | "queries";
 }
 
 export const startWindowOpen = writable(false);
@@ -2188,8 +2189,8 @@ export function openAddDeviceModal() {
   addDeviceModalOpen.set(true);
 }
 
-export function openEditDeviceModal(deviceId: string) {
-  deviceModalState.set({ open: true, mode: "edit", deviceId });
+export function openEditDeviceModal(deviceId: string, initialTab: "params" | "queries" = "params") {
+  deviceModalState.set({ open: true, mode: "edit", deviceId, initialTab });
   addDeviceModalOpen.set(true);
 }
 
