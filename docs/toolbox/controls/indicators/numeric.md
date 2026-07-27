@@ -10,7 +10,7 @@ Prezentuje bieżącą wartość procesową.
 
 ## Najważniejsze pola
 
-`title`, `decimals`, `unit`, `fontTokenId`, `fontSize`, `fontWeight`, `textColor`, `titleColor`, `bgColor`, `align`.
+`title`, `decimals`, `padZeros`, `unit`, `fontTokenId`, `fontSize`, `fontWeight`, `textColor`, `titleColor`, `bgColor`, `align`.
 
 ## Dane
 

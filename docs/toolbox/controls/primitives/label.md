@@ -10,7 +10,7 @@ Wyświetla etykietę, nagłówek lub podpis wartości. Obsługuje FontToken, fal
 
 ## Najważniejsze pola
 
-`text`, `fontTokenId`, `fontFamily`, `fontSize`, `fontWeight`, `fontStyle`, `textColor`, `bgColor`, `align`, `vAlign`.
+`text`, `fontTokenId`, `fontFamily`, `fontSize`, `fontWeight`, `fontStyle`, `textColor`, `bgColor`, `align`, `vAlign`, `decimals`, `padZeros`, `unit`.
 
 ## Dane i zachowanie
 

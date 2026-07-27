@@ -448,6 +448,19 @@
                 />
               </td>
             </tr>
+            <tr>
+              <td>Leading Zeros</td>
+              <td>
+                <input
+                  type="number"
+                  min="0"
+                  max="12"
+                  placeholder="0 (e.g. 4 for 0005)"
+                  value={widget.config?.padZeros !== undefined ? cfgStr("padZeros", "") : ""}
+                  onchange={(e) => setCfg("padZeros", e.currentTarget.value === "" ? undefined : Math.max(0, Number(e.currentTarget.value)))}
+                />
+              </td>
+            </tr>
             {#if ["meter", "bar", "tank", "numeric_input"].includes(widget.widget_type)}
               <tr>
                 <td>Min / Max</td>

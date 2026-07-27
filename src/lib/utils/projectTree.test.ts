@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ensureProjectTree, createEmptyProject } from "./projectTree";
+import { ensureProjectTree, createEmptyProject, childrenOf } from "./projectTree";
 
 test("ensureProjectTree guarantees Screens folder and syncs screen nodes for all forms", () => {
   // Scenario: Project has tree with only Images and Styles, but 2 forms (Main and Detail) in forms[]
@@ -169,3 +169,39 @@ test("ensureProjectTree preserves valid parent_id for screens in sub-folders und
   // Valid parent_id must be preserved
   assert.equal(mainNode?.parent_id, "sub_fld", "Valid parent_id under Screens must be preserved");
 });
+
+test("childrenOf and ensureProjectTree handle undefined or omitted parent_id on root nodes", () => {
+  const rawProject = {
+    schema_version: 3,
+    id: "proj_undefined_parent",
+    name: "Test Undefined Parent",
+    description: "",
+    devices: [],
+    tags: [],
+    forms: [
+      { id: "form_main", name: "Main", width: 1040, height: 700, background: "#ffffff", grid: 8, widgets: [] },
+    ],
+    alarms: [],
+    tree: [
+      { id: "screens_fld", kind: "folder" as const, name: "Screens", order: 0, collapsed: false }, // parent_id omitted!
+      { id: "scripts_fld", kind: "folder" as const, name: "Scripts", order: 1 }, // parent_id omitted!
+      { id: "styles_fld", kind: "folder" as const, name: "Styles", order: 2 }, // parent_id omitted!
+      { id: "images_fld", kind: "folder" as const, name: "Images", order: 3 }, // parent_id omitted!
+      { id: "docs_fld", kind: "folder" as const, name: "Documents", order: 4 }, // parent_id omitted!
+      { id: "var_node", kind: "variables" as const, name: "Variables", order: 5 }, // parent_id omitted!
+      { id: "scr_main", parent_id: "screens_fld", kind: "screen" as const, name: "Main", order: 0, ref_id: "form_main" },
+    ],
+    content_hash: "",
+  };
+
+  const synced = ensureProjectTree(rawProject as unknown as import("../types").ScadaProject);
+  assert.ok(synced.tree, "Synced tree must exist");
+
+  const rootChildren = childrenOf(synced.tree, null);
+  assert.equal(rootChildren.length, 6, "Must return all 6 root items when requesting childrenOf(tree, null)");
+
+  for (const child of rootChildren) {
+    assert.equal(child.parent_id, null, `Root item ${child.name} must have parent_id normalized to null`);
+  }
+});
+

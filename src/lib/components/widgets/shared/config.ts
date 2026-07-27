@@ -129,3 +129,23 @@ export function invokeWriteToTag(
   onWrite(tagId, value);
   return true;
 }
+
+export function formatNumericValue(
+  valNum: number,
+  decimals: number = 0,
+  padZeros: number = 0,
+): string {
+  const safeDecimals = Math.max(0, Math.min(8, decimals));
+  const safePad = Math.max(0, Math.min(12, padZeros));
+  const isNegative = valNum < 0;
+  const absVal = Math.abs(valNum);
+  const formatted = absVal.toFixed(safeDecimals);
+  if (safePad > 0) {
+    const parts = formatted.split(".");
+    parts[0] = parts[0].padStart(safePad, "0");
+    const padded = parts.join(".");
+    return isNegative ? `-${padded}` : padded;
+  }
+  return isNegative ? `-${formatted}` : formatted;
+}
+

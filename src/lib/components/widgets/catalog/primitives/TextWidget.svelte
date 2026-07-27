@@ -6,6 +6,7 @@
   import { project, tagMap } from "$lib/stores/app";
   import { isWidgetScrolling } from "$lib/utils/dynamics";
   import { normalizeProjectDesignSystem } from "$lib/utils/designSystem";
+  import { formatNumericValue } from "$lib/components/widgets/shared/config";
 
   interface Props {
     widget: WidgetDef;
@@ -28,6 +29,7 @@
       ? num("decimals", 0)
       : (boundTagDef?.decimals ?? 0),
   );
+  const padZeros = $derived(num("padZeros", 0));
   const unit = $derived(
     cfg.unit !== undefined && cfg.unit !== ""
       ? str("unit", "")
@@ -47,7 +49,9 @@
     }
 
     const valNum = tag?.value ?? 0;
-    const formattedVal = (design && !tag) ? "0" : valNum.toFixed(decimals);
+    const formattedVal = (design && !tag)
+      ? formatNumericValue(0, decimals, padZeros)
+      : formatNumericValue(valNum, decimals, padZeros);
     const valWithUnit = unit ? `${formattedVal} ${unit}` : formattedVal;
 
     if (rawText.includes("{value}")) {

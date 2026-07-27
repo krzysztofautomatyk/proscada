@@ -2,6 +2,7 @@
   import type { WidgetDef, TagValue } from "$lib/types";
   import { project } from "$lib/stores/app";
   import { normalizeProjectDesignSystem } from "$lib/utils/designSystem";
+  import { formatNumericValue } from "$lib/components/widgets/shared/config";
 
   interface Props {
     widget: WidgetDef;
@@ -25,6 +26,7 @@
       ? num("decimals", 0)
       : (boundTagDef?.decimals ?? 0),
   );
+  const padZeros = $derived(num("padZeros", 0));
   const unit = $derived(
     cfg.unit !== undefined && cfg.unit !== ""
       ? str("unit", "")
@@ -84,7 +86,7 @@
         <span class="unit-text">{unit}</span>
       {/if}
     {:else}
-      {value.toFixed(decimals)}
+      {formatNumericValue(value, decimals, padZeros)}
       {#if unit}
         <span class="unit-text">{unit}</span>
       {/if}

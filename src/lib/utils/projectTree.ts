@@ -102,7 +102,10 @@ function isChildOfFolder(tree: ProjectNode[], folderId: string, targetRootFolder
 
 /** Ensure project has a usable tree; migrate legacy flat forms, deduplicate system folders, and guarantee all root folders and screens. */
 export function ensureProjectTree(p: ScadaProject): ScadaProject {
-  let tree = [...(p.tree ?? [])];
+  let tree = [...(p.tree ?? [])].map((node) => ({
+    ...node,
+    parent_id: node.parent_id ?? null,
+  }));
   const guaranteedForms = ensureMainFormExists(Array.isArray(p.forms) ? p.forms : []);
   const normalized = {
     ...p,
@@ -241,6 +244,11 @@ export function ensureProjectTree(p: ScadaProject): ScadaProject {
     return true;
   });
 
+  tree = tree.map((n) => ({
+    ...n,
+    parent_id: n.parent_id ?? null,
+  }));
+
   return {
     ...normalized,
     schema_version: Math.max(p.schema_version || 1, CURRENT_SCHEMA),
@@ -278,8 +286,9 @@ export function createEmptyProject(name = "New Project"): ScadaProject {
 }
 
 export function childrenOf(tree: ProjectNode[], parentId: string | null): ProjectNode[] {
+  const targetParent = parentId ?? null;
   return tree
-    .filter((n) => n.parent_id === parentId)
+    .filter((n) => (n.parent_id ?? null) === targetParent)
     .sort((a, b) => a.order - b.order || a.name.localeCompare(b.name));
 }
 
@@ -290,7 +299,7 @@ export function findNode(tree: ProjectNode[], id: string): ProjectNode | undefin
 export function collectDescendantIds(tree: ProjectNode[], rootId: string): string[] {
   const out: string[] = [rootId];
   const walk = (pid: string) => {
-    for (const c of tree.filter((n) => n.parent_id === pid)) {
+    for (const c of tree.filter((n) => (n.parent_id ?? null) === pid)) {
       out.push(c.id);
       if (c.kind === "folder") walk(c.id);
     }
