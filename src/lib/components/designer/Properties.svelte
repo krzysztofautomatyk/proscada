@@ -259,6 +259,32 @@
             <td><input value={widget.id} disabled /></td>
           </tr>
           <tr>
+            <td>Min Security Level (0-1000)</td>
+            <td>
+              <input
+                type="number"
+                min="0"
+                max="1000"
+                step="50"
+                value={widget.min_level ?? 0}
+                onchange={(e) => updateWidget({ id: widget.id, min_level: Number(e.currentTarget.value) || 0 })}
+              />
+            </td>
+          </tr>
+          <tr>
+            <td>Brak Uprawnień (Unauthorized)</td>
+            <td>
+              <select
+                value={widget.unauthorized_behavior ?? "disabled"}
+                onchange={(e) => updateWidget({ id: widget.id, unauthorized_behavior: e.currentTarget.value as any })}
+              >
+                <option value="disabled">Poszarzenie z kłódką (Disabled)</option>
+                <option value="hidden">Ukrycie (Hidden)</option>
+                <option value="prompt_login">Logowanie PIN (Prompt Login)</option>
+              </select>
+            </td>
+          </tr>
+          <tr>
             <td>Group ID</td>
             <td>
               <input

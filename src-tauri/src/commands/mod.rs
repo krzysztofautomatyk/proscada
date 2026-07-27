@@ -6,9 +6,9 @@ use serde::Serialize;
 use tauri::State;
 
 use crate::audit::AuditEntry;
-use crate::engine::{AlarmInstance, Engine, EngineSnapshot, TagValue};
+use crate::engine::{AlarmInstance, Engine, EngineSnapshot, TagValue, UserAccountInput};
 use crate::modbus::{self, ConnectionConfig};
-use crate::project::{water_tank_project, Role, ScadaProject};
+use crate::project::{water_tank_project, Role, ScadaProject, UserSummary};
 
 pub struct AppState {
     pub engine: Arc<Engine>,
@@ -91,6 +91,43 @@ pub fn set_role(state: State<'_, AppState>, role: Role, actor: String) {
 #[tauri::command]
 pub fn set_mode(state: State<'_, AppState>, mode: String) {
     state.engine.set_mode(mode);
+}
+
+#[tauri::command]
+pub fn login(
+    state: State<'_, AppState>,
+    username_or_pin: String,
+    password: Option<String>,
+) -> Result<UserSummary, String> {
+    state.engine.login(&username_or_pin, password.as_deref())
+}
+
+#[tauri::command]
+pub fn logout(state: State<'_, AppState>) -> Result<(), String> {
+    state.engine.logout()
+}
+
+#[tauri::command]
+pub fn verify_pin(state: State<'_, AppState>, pin: String) -> Result<bool, String> {
+    state.engine.verify_pin(&pin)
+}
+
+#[tauri::command]
+pub fn list_users(state: State<'_, AppState>) -> Result<Vec<UserSummary>, String> {
+    state.engine.list_users()
+}
+
+#[tauri::command]
+pub fn save_user(
+    state: State<'_, AppState>,
+    user: UserAccountInput,
+) -> Result<UserSummary, String> {
+    state.engine.save_user(user)
+}
+
+#[tauri::command]
+pub fn delete_user(state: State<'_, AppState>, user_id: String) -> Result<(), String> {
+    state.engine.delete_user(&user_id)
 }
 
 #[tauri::command]

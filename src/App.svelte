@@ -67,11 +67,34 @@
   import { validateProject } from "$lib/utils/validation";
   import { getCurrentWindow } from "@tauri-apps/api/window";
 
+  import LoginModal from "$lib/components/auth/LoginModal.svelte";
+  import PinChallengeModal from "$lib/components/auth/PinChallengeModal.svelte";
+  import UserManagementModal from "$lib/components/auth/UserManagementModal.svelte";
+
   let role = $state<Role>("engineer");
   let leftTab = $state<LeftPanelTab>("solution");
   let settingsOpen = $state(false);
+  let loginModalOpen = $state(false);
+  let pinChallengeOpen = $state(false);
+  let userMgmtModalOpen = $state(false);
+  let pinChallengeAction = $state("Potwierdzenie operacji");
+  let pendingWriteFn = $state<(() => void) | null>(null);
+
   let propertiesEl = $state<HTMLDivElement | null>(null);
   let workspaceEl = $state<HTMLDivElement | null>(null);
+
+  const currentUser = $derived($snapshot?.current_user);
+  const securityLevel = $derived($snapshot?.security_level ?? 1000);
+  const isSuperAdmin = $derived(securityLevel >= 1000 || $mode === "designer");
+
+  async function handleLogout() {
+    try {
+      await api.logout();
+      log("Wylogowano użytkownika", "info");
+    } catch (e: any) {
+      log(`Błąd wylogowania: ${e}`, "err");
+    }
+  }
 
   const validation = $derived(validateProject($project));
 
@@ -219,7 +242,7 @@
       }
       if (mod && e.key.toLowerCase() === "s") {
         e.preventDefault();
-        persistProject();
+        persistProject(e.shiftKey);
         return;
       }
       if (mod && e.key.toLowerCase() === "c") {
@@ -313,6 +336,22 @@
   }
 
   async function onWrite(tagId: string, value: number) {
+    if ($project?.session_config?.pin_challenge_on_write) {
+      pinChallengeAction = `Zapis wartości ${tagId} = ${value}`;
+      pendingWriteFn = async () => {
+        try {
+          await api.writeTag(tagId, value);
+          log(`Write ${tagId} = ${value}`, "ok");
+          await refreshAudit();
+        } catch (e) {
+          log(`Write failed: ${e}`, "err");
+          throw e;
+        }
+      };
+      pinChallengeOpen = true;
+      return;
+    }
+
     try {
       await api.writeTag(tagId, value);
       log(`Write ${tagId} = ${value}`, "ok");
@@ -366,13 +405,18 @@
       const detail = (event as CustomEvent<{ action?: string; sourceWidgetId?: string }>).detail;
       log(`Dialog ${detail?.action ?? "action"} · ${detail?.sourceWidgetId ?? "unknown"}`, "info");
     };
+    const onOpenLogin = () => {
+      loginModalOpen = true;
+    };
     window.addEventListener("proscada:alarm-action", onAlarmAction);
     window.addEventListener("proscada:navigate", onNavigate);
     window.addEventListener("proscada:dialog-action", onDialogAction);
+    window.addEventListener("proscada:open-login", onOpenLogin);
     return () => {
       window.removeEventListener("proscada:alarm-action", onAlarmAction);
       window.removeEventListener("proscada:navigate", onNavigate);
       window.removeEventListener("proscada:dialog-action", onDialogAction);
+      window.removeEventListener("proscada:open-login", onOpenLogin);
     };
   });
 
@@ -398,6 +442,32 @@
 <AddDeviceModal open={$addDeviceModalOpen} onClose={() => addDeviceModalOpen.set(false)} />
 <AddAlarmModal open={$addAlarmModalOpen} onClose={() => addAlarmModalOpen.set(false)} />
 <AddVariableModal open={$addVariableModalOpen} onClose={() => addVariableModalOpen.set(false)} />
+
+<LoginModal
+  open={loginModalOpen}
+  onclose={() => (loginModalOpen = false)}
+  onsuccess={(u) => log(`Zalogowano jako ${u.username} [L${u.security_level}]`, "ok")}
+/>
+
+<PinChallengeModal
+  open={pinChallengeOpen}
+  actionName={pinChallengeAction}
+  onclose={() => {
+    pinChallengeOpen = false;
+    pendingWriteFn = null;
+  }}
+  onsuccess={() => {
+    if (pendingWriteFn) {
+      pendingWriteFn();
+      pendingWriteFn = null;
+    }
+  }}
+/>
+
+<UserManagementModal
+  open={userMgmtModalOpen}
+  onclose={() => (userMgmtModalOpen = false)}
+/>
 
 <div class="shell">
   <MenuBar
@@ -436,17 +506,31 @@
     <button class="tb" title="Connect Modbus" onclick={() => connectDevice()}>Connect</button>
     <button class="tb" title="Stop Poll" onclick={() => disconnectDevice()}>Stop</button>
     <div class="sep"></div>
-    <label for="role-select">Role</label>
-    <select
-      id="role-select"
-      value={role}
-      onchange={(e) => onRoleChange(e.currentTarget.value as Role)}
-    >
-      <option value="viewer">Viewer</option>
-      <option value="operator">Operator</option>
-      <option value="engineer">Engineer</option>
-      <option value="administrator">Administrator</option>
-    </select>
+
+    <!-- Security & User Identity Badge Controls -->
+    <div class="user-identity-badge" title={`Zalogowany użytkownik: ${currentUser?.display_name ?? 'Podgląd'}`}>
+      <span class="user-icon">👤</span>
+      <span class="username">{currentUser?.username ?? "Podgląd"}</span>
+      <span class="level-pill" class:admin={securityLevel >= 1000} class:engineer={securityLevel >= 500 && securityLevel < 1000} class:operator={securityLevel >= 100 && securityLevel < 500}>
+        L{securityLevel}
+      </span>
+    </div>
+
+    <button class="tb user-btn" title="Logowanie / PIN HMI" onclick={() => (loginModalOpen = true)}>
+      🔑 Logowanie
+    </button>
+
+    {#if isSuperAdmin}
+      <button class="tb user-btn" title="Zarządzanie Użytkownikami i Uprawnieniami" onclick={() => (userMgmtModalOpen = true)}>
+        👥 Użytkownicy
+      </button>
+    {/if}
+
+    {#if currentUser}
+      <button class="tb user-btn danger" title="Wyloguj sesję" onclick={handleLogout}>
+        🚪
+      </button>
+    {/if}
     {#if $mode === "designer" && $selectedWidgetIds.length >= 2}
       <div class="sep"></div>
       <span class="align-label">Align:</span>
@@ -792,6 +876,36 @@
   .btn-new-tab:hover {
     background: var(--vs-hover, #3e3e42);
     color: #ffffff;
+  }
+  .user-identity-badge {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: #090d16;
+    border: 1px solid #1e293b;
+    padding: 3px 10px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    color: #f8fafc;
+  }
+  .level-pill {
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 800;
+    background: #334155;
+    color: #94a3b8;
+  }
+  .level-pill.admin { background: rgba(225, 29, 72, 0.25); color: #f43f5e; border: 1px solid rgba(225, 29, 72, 0.4); }
+  .level-pill.engineer { background: rgba(168, 85, 247, 0.25); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.4); }
+  .level-pill.operator { background: rgba(14, 165, 233, 0.25); color: #38bdf8; border: 1px solid rgba(14, 165, 233, 0.4); }
+  .user-btn {
+    font-weight: 600 !important;
+  }
+  .user-btn.danger:hover {
+    background: #be123c !important;
+    color: #ffffff !important;
   }
   .doc-host {
     flex: 1;

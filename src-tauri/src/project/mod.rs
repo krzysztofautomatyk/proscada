@@ -162,6 +162,10 @@ pub struct WidgetDef {
     pub group_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub locked: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_level: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unauthorized_behavior: Option<String>,
     #[serde(default)]
     pub config: serde_json::Value,
 }
@@ -178,6 +182,10 @@ pub struct FormDef {
     pub background: String,
     #[serde(default = "default_grid")]
     pub grid: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_level: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unauthorized_behavior: Option<String>,
     pub widgets: Vec<WidgetDef>,
 }
 
@@ -275,6 +283,71 @@ pub struct ProjectNode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserAccount {
+    pub id: String,
+    pub username: String,
+    pub display_name: String,
+    pub password_hash: String,
+    pub salt: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pin_hash: Option<String>,
+    pub security_level: u32,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserSummary {
+    pub id: String,
+    pub username: String,
+    pub display_name: String,
+    pub security_level: u32,
+    pub enabled: bool,
+    pub has_pin: bool,
+}
+
+impl UserAccount {
+    pub fn to_summary(&self) -> UserSummary {
+        UserSummary {
+            id: self.id.clone(),
+            username: self.username.clone(),
+            display_name: self.display_name.clone(),
+            security_level: self.security_level,
+            enabled: self.enabled,
+            has_pin: self.pin_hash.is_some(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionConfig {
+    #[serde(default = "default_auto_logout_minutes")]
+    pub auto_logout_minutes: u32,
+    #[serde(default)]
+    pub pin_challenge_on_write: bool,
+}
+
+impl Default for SessionConfig {
+    fn default() -> Self {
+        Self {
+            auto_logout_minutes: 15,
+            pin_challenge_on_write: false,
+        }
+    }
+}
+
+fn default_auto_logout_minutes() -> u32 {
+    15
+}
+
+pub fn hash_password(password: &str, salt: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(salt.as_bytes());
+    hasher.update(password.as_bytes());
+    hex::encode(hasher.finalize())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScadaProject {
     pub schema_version: u32,
     pub id: String,
@@ -286,6 +359,10 @@ pub struct ScadaProject {
     pub alarms: Vec<AlarmDefinition>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub alarm_groups: Vec<AlarmGroupDefinition>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub users: Vec<UserAccount>,
+    #[serde(default)]
+    pub session_config: SessionConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub design_system: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -298,6 +375,32 @@ pub struct ScadaProject {
 }
 
 impl ScadaProject {
+    pub fn ensure_default_users(&mut self) {
+        if self.users.is_empty() {
+            let salt = "proscada_salt";
+            self.users.push(UserAccount {
+                id: "usr_admin".into(),
+                username: "admin".into(),
+                display_name: "Administrator".into(),
+                password_hash: hash_password("admin123", salt),
+                salt: salt.into(),
+                pin_hash: Some(hash_password("1234", salt)),
+                security_level: 1000,
+                enabled: true,
+            });
+            self.users.push(UserAccount {
+                id: "usr_operator".into(),
+                username: "operator".into(),
+                display_name: "Operator Zmianowy".into(),
+                password_hash: hash_password("operator123", salt),
+                salt: salt.into(),
+                pin_hash: Some(hash_password("1111", salt)),
+                security_level: 100,
+                enabled: true,
+            });
+        }
+    }
+
     pub fn recompute_hash(&mut self) {
         self.content_hash.clear();
         let body = serde_json::to_vec(self).unwrap_or_default();
@@ -572,9 +675,12 @@ pub fn water_tank_project() -> ScadaProject {
         }],
         design_system: None,
         component_templates: Vec::new(),
+        users: Vec::new(),
+        session_config: SessionConfig::default(),
         tree,
         content_hash: String::new(),
     };
+    project.ensure_default_users();
     project.recompute_hash();
     project
 }
@@ -954,6 +1060,8 @@ fn water_tank_form() -> FormDef {
         height: 700.0,
         background: "#F4F5F7".into(),
         grid: 8,
+        min_level: None,
+        unauthorized_behavior: None,
         widgets,
     }
 }
@@ -1049,6 +1157,8 @@ fn pump_faceplate_form() -> FormDef {
         height: 170.0,
         background: "#FFFFFF".into(),
         grid: 8,
+        min_level: None,
+        unauthorized_behavior: None,
         widgets,
     }
 }
@@ -1078,6 +1188,8 @@ fn w(
         tag_id: tag_id.map(|s| s.into()),
         group_id: group_id.map(|s| s.into()),
         locked: None,
+        min_level: None,
+        unauthorized_behavior: None,
         config,
     }
 }

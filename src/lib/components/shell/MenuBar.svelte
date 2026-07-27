@@ -149,8 +149,11 @@
               <span>Open / Import…</span><kbd>Ctrl+O</kbd>
             </button>
             <div class="vs-menu-sep"></div>
-            <button type="button" role="menuitem" onclick={() => run(persistProject)}>
+            <button type="button" role="menuitem" onclick={() => run(() => persistProject(false))}>
               <span>Save</span><kbd>Ctrl+S</kbd>
+            </button>
+            <button type="button" role="menuitem" onclick={() => run(() => persistProject(true))}>
+              <span>Save As…</span><kbd>Ctrl+Shift+S</kbd>
             </button>
             <button type="button" role="menuitem" onclick={() => run(exportProjectJson)}>
               <span>Export JSON…</span>

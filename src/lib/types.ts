@@ -77,6 +77,32 @@ export interface TagDefinition {
   is_system?: boolean;
 }
 
+export type UnauthorizedBehavior = "disabled" | "hidden" | "prompt_login";
+
+export interface UserSummary {
+  id: string;
+  username: string;
+  display_name: string;
+  security_level: number;
+  enabled: boolean;
+  has_pin: boolean;
+}
+
+export interface UserAccountInput {
+  id?: string | null;
+  username: string;
+  display_name: string;
+  password?: string | null;
+  pin?: string | null;
+  security_level: number;
+  enabled: boolean;
+}
+
+export interface SessionConfig {
+  auto_logout_minutes: number;
+  pin_challenge_on_write: boolean;
+}
+
 export interface WidgetDef {
   id: string;
   widget_type: string;
@@ -88,6 +114,8 @@ export interface WidgetDef {
   tag_id?: string | null;
   group_id?: string | null;
   locked?: boolean;
+  min_level?: number | null;
+  unauthorized_behavior?: UnauthorizedBehavior | null;
   config: Record<string, unknown>;
 }
 
@@ -98,6 +126,8 @@ export interface FormDef {
   height: number;
   background: string;
   grid: number;
+  min_level?: number | null;
+  unauthorized_behavior?: UnauthorizedBehavior | null;
   widgets: WidgetDef[];
 }
 
@@ -221,6 +251,8 @@ export interface ScadaProject {
   forms: FormDef[];
   alarms: AlarmDefinition[];
   alarm_groups?: AlarmGroupDefinition[];
+  users?: UserSummary[];
+  session_config?: SessionConfig;
   design_system?: ProjectDesignSystem;
   component_templates?: ComponentTemplate[];
   /** Hierarchical Solution Explorer items (folders, screens, scripts, docs). */
@@ -262,6 +294,8 @@ export interface EngineSnapshot {
   alarms: AlarmInstance[];
   role: Role;
   actor: string;
+  current_user?: UserSummary | null;
+  security_level: number;
   project_name?: string | null;
   mode: string;
 }

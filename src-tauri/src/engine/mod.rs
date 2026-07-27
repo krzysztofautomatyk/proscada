@@ -13,9 +13,32 @@ use tokio::task::JoinHandle;
 use crate::audit::AuditLog;
 use crate::modbus::{self, ConnectionConfig};
 use crate::project::{
-    AlarmDefinition, AlarmPriority, BitWriteMode, DeviceConfig, ModbusTable, Role, ScadaProject,
-    TagDataType, TagDefinition,
+    hash_password, AlarmDefinition, AlarmPriority, BitWriteMode, DeviceConfig, ModbusTable, Role,
+    ScadaProject, TagDataType, TagDefinition, UserAccount, UserSummary,
 };
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserAccountInput {
+    pub id: Option<String>,
+    pub username: String,
+    pub display_name: String,
+    pub password: Option<String>,
+    pub pin: Option<String>,
+    pub security_level: u32,
+    pub enabled: bool,
+}
+
+pub fn security_level_to_role(level: u32) -> Role {
+    if level >= 1000 {
+        Role::Administrator
+    } else if level >= 500 {
+        Role::Engineer
+    } else if level >= 100 {
+        Role::Operator
+    } else {
+        Role::Viewer
+    }
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -74,6 +97,8 @@ pub struct EngineSnapshot {
     pub alarms: Vec<AlarmInstance>,
     pub role: Role,
     pub actor: String,
+    pub current_user: Option<UserSummary>,
+    pub security_level: u32,
     pub project_name: Option<String>,
     pub mode: String,
 }
@@ -98,6 +123,9 @@ struct EngineInner {
     last_poll_ms: u64,
     role: Role,
     actor: String,
+    current_user: Option<UserSummary>,
+    security_level: u32,
+    last_activity_ts: DateTime<Utc>,
     mode: String, // designer | runtime
     poll_handle: Option<JoinHandle<()>>,
     stop_tx: Option<watch::Sender<bool>>,
@@ -123,6 +151,15 @@ impl Engine {
             .build()
             .expect("failed to create ProScada Tokio runtime");
 
+        let default_admin_summary = UserSummary {
+            id: "usr_admin".into(),
+            username: "admin".into(),
+            display_name: "Administrator".into(),
+            security_level: 1000,
+            enabled: true,
+            has_pin: true,
+        };
+
         Self {
             inner: Arc::new(RwLock::new(EngineInner {
                 project: None,
@@ -133,8 +170,11 @@ impl Engine {
                 last_error: None,
                 poll_count: 0,
                 last_poll_ms: 0,
-                role: Role::Engineer,
-                actor: "engineer".into(),
+                role: Role::Administrator,
+                actor: "admin".into(),
+                current_user: Some(default_admin_summary),
+                security_level: 1000,
+                last_activity_ts: Utc::now(),
                 mode: "designer".into(),
                 poll_handle: None,
                 stop_tx: None,
@@ -155,13 +195,16 @@ impl Engine {
     }
 
     pub fn load_project(&self, project: ScadaProject) -> Result<(), String> {
-        if !project.verify_hash() {
+        let mut proj = project;
+        proj.ensure_default_users();
+        proj.recompute_hash();
+        if !proj.verify_hash() {
             return Err("Project content hash verification failed".into());
         }
         self.stop_polling();
         let mut g = self.inner.write();
         let mut tags = HashMap::new();
-        for def in &project.tags {
+        for def in &proj.tags {
             tags.insert(
                 def.id.clone(),
                 LiveTag {
@@ -175,7 +218,7 @@ impl Engine {
             );
         }
         let mut alarms = HashMap::new();
-        for def in &project.alarms {
+        for def in &proj.alarms {
             alarms.insert(
                 def.id.clone(),
                 AlarmInstance {
@@ -194,8 +237,8 @@ impl Engine {
                 },
             );
         }
-        let name = project.name.clone();
-        g.project = Some(project);
+        let name = proj.name.clone();
+        g.project = Some(proj);
         g.tags = tags;
         g.alarms = alarms;
         g.connected = false;
@@ -219,11 +262,12 @@ impl Engine {
     pub fn set_project_mut(&self, project: ScadaProject) -> Result<(), String> {
         {
             let g = self.inner.read();
-            if !g.role.can_edit_project() {
+            if !g.role.can_edit_project() && g.mode != "designer" {
                 return Err("Role cannot edit project".into());
             }
         }
         let mut p = project;
+        p.ensure_default_users();
         p.recompute_hash();
         self.load_project(p)
     }
@@ -232,6 +276,12 @@ impl Engine {
         let mut g = self.inner.write();
         g.role = role.clone();
         g.actor = actor.clone();
+        g.security_level = match role {
+            Role::Administrator => 1000,
+            Role::Engineer => 500,
+            Role::Operator => 100,
+            Role::Viewer => 0,
+        };
         drop(g);
         self.audit
             .append(&actor, role_str(&role), "role.set", role_str(&role));
@@ -247,9 +297,227 @@ impl Engine {
             .append(&actor, role_str(&role), "mode.set", &mode);
     }
 
+    pub fn login(&self, username_or_pin: &str, password: Option<&str>) -> Result<UserSummary, String> {
+        let mut g = self.inner.write();
+        let term = username_or_pin.trim();
+
+        let matched = g.project.as_ref().ok_or("No project loaded")?.users.iter().find(|u| {
+            if !u.enabled {
+                return false;
+            }
+            if u.username.eq_ignore_ascii_case(term) {
+                if let Some(pwd) = password {
+                    let hashed = hash_password(pwd, &u.salt);
+                    if u.password_hash == hashed {
+                        return true;
+                    }
+                }
+                if let Some(pin) = &u.pin_hash {
+                    let hashed_pin = hash_password(term, &u.salt);
+                    if pin == &hashed_pin {
+                        return true;
+                    }
+                }
+            }
+            if let Some(pin) = &u.pin_hash {
+                let hashed_pin = hash_password(term, &u.salt);
+                if pin == &hashed_pin {
+                    return true;
+                }
+            }
+            false
+        }).map(|u| (u.to_summary(), u.security_level, u.username.clone()));
+
+        if let Some((summary, level, username)) = matched {
+            g.current_user = Some(summary.clone());
+            g.security_level = level;
+            g.role = security_level_to_role(level);
+            g.actor = username.clone();
+            g.last_activity_ts = Utc::now();
+            let role_desc = format!("L{level}");
+            drop(g);
+            self.audit
+                .append(&username, &role_desc, "auth.login_success", "User authenticated");
+            Ok(summary)
+        } else {
+            let actor = if term.is_empty() { "unknown" } else { term };
+            drop(g);
+            self.audit
+                .append(actor, "unauthenticated", "auth.login_failed", "Invalid credentials");
+            Err("Invalid username, password or PIN".into())
+        }
+    }
+
+    pub fn logout(&self) -> Result<(), String> {
+        let mut g = self.inner.write();
+        let prev_actor = g.actor.clone();
+        let prev_level = g.security_level;
+        g.current_user = None;
+        g.security_level = 0;
+        g.role = Role::Viewer;
+        g.actor = "guest".into();
+        g.last_activity_ts = Utc::now();
+        drop(g);
+        self.audit.append(
+            &prev_actor,
+            &format!("L{prev_level}"),
+            "auth.logout",
+            "User logged out",
+        );
+        Ok(())
+    }
+
+    pub fn verify_pin(&self, pin: &str) -> Result<bool, String> {
+        let g = self.inner.read();
+        let project = g.project.as_ref().ok_or("No project loaded")?;
+        let current_user_id = g.current_user.as_ref().map(|u| u.id.as_str());
+
+        for u in &project.users {
+            if !u.enabled {
+                continue;
+            }
+            if let Some(current_id) = current_user_id {
+                if u.id != current_id && u.security_level < g.security_level {
+                    continue;
+                }
+            }
+            if let Some(pin_hash) = &u.pin_hash {
+                let h = hash_password(pin, &u.salt);
+                if pin_hash == &h {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    pub fn list_users(&self) -> Result<Vec<UserSummary>, String> {
+        let g = self.inner.read();
+        let project = g.project.as_ref().ok_or("No project loaded")?;
+        Ok(project.users.iter().map(|u| u.to_summary()).collect())
+    }
+
+    pub fn save_user(&self, input: UserAccountInput) -> Result<UserSummary, String> {
+        let mut g = self.inner.write();
+        if g.security_level < 1000 && g.mode != "designer" {
+            return Err("Administrator permission (Security Level 1000) required to manage users".into());
+        }
+        let project = g.project.as_mut().ok_or("No project loaded")?;
+        let salt = "proscada_salt";
+
+        let user_idx = if let Some(id) = &input.id {
+            project.users.iter().position(|u| u.id == *id)
+        } else {
+            project.users.iter().position(|u| u.username.eq_ignore_ascii_case(&input.username))
+        };
+
+        let summary = if let Some(idx) = user_idx {
+            let u = &mut project.users[idx];
+            u.username = input.username.clone();
+            u.display_name = input.display_name.clone();
+            u.security_level = input.security_level;
+            u.enabled = input.enabled;
+            if let Some(pwd) = &input.password {
+                if !pwd.trim().is_empty() {
+                    u.password_hash = hash_password(pwd.trim(), &u.salt);
+                }
+            }
+            if let Some(pin) = &input.pin {
+                if !pin.trim().is_empty() {
+                    u.pin_hash = Some(hash_password(pin.trim(), &u.salt));
+                }
+            }
+            u.to_summary()
+        } else {
+            let pwd = input.password.as_deref().unwrap_or("password123");
+            let pwd_hash = hash_password(pwd, salt);
+            let pin_hash = input.pin.as_ref().map(|p| hash_password(p, salt));
+            let new_user = UserAccount {
+                id: input.id.unwrap_or_else(|| format!("usr_{}", uuid::Uuid::new_v4().simple())),
+                username: input.username,
+                display_name: input.display_name,
+                password_hash: pwd_hash,
+                salt: salt.into(),
+                pin_hash,
+                security_level: input.security_level,
+                enabled: input.enabled,
+            };
+            let sum = new_user.to_summary();
+            project.users.push(new_user);
+            sum
+        };
+
+        project.recompute_hash();
+        let actor = g.actor.clone();
+        let level = g.security_level;
+        drop(g);
+
+        self.audit.append(
+            &actor,
+            &format!("L{level}"),
+            "user.save",
+            &format!("User {} saved (Level {})", summary.username, summary.security_level),
+        );
+
+        Ok(summary)
+    }
+
+    pub fn delete_user(&self, user_id: &str) -> Result<(), String> {
+        let mut g = self.inner.write();
+        if g.security_level < 1000 && g.mode != "designer" {
+            return Err("Administrator permission (Security Level 1000) required to delete users".into());
+        }
+        let project = g.project.as_mut().ok_or("No project loaded")?;
+
+        let admin_count = project.users.iter().filter(|u| u.enabled && u.security_level >= 1000).count();
+        let target = project.users.iter().find(|u| u.id == user_id);
+
+        if let Some(target_u) = target {
+            if target_u.security_level >= 1000 && admin_count <= 1 {
+                return Err("Cannot delete the last remaining active Administrator account".into());
+            }
+        } else {
+            return Err("User not found".into());
+        }
+
+        project.users.retain(|u| u.id != user_id);
+        project.recompute_hash();
+
+        let actor = g.actor.clone();
+        let level = g.security_level;
+        drop(g);
+
+        self.audit.append(
+            &actor,
+            &format!("L{level}"),
+            "user.delete",
+            &format!("User ID {user_id} deleted"),
+        );
+
+        Ok(())
+    }
+
     pub fn snapshot(&self) -> EngineSnapshot {
         let g = self.inner.read();
         let now = Utc::now();
+
+        // Check for inactivity timeout in runtime mode
+        if g.mode == "runtime" && g.security_level > 0 {
+            let timeout_mins = g
+                .project
+                .as_ref()
+                .map(|p| p.session_config.auto_logout_minutes)
+                .unwrap_or(15);
+            if timeout_mins > 0 {
+                let inactive_secs = (now - g.last_activity_ts).num_seconds();
+                if inactive_secs >= (timeout_mins as i64) * 60 {
+                    drop(g);
+                    let _ = self.logout();
+                    return self.snapshot();
+                }
+            }
+        }
+
         let tags: Vec<TagValue> = g
             .tags
             .values()
@@ -280,6 +548,8 @@ impl Engine {
             alarms: g.alarms.values().cloned().collect(),
             role: g.role.clone(),
             actor: g.actor.clone(),
+            current_user: g.current_user.clone(),
+            security_level: g.security_level,
             project_name: g.project.as_ref().map(|p| p.name.clone()),
             mode: g.mode.clone(),
         }
@@ -984,7 +1254,7 @@ fn evaluate_alarms(g: &mut EngineInner, defs: &[AlarmDefinition]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::project::{water_tank_project, BitWriteMode, TagBinding};
+    use crate::project::{water_tank_project, BitWriteMode, SessionConfig, TagBinding};
 
     fn test_inner(tag: TagDefinition, alarm: &AlarmDefinition, value: f64) -> EngineInner {
         let bool_value = value != 0.0;
@@ -1025,6 +1295,9 @@ mod tests {
             last_poll_ms: 0,
             role: Role::Engineer,
             actor: "test".into(),
+            current_user: None,
+            security_level: 500,
+            last_activity_ts: Utc::now(),
             mode: "runtime".into(),
             poll_handle: None,
             stop_tx: None,
@@ -1188,6 +1461,8 @@ mod tests {
             forms: Vec::new(),
             alarms: Vec::new(),
             alarm_groups: Vec::new(),
+            users: Vec::new(),
+            session_config: SessionConfig::default(),
             design_system: None,
             component_templates: Vec::new(),
             tree: Vec::new(),
@@ -1232,6 +1507,8 @@ mod tests {
             forms: Vec::new(),
             alarms: Vec::new(),
             alarm_groups: Vec::new(),
+            users: Vec::new(),
+            session_config: SessionConfig::default(),
             design_system: None,
             component_templates: Vec::new(),
             tree: Vec::new(),

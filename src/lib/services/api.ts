@@ -6,8 +6,10 @@ import type {
   Role,
   ScadaProject,
   TagValue,
+  UserAccountInput,
+  UserSummary,
 } from "$lib/types";
-import { computeSystemTagValues, SYSTEM_TAG_DEFINITIONS } from "./systemTagsService";
+import { computeSystemTagValues } from "./systemTagsService";
 
 const isTauri = () =>
   typeof window !== "undefined" &&
@@ -17,8 +19,36 @@ const isTauri = () =>
 let mockProject: ScadaProject | null = null;
 let mockConnected = false;
 let mockPoll = 0;
-let mockRole: Role = "engineer";
+let mockRole: Role = "administrator";
 let mockMode = "designer";
+let mockCurrentUser: UserSummary | null = {
+  id: "usr_admin",
+  username: "admin",
+  display_name: "Administrator",
+  security_level: 1000,
+  enabled: true,
+  has_pin: true,
+};
+let mockSecurityLevel = 1000;
+let mockUsers: UserSummary[] = [
+  {
+    id: "usr_admin",
+    username: "admin",
+    display_name: "Administrator",
+    security_level: 1000,
+    enabled: true,
+    has_pin: true,
+  },
+  {
+    id: "usr_operator",
+    username: "operator",
+    display_name: "Operator Zmianowy",
+    security_level: 100,
+    enabled: true,
+    has_pin: true,
+  },
+];
+
 const mockAudit: AuditEntry[] = [];
 
 function mockSnap(): EngineSnapshot {
@@ -79,7 +109,9 @@ function mockSnap(): EngineSnapshot {
       last_change: new Date().toISOString(),
     })),
     role: mockRole,
-    actor: "engineer",
+    actor: mockCurrentUser?.username ?? "guest",
+    current_user: mockCurrentUser,
+    security_level: mockSecurityLevel,
     project_name: mockProject?.name ?? null,
     mode: mockMode,
   };
@@ -98,117 +130,20 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
     case "load_builtin_water_tank": {
       try {
         const res = await fetch("/projects/WaterTank.proscada.json");
-        const ct = res.headers.get("content-type") || "";
-        if (res.ok && ct.includes("application/json")) {
+        if (res.ok) {
           mockProject = (await res.json()) as ScadaProject;
+          return mockProject as T;
         }
       } catch {
-        /* fallback below */
-      }
-      if (!mockProject) {
-        mockProject = {
-          schema_version: 2,
-          id: "water_tank_dual_pump",
-          name: "Water Tank Dual-Pump Station",
-          description: "Browser mock fallback project",
-          content_hash:
-            "0000000000000000000000000000000000000000000000000000000000000000",
-          forms: [
-            {
-              id: "Main_Synoptic",
-              name: "Main_Synoptic",
-              width: 1040,
-              height: 700,
-              background: "#121316",
-              grid: 8,
-              widgets: [
-                {
-                  id: "m_bg",
-                  widget_type: "shape",
-                  x: 20,
-                  y: 20,
-                  w: 480,
-                  h: 220,
-                  z: 1,
-                  tag_id: null,
-                  group_id: "grp_metrics",
-                  config: {
-                    background: "#1e1f24",
-                    borderColor: "#33353c",
-                    borderWidth: 1,
-                    borderRadius: 10,
-                  },
-                },
-                {
-                  id: "m_level",
-                  widget_type: "numeric",
-                  x: 40,
-                  y: 40,
-                  w: 200,
-                  h: 60,
-                  z: 2,
-                  tag_id: "wt.level_cm",
-                  group_id: "grp_metrics",
-                  config: {
-                    label: "Poziom wody (Water Level)",
-                    unit: "cm",
-                    decimals: 1,
-                    fontSize: 16,
-                    textColor: "#60a5fa",
-                  },
-                },
-              ],
-            },
-          ],
-          devices: [
-            {
-              id: "dev_plc1",
-              name: "PLC Station 1",
-              host: "127.0.0.1",
-              port: 502,
-              unit_id: 1,
-              poll_ms: 250,
-              timeout_ms: 1000,
-              enabled: true,
-            },
-          ],
-          tags: [
-            {
-              id: "wt.level_cm",
-              name: "Water Level",
-              device_id: "dev_plc1",
-              data_type: "f32",
-              binding: { address: 104, table: "holding", writable: false },
-              scale: 1,
-              offset: 0,
-              decimals: 1,
-              unit: "cm",
-              description: "Water tank level",
-            },
-            {
-              id: "wt.p1_run",
-              name: "Pump 1 Run",
-              device_id: "dev_plc1",
-              data_type: "bool",
-              binding: { address: 101, bit: 0, table: "holding", writable: false },
-              scale: 1,
-              offset: 0,
-              decimals: 0,
-              unit: "",
-              description: "Pump 1 run signal",
-            },
-          ],
-          alarms: [],
-          tree: [],
-        };
+        /* fallback */
       }
       return mockProject as T;
     }
-    case "get_project":
-      return mockProject as T;
     case "load_project":
       mockProject = args?.project as ScadaProject;
       return undefined as T;
+    case "get_project":
+      return mockProject as T;
     case "save_project_in_memory":
       mockProject = args?.project as ScadaProject;
       return mockProject as T;
@@ -227,6 +162,74 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
     case "set_mode":
       mockMode = String(args?.mode ?? "designer");
       return undefined as T;
+    case "login": {
+      const rawTerm = args?.username_or_pin ?? args?.usernameOrPin ?? "";
+      const term = String(rawTerm).trim();
+      const pwd = String(args?.password ?? "").trim();
+
+      const found = mockUsers.find((u) => {
+        if (!u.enabled) return false;
+        if (term === "1234" && u.username === "admin") return true;
+        if (term === "1111" && u.username === "operator") return true;
+        if (u.username.toLowerCase() === term.toLowerCase()) {
+          if (!pwd || pwd === "admin123" || pwd === "operator123") return true;
+        }
+        return false;
+      });
+
+      if (found) {
+        mockCurrentUser = found;
+        mockSecurityLevel = found.security_level;
+        mockRole =
+          found.security_level >= 1000
+            ? "administrator"
+            : found.security_level >= 500
+            ? "engineer"
+            : found.security_level >= 100
+            ? "operator"
+            : "viewer";
+        return found as T;
+      }
+      throw new Error("Nieprawidłowa nazwa użytkownika, hasło lub PIN");
+    }
+    case "logout": {
+      mockCurrentUser = null;
+      mockSecurityLevel = 0;
+      mockRole = "viewer";
+      return undefined as T;
+    }
+    case "verify_pin": {
+      const pin = String(args?.pin ?? "");
+      return (pin === "1234" || pin === "1111") as T;
+    }
+    case "list_users": {
+      return mockUsers as T;
+    }
+    case "save_user": {
+      const input = args?.user as UserAccountInput;
+      const idx = mockUsers.findIndex(
+        (u) => u.id === input.id || u.username.toLowerCase() === input.username.toLowerCase()
+      );
+      const sum: UserSummary = {
+        id: input.id || `usr_${Date.now()}`,
+        username: input.username,
+        display_name: input.display_name,
+        security_level: input.security_level,
+        enabled: input.enabled,
+        has_pin: Boolean(input.pin),
+      };
+      if (idx >= 0) {
+        mockUsers[idx] = sum;
+      } else {
+        mockUsers.push(sum);
+      }
+      return sum as T;
+    }
+    case "delete_user": {
+      const id = String(args?.user_id ?? "");
+      mockUsers = mockUsers.filter((u) => u.id !== id);
+      return undefined as T;
+    }
     case "get_audit":
       return mockAudit as T;
     case "verify_audit":
@@ -235,10 +238,10 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
       mockAudit.push({
         id: crypto.randomUUID(),
         ts: new Date().toISOString(),
-        actor: "engineer",
+        actor: mockCurrentUser?.username ?? "engineer",
         role: mockRole,
         action: "tag.write",
-        detail: `${args?.tag_id}=${args?.value}`,
+        detail: `${args?.tagId}=${args?.value}`,
         prev_hash: "GENESIS",
         hash: "mock",
       });
@@ -273,6 +276,17 @@ export const api = {
   ackAlarm: (defId: string) => call<void>("ack_alarm", { defId }),
   setRole: (role: Role, actor: string) => call<void>("set_role", { role, actor }),
   setMode: (mode: string) => call<void>("set_mode", { mode }),
+  login: (usernameOrPin: string, password?: string) =>
+    call<UserSummary>("login", {
+      usernameOrPin,
+      username_or_pin: usernameOrPin,
+      password: password ?? null,
+    }),
+  logout: () => call<void>("logout"),
+  verifyPin: (pin: string) => call<boolean>("verify_pin", { pin }),
+  listUsers: () => call<UserSummary[]>("list_users"),
+  saveUser: (user: UserAccountInput) => call<UserSummary>("save_user", { user }),
+  deleteUser: (userId: string) => call<void>("delete_user", { user_id: userId }),
   getAudit: (limit = 200) => call<AuditEntry[]>("get_audit", { limit }),
   verifyAudit: () => call<boolean>("verify_audit"),
   testDevice: (host: string, port: number, unitId: number, timeoutMs: number) =>

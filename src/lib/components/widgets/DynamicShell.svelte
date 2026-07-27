@@ -4,7 +4,7 @@
    * Runtime: optional On Click Script from project tree.
    */
   import type { WidgetDef } from "$lib/types";
-  import { project, selectedFormId, tagMap } from "$lib/stores/app";
+  import { project, selectedFormId, snapshot, tagMap } from "$lib/stores/app";
   import {
     isWidgetAnimating,
     isWidgetBlinking,
@@ -27,6 +27,12 @@
   const blinking = $derived(isWidgetBlinking(cfg, $tagMap, widget.tag_id));
   const customAnimating = $derived(isWidgetAnimating(cfg, $tagMap, widget.tag_id));
   const visible = $derived(isWidgetVisible(cfg, $tagMap, widget.tag_id));
+  const currentSecurityLevel = $derived($snapshot?.security_level ?? 1000);
+  const minLevel = $derived(widget.min_level ?? 0);
+  const isUnauthorized = $derived(!design && minLevel > 0 && currentSecurityLevel < minLevel);
+  const behavior = $derived(widget.unauthorized_behavior || "disabled");
+  const isHidden = $derived(!visible || (isUnauthorized && behavior === "hidden"));
+
   const blinkSpeedMs = $derived(Math.max(500, Number(cfg.blinkSpeedMs ?? 600)));
   const clickScriptId = $derived(String(cfg.onClickScriptId ?? ""));
   const designSystem = $derived(normalizeProjectDesignSystem($project?.design_system));
@@ -61,9 +67,15 @@
   );
 
   async function onShellClick(e: MouseEvent) {
-    if (design || !clickScriptId) return;
-    // Write buttons handle their own script + write path
-    if (ownsInteraction) return;
+    if (design) return;
+    if (isUnauthorized) {
+      if (behavior === "prompt_login") {
+        e.stopPropagation();
+        window.dispatchEvent(new CustomEvent("proscada:open-login"));
+      }
+      return;
+    }
+    if (!clickScriptId || ownsInteraction) return;
     e.stopPropagation();
     try {
       await runScriptById(clickScriptId, {
@@ -78,15 +90,17 @@
   }
 </script>
 
-{#if visible || design}
+{#if !isHidden || design}
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div
     class="dyn-shell"
     class:blinking
-    class:hidden-design={!visible && design}
+    class:hidden-design={(!visible || isUnauthorized) && design}
+    class:unauthorized-disabled={isUnauthorized && behavior === "disabled"}
+    class:unauthorized-prompt={isUnauthorized && behavior === "prompt_login"}
     class:locked={widget.locked}
-    class:clickable={!design && !!clickScriptId && !ownsInteraction}
+    class:clickable={!design && ((!!clickScriptId && !ownsInteraction) || (isUnauthorized && behavior === "prompt_login"))}
     class:anim-pulse={customAnimating && animationPreset?.kind === "pulse"}
     class:anim-rotate={customAnimating && animationPreset?.kind === "rotate"}
     class:anim-fade={customAnimating && animationPreset?.kind === "fade"}
@@ -106,6 +120,17 @@
     onclick={onShellClick}
   >
     {@render children()}
+
+    {#if isUnauthorized && behavior === "disabled"}
+      <div class="unauthorized-overlay" title={`Wymagany poziom uprawnień: L${minLevel}`}>
+        <span class="badge security-lock">🔒 L{minLevel}</span>
+      </div>
+    {/if}
+
+    {#if minLevel > 0 && design}
+      <span class="badge security-spec" title={`Minimum Security Level: ${minLevel}`}>🛡 L{minLevel}</span>
+    {/if}
+
     {#if !visible && design}
       <span class="badge hide" title="Hidden in runtime">👁‍🗨</span>
     {/if}
@@ -148,12 +173,28 @@
     opacity: 0.35 !important;
     outline: 1px dashed #ef4444 !important;
   }
+  .unauthorized-disabled {
+    pointer-events: none !important;
+    filter: grayscale(0.9) opacity(0.5);
+  }
+  .unauthorized-overlay {
+    position: absolute;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.4);
+    backdrop-filter: blur(2px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10;
+    pointer-events: none;
+    border-radius: inherit;
+  }
   .badge {
     position: absolute;
     top: 2px;
     font-size: 10px;
     pointer-events: none;
-    z-index: 5;
+    z-index: 12;
     line-height: 1;
   }
   .badge.hide {
@@ -161,6 +202,28 @@
   }
   .badge.lock {
     left: 2px;
+  }
+  .badge.security-lock {
+    top: auto;
+    bottom: 2px;
+    right: 2px;
+    background: #0f172a;
+    color: #f43f5e;
+    border: 1px solid rgba(244, 63, 94, 0.4);
+    padding: 2px 5px;
+    border-radius: 4px;
+    font-weight: 700;
+  }
+  .badge.security-spec {
+    top: auto;
+    bottom: 2px;
+    left: 2px;
+    background: #0f172a;
+    color: #38bdf8;
+    border: 1px solid rgba(56, 189, 248, 0.4);
+    padding: 2px 5px;
+    border-radius: 4px;
+    font-weight: 700;
   }
   @keyframes scada-blink {
     0%,

@@ -39,6 +39,7 @@ Dokumentacja jest celowo podzielona na małe pliki tematyczne. Ten plik jest jed
 - [Biblioteka własnych komponentów](features/component-library.md)
 - [Generator 20 pompowni](features/pump-station-rollout.md)
 - [Odczyt i zapis bitów](features/bit-register-io.md)
+- [System Użytkowników i Poziomów Uprawnień](features/security-and-users.md)
 
 ## Eksploatacja i referencje
 
