@@ -77,13 +77,14 @@ function mockSnap(): EngineSnapshot {
       t.id === "wt.p1_ok" ||
       t.id === "wt.p2_ok";
 
-    const computedVal = isBool ? (on ? 1 : 0) : rawVal * (t.scale || 1) + (t.offset || 0);
+    const initialNum = t.initial_value !== undefined && Number.isFinite(Number(t.initial_value)) ? Number(t.initial_value) : null;
+    const computedVal = initialNum !== null ? initialNum : isBool ? (on ? 1 : 0) : rawVal * (t.scale || 1) + (t.offset || 0);
 
     return {
       tag_id: t.id,
       value: computedVal,
       bool_value: isBool ? on : false,
-      string_value: isString ? `MEM_${t.id}_${mockPoll}` : undefined,
+      string_value: isString ? (t.initial_value ?? `MEM_${t.id}_${mockPoll}`) : undefined,
       quality: mockConnected ? "good" : "bad",
       ts: new Date().toISOString(),
       age_ms: mockConnected ? 50 : 9999,
@@ -271,7 +272,7 @@ export const api = {
   startPolling: (deviceId?: string | null) =>
     call<void>("start_polling", { deviceId: deviceId ?? null }),
   stopPolling: () => call<void>("stop_polling"),
-  writeTag: (tagId: string, value: number) =>
+  writeTag: (tagId: string, value: number | string) =>
     call<void>("write_tag", { tagId, value }),
   ackAlarm: (defId: string) => call<void>("ack_alarm", { defId }),
   setRole: (role: Role, actor: string) => call<void>("set_role", { role, actor }),

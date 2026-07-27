@@ -31,6 +31,7 @@
   let { widget, form, tags }: Props = $props();
   let scrollContainer = $state<HTMLDivElement | null>(null);
   let propsFileInputEl = $state<HTMLInputElement | null>(null);
+  let showTemplateHelpModal = $state(false);
   const designSystem = $derived(normalizeProjectDesignSystem($project?.design_system));
 
   function triggerPropsImageUpload() {
@@ -805,7 +806,17 @@
           </thead>
           <tbody>
             <tr>
-              <td>Text</td>
+              <td>
+                <div class="prop-label-with-help">
+                  <span>Text</span>
+                  <button
+                    type="button"
+                    class="help-icon-btn"
+                    onclick={() => (showTemplateHelpModal = true)}
+                    title="Kliknij, aby zobaczyć instrukcję użycia parametrów w tekście"
+                  >❓</button>
+                </div>
+              </td>
               <td>
                 <textarea
                   rows="3"
@@ -814,6 +825,7 @@
                   oninput={(e) => setCfgLive("text", e.currentTarget.value)}
                   onchange={(e) => setCfgLive("text", e.currentTarget.value)}
                 ></textarea>
+                <div class="param-hint">Użyj <code>&#123;value&#125;</code> aby wstawić wartość podpiętego taga</div>
               </td>
             </tr>
             <tr>
@@ -1780,7 +1792,220 @@
   </div>
 </div>
 
+{#if showTemplateHelpModal}
+  <div
+    class="template-modal-overlay"
+    role="button"
+    tabindex="0"
+    onclick={() => (showTemplateHelpModal = false)}
+    onkeydown={(e) => { if (e.key === "Escape" || e.key === "Enter") showTemplateHelpModal = false; }}
+  >
+    <div class="template-modal-card">
+      <div class="template-modal-header">
+        <h3>💡 Instrukcja użycia parametrów w tekście (&#123;value&#125;)</h3>
+        <button type="button" class="template-modal-close" onclick={() => (showTemplateHelpModal = false)}>✕</button>
+      </div>
+      <div class="template-modal-body">
+        <p>W polu <strong>Text</strong> możesz dynamicznie łączyć własny napis z wartością podpiętego tagu za pomocą parametrów:</p>
+
+        <div class="template-code-box">
+          <code>&#123;value&#125;</code> lub <code>&#123;val&#125;</code>
+        </div>
+
+        <h4 class="section-subheading">Przykłady użycia w polu Text:</h4>
+        <ul class="template-examples">
+          <li>
+            <code>Pompa &#123;value&#125;</code> &rarr; Wyświetli: <span class="preview-tag">Pompa Główna #1</span> lub <span class="preview-tag">Pompa 12</span>
+          </li>
+          <li>
+            <code>Poziom: &#123;value&#125; m³</code> &rarr; Wyświetli: <span class="preview-tag">Poziom: 450 m³</span>
+          </li>
+          <li>
+            <code>Status: &#123;value&#125;</code> &rarr; Wyświetli: <span class="preview-tag">Status: AKTYWNY</span>
+          </li>
+          <li>
+            <code>&#123;value&#125;</code> &rarr; Wyświetli wyłącznie czystą wartość taga
+          </li>
+        </ul>
+
+        <div class="template-info-box">
+          <strong>Obsługiwane typy danych:</strong>
+          <ul>
+            <li><strong>Tekstowe (String)</strong>: Wyświetla zapisaną wartość alfanumeryczną.</li>
+            <li><strong>Liczbowe (u16, f32...)</strong>: Wyświetla sformatowaną wartość z jednostką.</li>
+            <li><strong>Logiczne (Bool)</strong>: Wyświetla stan logiki.</li>
+          </ul>
+        </div>
+      </div>
+      <div class="template-modal-footer">
+        <button type="button" class="template-btn-primary" onclick={() => (showTemplateHelpModal = false)}>Zamknij i Zrozumiałem</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
 <style>
+  .layer-toolbar {
+    padding: 8px;
+    background: #1e1e1e;
+    border-bottom: 1px solid #3c3c3c;
+  }
+  .layer-title {
+    font-size: 10px;
+    font-weight: 800;
+    color: #aaaaaa;
+    text-transform: uppercase;
+  }
+  .prop-label-with-help {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .help-icon-btn {
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    font-size: 11px;
+    padding: 0 2px;
+    opacity: 0.8;
+    transition: transform 0.15s, opacity 0.15s;
+  }
+  .help-icon-btn:hover {
+    opacity: 1;
+    transform: scale(1.25);
+  }
+  .param-hint {
+    font-size: 9px;
+    color: #38bdf8;
+    margin-top: 3px;
+  }
+  .param-hint code {
+    background: #0f172a;
+    padding: 1px 3px;
+    border-radius: 2px;
+    color: #7dd3fc;
+  }
+  .template-modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.7);
+    backdrop-filter: blur(4px);
+    z-index: 99999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .template-modal-card {
+    background: #1e293b;
+    border: 1px solid #38bdf8;
+    border-radius: 8px;
+    width: 480px;
+    max-width: 92vw;
+    box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
+    color: #f8fafc;
+    overflow: hidden;
+  }
+  .template-modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    background: #0f172a;
+    border-bottom: 1px solid #334155;
+  }
+  .template-modal-header h3 {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 700;
+    color: #38bdf8;
+  }
+  .template-modal-close {
+    background: transparent;
+    border: none;
+    color: #94a3b8;
+    font-size: 16px;
+    cursor: pointer;
+  }
+  .template-modal-close:hover {
+    color: #f1f5f9;
+  }
+  .template-modal-body {
+    padding: 16px;
+    font-size: 11px;
+    line-height: 1.5;
+    color: #cbd5e1;
+  }
+  .section-subheading {
+    margin: 10px 0 4px;
+    color: #38bdf8;
+    font-size: 11px;
+    font-weight: 700;
+  }
+  .template-code-box {
+    background: #0f172a;
+    border: 1px solid #334155;
+    padding: 8px 12px;
+    border-radius: 4px;
+    text-align: center;
+    margin: 10px 0;
+  }
+  .template-code-box code {
+    font-family: monospace;
+    font-size: 14px;
+    color: #38bdf8;
+    font-weight: bold;
+  }
+  .template-examples {
+    padding-left: 16px;
+    margin: 8px 0;
+  }
+  .template-examples li {
+    margin-bottom: 6px;
+  }
+  .template-examples code {
+    background: #0f172a;
+    padding: 1px 4px;
+    border-radius: 3px;
+    color: #a5f3fc;
+  }
+  .preview-tag {
+    color: #4ade80;
+    font-weight: 600;
+  }
+  .template-info-box {
+    background: rgba(56, 189, 248, 0.08);
+    border-left: 3px solid #38bdf8;
+    padding: 8px 12px;
+    margin-top: 12px;
+    border-radius: 0 4px 4px 0;
+  }
+  .template-info-box ul {
+    padding-left: 14px;
+    margin: 4px 0 0 0;
+  }
+  .template-modal-footer {
+    padding: 10px 16px;
+    background: #0f172a;
+    border-top: 1px solid #334155;
+    display: flex;
+    justify-content: flex-end;
+  }
+  .template-btn-primary {
+    background: #0284c7;
+    color: #ffffff;
+    border: none;
+    padding: 6px 14px;
+    border-radius: 4px;
+    font-weight: 700;
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .template-btn-primary:hover {
+    background: #0369a1;
+  }
   .layer-toolbar {
     padding: 8px;
     background: #1e1e1e;

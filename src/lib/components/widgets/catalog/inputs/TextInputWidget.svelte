@@ -37,6 +37,7 @@
       initialized = true;
     }
     if (mode === "number" && tag && Number.isFinite(tag.value)) draft = String(tag.value);
+    else if (mode === "text" && tag && tag.string_value !== undefined) draft = tag.string_value;
   });
 
   function validate(): string {
@@ -59,15 +60,16 @@
       message = error;
       return;
     }
-    if (mode === "text") {
-      message = "form value only";
-      return;
-    }
-    message = invokeWrite(widget, design, onWrite, Number(draft)) ? "WRITE REQUESTED" : "TAG WRITE UNAVAILABLE";
+    const writeValue: number | string = mode === "number" ? Number(draft) : draft;
+    message = invokeWrite(widget, design, onWrite, writeValue) ? "WRITE REQUESTED" : "TAG WRITE UNAVAILABLE";
   }
 
   function cancel() {
-    draft = mode === "number" && tag && Number.isFinite(tag.value) ? String(tag.value) : readString(config, "defaultValue", "");
+    draft = mode === "number" && tag && Number.isFinite(tag.value)
+      ? String(tag.value)
+      : mode === "text" && tag && tag.string_value !== undefined
+      ? tag.string_value
+      : readString(config, "defaultValue", "");
     message = "Changes cancelled";
   }
 </script>

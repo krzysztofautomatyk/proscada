@@ -7,7 +7,7 @@
     widget: WidgetDef;
     tagMap: Map<string, TagValue>;
     design?: boolean;
-    onWrite?: (tagId: string, value: number) => void;
+    onWrite?: (tagId: string, value: number | string) => void;
     ancestorFormIds?: Set<string>;
   }
 
@@ -63,7 +63,7 @@
     return resolved ? tagMap.get(resolved) ?? null : null;
   }
 
-  function innerOnWrite(rawTagId: string, value: number) {
+  function innerOnWrite(rawTagId: string, value: number | string) {
     const resolved = resolveInnerTagId(rawTagId);
     if (resolved && onWrite) {
       onWrite(resolved, value);

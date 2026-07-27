@@ -74,6 +74,7 @@ export interface TagDefinition {
   scale: number;
   offset: number;
   decimals: number;
+  initial_value?: string;
   is_system?: boolean;
 }
 

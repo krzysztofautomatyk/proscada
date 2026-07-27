@@ -789,8 +789,11 @@ impl Engine {
                     "FC05+FC01",
                 )
             }
-            ModbusTable::Input | ModbusTable::Discrete => {
-                return Err("Input registers and discrete inputs are read-only".into())
+            ModbusTable::Input | ModbusTable::Discrete | ModbusTable::System => {
+                return Err("Input registers, discrete inputs, and system tags are read-only".into())
+            }
+            ModbusTable::Memory => {
+                return Err("Memory tags are stored in-memory in application runtime".into())
             }
         };
 
@@ -883,6 +886,7 @@ fn build_read_plan(project: &ScadaProject, device_id: &str) -> Vec<ReadBlock> {
         let max_quantity = match table {
             ModbusTable::Holding | ModbusTable::Input => 120_u16,
             ModbusTable::Coil | ModbusTable::Discrete => 1000_u16,
+            ModbusTable::Memory | ModbusTable::System => continue,
         };
         let mut start = first;
         let mut last = first;
@@ -1046,6 +1050,7 @@ async fn poll_loop(
                             Err(error) => Err(error),
                         }
                     }
+                    ModbusTable::Memory | ModbusTable::System => Ok(()),
                 };
                 if let Err(error) = result {
                     cycle_error = Some(error);
@@ -1125,7 +1130,7 @@ fn apply_register_values(
                 live.value = v;
                 live.bool_value = v != 0.0;
             }
-            TagDataType::U16 | TagDataType::F32 => {
+            TagDataType::U16 | TagDataType::F32 | TagDataType::U32 | TagDataType::I32 | TagDataType::U64 | TagDataType::I64 | TagDataType::F64 | TagDataType::String => {
                 let v = raw as f64 * def.scale + def.offset;
                 live.value = v;
                 live.bool_value = v != 0.0;
@@ -1324,6 +1329,7 @@ mod tests {
             scale: 1.0,
             offset: 0.0,
             decimals: 0,
+            initial_value: None,
         }
     }
 

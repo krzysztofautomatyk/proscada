@@ -36,12 +36,26 @@
       : (boundTagDef?.unit ?? ""),
   );
 
+  const isStringTag = $derived(
+    boundTagDef?.data_type === "string" || tag?.string_value !== undefined,
+  );
+
+  const strVal = $derived.by(() => {
+    if (tag?.string_value !== undefined) return tag.string_value;
+    if (boundTagDef?.initial_value !== undefined && boundTagDef.initial_value !== "") {
+      return boundTagDef.initial_value;
+    }
+    if (design) {
+      return boundTagDef?.name || widget.tag_id || "Tekst";
+    }
+    return "";
+  });
+
   const rawText = $derived(str("text", "Label"));
   const displayText = $derived.by(() => {
     if (!widget.tag_id) return rawText;
 
-    if (tag?.string_value !== undefined) {
-      const strVal = tag.string_value;
+    if (isStringTag) {
       if (rawText.includes("{value}")) return rawText.replace(/\{value\}/g, strVal);
       if (rawText.includes("{val}")) return rawText.replace(/\{val\}/g, strVal);
       if (rawText === "Label" || !rawText) return strVal;

@@ -16,7 +16,7 @@
   interface Props {
     snapshot: EngineSnapshot | null;
     tagMap: Map<string, TagValue>;
-    onWrite: (tagId: string, value: number) => Promise<void> | void;
+    onWrite: (tagId: string, value: number | string) => Promise<void> | void;
     designMode?: boolean;
   }
 

@@ -80,8 +80,8 @@
   >
     {#if design && !tag && !widget.tag_id}
       — —
-    {:else if tag?.string_value !== undefined}
-      {tag.string_value}
+    {:else if boundTagDef?.data_type === "string" || tag?.string_value !== undefined}
+      {tag?.string_value ?? boundTagDef?.initial_value ?? (design ? (boundTagDef?.name || widget.tag_id) : "—")}
       {#if unit}
         <span class="unit-text">{unit}</span>
       {/if}

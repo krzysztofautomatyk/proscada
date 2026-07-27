@@ -45,6 +45,7 @@
   let offset = $state(0);
   let decimals = $state(0);
   let description = $state("");
+  let initial_value = $state("");
 
   let errorMessage = $state("");
   let warningMessage = $state("");
@@ -72,6 +73,7 @@
       offset = editingTag.offset ?? 0;
       decimals = editingTag.decimals ?? 0;
       description = editingTag.description ?? "";
+      initial_value = editingTag.initial_value ?? "";
     } else {
       id = uid("tag");
       name = "";
@@ -90,6 +92,7 @@
       offset = 0;
       decimals = 0;
       description = "";
+      initial_value = "";
     }
   });
 
@@ -141,6 +144,7 @@
       scale: Number(scale) || 1,
       offset: Number(offset) || 0,
       decimals: Number(decimals) || 0,
+      initial_value: initial_value.trim() ? initial_value.trim() : undefined,
     };
 
     const valRes = validateRegisterTag(tagCandidate, editingTag ? [] : existingTags, initialQuery);
@@ -242,11 +246,25 @@
       </div>
     {/if}
 
-    <!-- Modbus Address -->
+    <!-- Initial / Default Value Input -->
     <div class="form-group">
-      <label for="f-addr">Adres Rejestru Modbus (0..65535):</label>
-      <input id="f-addr" type="number" min="0" max="65535" bind:value={address} required />
+      <label for="f-initval">Wartość Domyślna / Startowa (Default Text / Value):</label>
+      <input
+        id="f-initval"
+        type="text"
+        bind:value={initial_value}
+        maxlength={data_type === "string" ? string_length : undefined}
+        placeholder={data_type === "string" ? "np. Pompa Główna #1" : "np. 0"}
+      />
     </div>
+
+    <!-- Modbus Address (Tylko dla tabel PLC: Holding, Input, Coil, Discrete) -->
+    {#if table !== "memory" && table !== "system"}
+      <div class="form-group">
+        <label for="f-addr">Adres Rejestru Modbus (0..65535):</label>
+        <input id="f-addr" type="number" min="0" max="65535" bind:value={address} required />
+      </div>
+    {/if}
 
     <!-- Bit Index (if bool on holding) -->
     {#if data_type === "bool" && table === "holding"}

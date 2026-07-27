@@ -31,6 +31,8 @@ pub enum ModbusTable {
     Input,
     Coil,
     Discrete,
+    Memory,
+    System,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
@@ -71,7 +73,13 @@ pub enum TagDataType {
     Bool,
     U16,
     I16,
+    U32,
+    I32,
     F32,
+    U64,
+    I64,
+    F64,
+    String,
 }
 
 fn default_query_enabled() -> bool {
@@ -140,6 +148,8 @@ pub struct TagDefinition {
     pub offset: f64,
     #[serde(default)]
     pub decimals: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_value: Option<String>,
 }
 
 fn default_scale() -> f64 {
@@ -531,6 +541,7 @@ pub fn water_tank_project() -> ScadaProject {
             scale: 1.0,
             offset: 0.0,
             decimals: 0,
+            initial_value: None,
         });
     }
 
@@ -580,6 +591,7 @@ pub fn water_tank_project() -> ScadaProject {
             scale: 1.0,
             offset: 0.0,
             decimals: 0,
+            initial_value: None,
         });
     }
 

@@ -335,7 +335,7 @@
     log(`Role set to ${r}`, "info");
   }
 
-  async function onWrite(tagId: string, value: number) {
+  async function onWrite(tagId: string, value: number | string) {
     if ($project?.session_config?.pin_challenge_on_write) {
       pinChallengeAction = `Zapis wartości ${tagId} = ${value}`;
       pendingWriteFn = async () => {

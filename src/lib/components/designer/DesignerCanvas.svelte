@@ -24,7 +24,7 @@
     form: FormDef;
     tagMap: Map<string, TagValue>;
     design?: boolean;
-    onWrite?: (tagId: string, value: number) => void;
+    onWrite?: (tagId: string, value: number | string) => void;
   }
 
   let { form, tagMap, design = true, onWrite }: Props = $props();

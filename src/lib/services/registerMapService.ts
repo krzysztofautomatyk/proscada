@@ -308,7 +308,7 @@ export function validateRegisterTag(
 
   const span = getDataTypeRegisterSpan(tag.data_type, tag.binding?.string_length);
 
-  if (query && addr !== undefined) {
+  if (query && addr !== undefined && tag.binding?.table !== "memory" && tag.binding?.table !== "system") {
     if (addr < query.startAddress || addr > query.endAddress) {
       warnings.push(
         `Adres ${addr} znajduje się poza domyślnym zakresem zapytania (${query.startAddress}..${query.endAddress}).`

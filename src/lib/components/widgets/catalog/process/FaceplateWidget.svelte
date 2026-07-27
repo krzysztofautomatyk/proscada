@@ -7,7 +7,7 @@
     widget: WidgetDef;
     tag?: TagValue | null;
     design?: boolean;
-    onWrite?: (tagId: string, value: number) => void;
+    onWrite?: (tagId: string, value: number | string) => void;
     tagMap?: Map<string, TagValue>;
   }
   let { widget, tag = null, design = false, onWrite }: Props = $props();
