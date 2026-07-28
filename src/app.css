@@ -1,40 +1,61 @@
-/* ProScada — VS dark (Designer) + light greyscale Runtime (G/Y/R accents) */
+/* ProScada — GitHub Dark Mode Theme System */
 
 :root {
-  --vs-bg: #1e1e1e;
-  --vs-bg-2: #252526;
-  --vs-bg-3: #2d2d30;
-  --vs-bg-4: #333337;
-  --vs-border: #3e3e42;
-  --vs-border-soft: #2b2b2b;
-  --vs-text: #cccccc;
-  --vs-text-dim: #9d9d9d;
-  --vs-text-bright: #f3f3f3;
-  --vs-accent: #007acc;
-  --vs-accent-2: #0e639c;
-  --vs-selection: #264f78;
-  --vs-menu: #2c2c2c;
-  --vs-danger: #dc2626;
-  --vs-warn: #eab308;
-  --vs-ok: #16a34a;
-  --vs-toolbox: #252526;
-  --vs-props: #252526;
-  --vs-canvas-bg: #1a1a1a;
-  --vs-grid: rgba(255, 255, 255, 0.04);
-  --font-ui: "Segoe UI", system-ui, -apple-system, sans-serif;
-  --font-mono: "Cascadia Code", "Consolas", "SF Mono", ui-monospace, monospace;
-  --menubar-h: 28px;
-  --toolbar-h: 36px;
-  --statusbar-h: 24px;
-  /* Runtime HMI tokens (greyscale + G/Y/R) */
+  /* GitHub Dark Mode (Primer Dark Default) Palette */
+  --gh-canvas-default: #0d1117;
+  --gh-canvas-overlay: #161b22;
+  --gh-canvas-subtle: #161b22;
+  --gh-canvas-inset: #010409;
+  --gh-border-default: #30363d;
+  --gh-border-muted: #21262d;
+  --gh-fg-default: #e6edf3;
+  --gh-fg-muted: #848d97;
+  --gh-fg-subtle: #6e7681;
+  --gh-accent-fg: #2f81f7;
+  --gh-accent-emphasis: #1f6beb;
+  --gh-accent-hover: #388bfd;
+  --gh-accent-subtle: rgba(56, 139, 253, 0.15);
+  --gh-success-emphasis: #238636;
+  --gh-danger-emphasis: #da3633;
+  --gh-attention-fg: #d29922;
+
+  /* Shell mapping */
+  --vs-bg: var(--gh-canvas-default);
+  --vs-bg-2: var(--gh-canvas-overlay);
+  --vs-bg-3: #21262d;
+  --vs-bg-4: #30363d;
+  --vs-border: var(--gh-border-default);
+  --vs-border-soft: var(--gh-border-muted);
+  --vs-text: var(--gh-fg-default);
+  --vs-text-dim: var(--gh-fg-muted);
+  --vs-text-bright: #f0f6fc;
+  --vs-accent: var(--gh-accent-emphasis);
+  --vs-accent-2: var(--gh-accent-hover);
+  --vs-selection: var(--gh-accent-subtle);
+  --vs-menu: var(--gh-canvas-overlay);
+  --vs-danger: var(--gh-danger-emphasis);
+  --vs-warn: var(--gh-attention-fg);
+  --vs-ok: var(--gh-success-emphasis);
+  --vs-toolbox: var(--gh-canvas-overlay);
+  --vs-props: var(--gh-canvas-overlay);
+  --vs-canvas-bg: var(--gh-canvas-inset);
+  --vs-grid: rgba(240, 246, 252, 0.04);
+
+  --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --menubar-h: 30px;
+  --toolbar-h: 38px;
+  --statusbar-h: 26px;
+
+  /* Runtime HMI tokens */
   --hmi-bg: #f4f5f7;
   --hmi-card: #ffffff;
   --hmi-border: #e5e7eb;
   --hmi-text: #1f2937;
   --hmi-muted: #6b7280;
-  --hmi-green: #16a34a;
-  --hmi-yellow: #eab308;
-  --hmi-red: #dc2626;
+  --hmi-green: #238636;
+  --hmi-yellow: #d29922;
+  --hmi-red: #da3633;
 }
 
 /* SCADA board is light inside .board; VS chrome always stays dark (no shell.runtime-theme). */

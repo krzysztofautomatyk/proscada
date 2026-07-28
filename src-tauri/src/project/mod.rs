@@ -270,6 +270,10 @@ pub enum ProjectNodeKind {
     Note,
     Markdown,
     Image,
+    /// Root folder for component templates in Solution Explorer
+    ComponentsFolder,
+    /// A single component template entry
+    Component,
 }
 
 /// Solution Explorer node (folders, screens, scripts, docs).

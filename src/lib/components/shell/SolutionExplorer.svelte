@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { ProjectNode, ProjectNodeKind, ScadaProject } from "$lib/types";
+  import type { ComponentTemplate, ProjectNode, ProjectNodeKind, ScadaProject } from "$lib/types";
   import {
     selectedFormId,
     selectedNodeId,
@@ -23,9 +23,14 @@
     openEditDeviceModal,
     deleteDeviceFromProject,
     isMainScreen,
+    exportComponentTemplate,
+    deleteComponentTemplate,
+    importComponentTemplateFile,
+    openCreateComponentModal,
   } from "$lib/stores/app";
   import { childrenOf, iconFor } from "$lib/utils/projectTree";
   import { SYSTEM_TAG_DEFINITIONS } from "$lib/services/systemTagsService";
+  import ComponentInstantiationModal from "$lib/components/designer/ComponentInstantiationModal.svelte";
 
   interface Props {
     project: ScadaProject;
@@ -168,10 +173,32 @@
     else addProjectDocument(kind as Exclude<ProjectNodeKind, "folder" | "screen">, parent);
   }
 
+  let instantiationModal = $state<{
+    open: boolean;
+    template: ComponentTemplate | null;
+  }>({ open: false, template: null });
+
+  function openComponentModal(node: ProjectNode) {
+    if (node.kind === "component" && node.ref_id) {
+      const tmpl = project.component_templates?.find((t) => t.id === node.ref_id);
+      if (tmpl) {
+        instantiationModal = { open: true, template: tmpl };
+      }
+    }
+  }
+
+  function handleCreateComponentFromSelection() {
+    closeCtx();
+    openCreateComponentModal();
+  }
+
   function onDragStart(e: DragEvent, node: ProjectNode) {
     if (!design) return;
     dragId = node.id;
     e.dataTransfer?.setData("text/proscada-node", node.id);
+    if (node.kind === "component" && node.ref_id) {
+      e.dataTransfer?.setData("text/proscada-component-id", node.ref_id);
+    }
     e.dataTransfer!.effectAllowed = "move";
   }
 
@@ -218,7 +245,8 @@
 
 {#snippet treeRows(parentId: string | null, depth: number)}
   {#each renderBranch(parentId, depth) as node (node.id)}
-    {@const collapsed = node.kind === "folder" && (node.collapsed ?? false)}
+    {@const isFolder = node.kind === "folder" || node.kind === "components_folder"}
+    {@const collapsed = isFolder && (node.collapsed ?? false)}
     {@const active =
       $selectedNodeId === node.id ||
       (node.kind === "screen" && node.ref_id === $selectedFormId)}
@@ -227,21 +255,30 @@
     <div
       class="tree-item tree-row"
       class:active
-      class:folder={node.kind === "folder"}
+      class:folder={isFolder}
+      data-testid="tree-node-{node.kind}-{node.id}"
       style:padding-left="{depth * 12 + 12}px"
-      draggable={design && node.kind !== "folder"}
+      draggable={design && !isFolder}
       ondragstart={(e) => onDragStart(e, node)}
       ondragover={onDragOver}
       ondrop={(e) => onDrop(e, node)}
-      onclick={() => (node.kind === "folder" ? toggleFolderCollapsed(node.id) : onSelect(node))}
+      onclick={() => {
+        if (isFolder) {
+          toggleFolderCollapsed(node.id);
+        } else if (node.kind === "component") {
+          openComponentModal(node);
+        } else {
+          onSelect(node);
+        }
+      }}
       onmouseenter={(e) => handleNodeMouseEnter(node, e)}
       onmousemove={(e) => handleNodeMouseMove(node, e)}
       onmouseleave={() => handleNodeMouseLeave(node)}
       oncontextmenu={(e) => openCtx(e, node)}
     >
-      {#if node.kind === "folder"}
+      {#if isFolder}
         <!-- svelte-ignore a11y_click_events_have_key_events -->
-        <span class="twist" onclick={(e) => onFolderClick(node, e)} role="button" tabindex="0">
+        <span class="twist" onclick={(e) => { e.stopPropagation(); toggleFolderCollapsed(node.id); }} role="button" tabindex="0">
           {collapsed ? "▶" : "▼"}
         </span>
       {:else}
@@ -266,7 +303,7 @@
       {/if}
     </div>
 
-    {#if node.kind === "folder" && !collapsed}
+    {#if isFolder && !collapsed}
       {@render treeRows(node.id, depth + 1)}
     {/if}
   {/each}
@@ -496,6 +533,49 @@
     {#if design}
       {#if ctx.node}
         <div class="ctx-label">{ctx.node.name}</div>
+        {#if ctx.node.kind === "component" && ctx.node.ref_id}
+          <button
+            type="button"
+            role="menuitem"
+            onclick={() => {
+              if (ctx.node) openComponentModal(ctx.node);
+              closeCtx();
+            }}
+          >
+            🧩 Wstaw / Podłącz zmienne…
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            onclick={() => {
+              if (ctx.node?.ref_id) exportComponentTemplate(ctx.node.ref_id);
+              closeCtx();
+            }}
+          >
+            📤 Eksportuj plik (.pscctrl)…
+          </button>
+          <div class="sep"></div>
+        {/if}
+        {#if ctx.node.kind === "components_folder"}
+          <button
+            type="button"
+            role="menuitem"
+            onclick={handleCreateComponentFromSelection}
+          >
+            🧩 Utwórz z zaznaczenia…
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            onclick={() => {
+              closeCtx();
+              importComponentTemplateFile();
+            }}
+          >
+            📥 Importuj komponent (.pscctrl)…
+          </button>
+          <div class="sep"></div>
+        {/if}
         <button
           type="button"
           role="menuitem"
@@ -510,7 +590,13 @@
           role="menuitem"
           disabled={ctx.node.kind === "screen" && isMainScreen(ctx.node)}
           onclick={() => {
-            if (ctx.node) deleteProjectNode(ctx.node.id);
+            if (ctx.node) {
+              if (ctx.node.kind === "component" && ctx.node.ref_id) {
+                deleteComponentTemplate(ctx.node.ref_id);
+              } else {
+                deleteProjectNode(ctx.node.id);
+              }
+            }
             closeCtx();
           }}
         >
@@ -921,3 +1007,9 @@
     color: #64748b;
   }
 </style>
+
+<ComponentInstantiationModal
+  open={instantiationModal.open}
+  template={instantiationModal.template}
+  onClose={() => (instantiationModal = { open: false, template: null })}
+/>

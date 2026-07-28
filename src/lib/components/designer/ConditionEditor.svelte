@@ -10,6 +10,8 @@
     title: string;
     mode: string;
     tagId: string;
+    tagName?: string;
+    tagComment?: string;
     bit: number;
     val: number;
     tags: TagDefinition[];
@@ -18,6 +20,8 @@
     showVal?: boolean;
     onMode: (v: string) => void;
     onTag: (v: string) => void;
+    onTagName?: (v: string) => void;
+    onTagComment?: (v: string) => void;
     onBit: (v: number) => void;
     onVal: (v: number) => void;
   }
@@ -26,6 +30,8 @@
     title,
     mode,
     tagId,
+    tagName,
+    tagComment,
     bit,
     val,
     tags,
@@ -33,6 +39,8 @@
     showVal = true,
     onMode,
     onTag,
+    onTagName,
+    onTagComment,
     onBit,
     onVal,
   }: Props = $props();
@@ -74,6 +82,32 @@
           </select>
         </td>
       </tr>
+      {#if tagId && onTagName}
+        <tr>
+          <td>Nazwa zmiennej (Alias)</td>
+          <td>
+            <input
+              type="text"
+              placeholder="Domyślnie: ID tagu"
+              value={tagName ?? ""}
+              oninput={(e) => onTagName?.(e.currentTarget.value)}
+            />
+          </td>
+        </tr>
+      {/if}
+      {#if tagId && onTagComment}
+        <tr>
+          <td>Komentarz / Opis</td>
+          <td>
+            <input
+              type="text"
+              placeholder="Domyślnie: opis z tagu..."
+              value={tagComment ?? ""}
+              oninput={(e) => onTagComment?.(e.currentTarget.value)}
+            />
+          </td>
+        </tr>
+      {/if}
     {/if}
     {#if needsBit && showBit}
       <tr>

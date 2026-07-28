@@ -363,6 +363,28 @@
             </td>
           </tr>
           <tr>
+            <td>Nazwa zmiennej (Alias)</td>
+            <td>
+              <input
+                type="text"
+                placeholder="Domyślnie: taka sama jak ID tagu"
+                value={cfgStr("tag_name", "")}
+                oninput={(e) => setCfgLive("tag_name", e.currentTarget.value)}
+              />
+            </td>
+          </tr>
+          <tr>
+            <td>Komentarz zmiennej</td>
+            <td>
+              <input
+                type="text"
+                placeholder="Domyślnie: opis z tagu..."
+                value={cfgStr("tag_comment", "")}
+                oninput={(e) => setCfgLive("tag_comment", e.currentTarget.value)}
+              />
+            </td>
+          </tr>
+          <tr>
             <td>🔒 Lock</td>
             <td>
               <select
@@ -1269,6 +1291,28 @@
                   </select>
                 </td>
               </tr>
+              <tr>
+                <td>Nazwa zmiennej (Alias)</td>
+                <td>
+                  <input
+                    type="text"
+                    placeholder="Domyślnie: nazwa tagu (np. Run)"
+                    value={cfgStr("stateTagId_name", "")}
+                    oninput={(e) => setCfgLive("stateTagId_name", e.currentTarget.value)}
+                  />
+                </td>
+              </tr>
+              <tr>
+                <td>Komentarz / Opis</td>
+                <td>
+                  <input
+                    type="text"
+                    placeholder="Domyślnie: opis z tagu..."
+                    value={cfgStr("stateTagId_comment", "")}
+                    oninput={(e) => setCfgLive("stateTagId_comment", e.currentTarget.value)}
+                  />
+                </td>
+              </tr>
               {#if stateMode === "tag_bit"}
                 <tr>
                   <td>Bit Index (0..15)</td>
@@ -1496,11 +1540,15 @@
         title="Custom animation"
         mode={cfgStr("animationMode", "none")}
         tagId={cfgStr("animationTagId", "")}
+        tagName={cfgStr("animationTagId_name", "")}
+        tagComment={cfgStr("animationTagId_comment", "")}
         bit={cfgNum("animationBit", 0)}
         val={cfgNum("animationVal", 1)}
         {tags}
         onMode={(v) => setCfg("animationMode", v)}
         onTag={(v) => setCfg("animationTagId", v)}
+        onTagName={(v) => setCfgLive("animationTagId_name", v)}
+        onTagComment={(v) => setCfgLive("animationTagId_comment", v)}
         onBit={(v) => setCfg("animationBit", v)}
         onVal={(v) => setCfg("animationVal", v)}
       />
@@ -1508,11 +1556,15 @@
         title="Blink"
         mode={cfgStr("blinkMode", "none")}
         tagId={cfgStr("blinkTagId", "")}
+        tagName={cfgStr("blinkTagId_name", "")}
+        tagComment={cfgStr("blinkTagId_comment", "")}
         bit={cfgNum("blinkBit", 0)}
         val={cfgNum("blinkVal", 1)}
         {tags}
         onMode={(v) => setCfg("blinkMode", v)}
         onTag={(v) => setCfg("blinkTagId", v)}
+        onTagName={(v) => setCfgLive("blinkTagId_name", v)}
+        onTagComment={(v) => setCfgLive("blinkTagId_comment", v)}
         onBit={(v) => setCfg("blinkBit", v)}
         onVal={(v) => setCfg("blinkVal", v)}
       />
@@ -1539,11 +1591,15 @@
           title="Marquee / scroll text (train)"
           mode={cfgStr("scrollMode", "none")}
           tagId={cfgStr("scrollTagId", "")}
+          tagName={cfgStr("scrollTagId_name", "")}
+          tagComment={cfgStr("scrollTagId_comment", "")}
           bit={cfgNum("scrollBit", 0)}
           val={cfgNum("scrollVal", 1)}
           {tags}
           onMode={(v) => setCfg("scrollMode", v)}
           onTag={(v) => setCfg("scrollTagId", v)}
+          onTagName={(v) => setCfgLive("scrollTagId_name", v)}
+          onTagComment={(v) => setCfgLive("scrollTagId_comment", v)}
           onBit={(v) => setCfg("scrollBit", v)}
           onVal={(v) => setCfg("scrollVal", v)}
         />
@@ -1582,11 +1638,15 @@
         title="Visibility (show / hide)"
         mode={cfgStr("visibilityMode", "always")}
         tagId={cfgStr("visibilityTagId", "")}
+        tagName={cfgStr("visibilityTagId_name", "")}
+        tagComment={cfgStr("visibilityTagId_comment", "")}
         bit={cfgNum("visibilityBit", 0)}
         val={cfgNum("visibilityVal", 1)}
         {tags}
         onMode={(v) => setCfg("visibilityMode", v)}
         onTag={(v) => setCfg("visibilityTagId", v)}
+        onTagName={(v) => setCfgLive("visibilityTagId_name", v)}
+        onTagComment={(v) => setCfgLive("visibilityTagId_comment", v)}
         onBit={(v) => setCfg("visibilityBit", v)}
         onVal={(v) => setCfg("visibilityVal", v)}
       />

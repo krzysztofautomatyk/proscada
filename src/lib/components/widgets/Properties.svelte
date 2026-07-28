@@ -113,6 +113,30 @@
               </select>
             </td>
           </tr>
+          {#if widget.tag_id}
+            <tr>
+              <td>Nazwa zmiennej (Alias)</td>
+              <td>
+                <input
+                  type="text"
+                  placeholder="Domyślnie: taka sama jak tag"
+                  value={String(widget.config?.tag_name ?? "")}
+                  oninput={(e) => setCfg("tag_name", e.currentTarget.value)}
+                />
+              </td>
+            </tr>
+            <tr>
+              <td>Komentarz zmiennej</td>
+              <td>
+                <input
+                  type="text"
+                  placeholder="Domyślnie: opis z tagu..."
+                  value={String(widget.config?.tag_comment ?? "")}
+                  oninput={(e) => setCfg("tag_comment", e.currentTarget.value)}
+                />
+              </td>
+            </tr>
+          {/if}
         </tbody>
       </table>
 

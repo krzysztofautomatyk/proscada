@@ -40,6 +40,7 @@ Dokumentacja jest celowo podzielona na małe pliki tematyczne. Ten plik jest jed
 - [Generator 20 pompowni](features/pump-station-rollout.md)
 - [Odczyt i zapis bitów](features/bit-register-io.md)
 - [System Użytkowników i Poziomów Uprawnień](features/security-and-users.md)
+- [Standard GitHub Dark Mode](design/github-dark-style.md)
 
 ## Eksploatacja i referencje
 

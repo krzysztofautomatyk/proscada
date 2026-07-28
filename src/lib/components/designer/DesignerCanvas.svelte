@@ -10,7 +10,12 @@
     applyMultiMove,
     setSelection,
     toggleSelection,
+    project,
+    createComponentModalOpen,
   } from "$lib/stores/app";
+  import ComponentInstantiationModal from "./ComponentInstantiationModal.svelte";
+  import CreateComponentModal from "./CreateComponentModal.svelte";
+  import type { ComponentTemplate } from "$lib/types";
   import { WIDGET_CATALOG } from "$lib/components/widgets/registry";
   import { defaultDynamicsConfig } from "$lib/utils/dynamics";
   import {
@@ -265,6 +270,13 @@
     gesture = null;
   }
 
+  let dropComponentModal = $state<{
+    open: boolean;
+    template: ComponentTemplate | null;
+    targetX: number;
+    targetY: number;
+  }>({ open: false, template: null, targetX: 60, targetY: 60 });
+
   function onDragOver(e: DragEvent) {
     if (!design) return;
     e.preventDefault();
@@ -274,6 +286,19 @@
   function onDrop(e: DragEvent) {
     if (!design || !surfaceEl) return;
     e.preventDefault();
+
+    const compId = e.dataTransfer?.getData("text/proscada-component-id");
+    if (compId) {
+      const tmpl = $project?.component_templates?.find((t) => t.id === compId);
+      if (tmpl) {
+        const rect = surfaceEl.getBoundingClientRect();
+        const x = snap(e.clientX - rect.left);
+        const y = snap(e.clientY - rect.top);
+        dropComponentModal = { open: true, template: tmpl, targetX: x, targetY: y };
+        return;
+      }
+    }
+
     const rawType =
       e.dataTransfer?.getData("application/x-proscada-widget") ||
       e.dataTransfer?.getData("text/plain");
@@ -443,3 +468,16 @@
     box-shadow: none !important;
   }
 </style>
+
+<ComponentInstantiationModal
+  open={dropComponentModal.open}
+  template={dropComponentModal.template}
+  targetX={dropComponentModal.targetX}
+  targetY={dropComponentModal.targetY}
+  onClose={() => (dropComponentModal = { ...dropComponentModal, open: false, template: null })}
+/>
+
+<CreateComponentModal
+  bind:open={$createComponentModalOpen}
+  onClose={() => createComponentModalOpen.set(false)}
+/>

@@ -10,9 +10,11 @@ import type {
   AlarmDefinition,
   AlarmGroupDefinition,
   ComponentTemplate,
+  ComponentTagSlotMeta,
   DeviceConfig,
   ProjectDesignSystem,
   TagDefinition,
+  TagDataType,
 } from "$lib/types";
 import { WIDGET_CATALOG } from "$lib/components/widgets/registry";
 import { getWidgetCatalogItem } from "$lib/components/widgets/registry";
@@ -241,10 +243,11 @@ export async function initApp() {
     let p = await api.getProject();
     if (!p) {
       p = await api.loadBuiltinWaterTank();
-      applyLoadedProject(p, "Loaded built-in Water Tank Dual-Pump project");
-    } else {
-      applyLoadedProject(p, `Project loaded: ${p.name}`);
     }
+    if (!p) {
+      p = createEmptyProject("Standard SCADA Project");
+    }
+    applyLoadedProject(p, `Project loaded: ${p.name}`);
     if (get(appSettings).showStartWindowOnStart !== false) {
       startWindowOpen.set(true);
     }
@@ -255,7 +258,7 @@ export async function initApp() {
   } catch (e) {
     log(`Init error: ${e}`, "err");
     try {
-      const p = await api.loadBuiltinWaterTank();
+      const p = createEmptyProject("Standard SCADA Project");
       applyLoadedProject(p);
       startUiPoll();
       startAutosaveLoop();
@@ -568,7 +571,7 @@ export function updateProjectDesignSystem(next: ProjectDesignSystem) {
   log("Project design system updated", "ok");
 }
 
-function selectedWidgetsForTemplate(): { form: FormDef; widgets: WidgetDef[] } | null {
+export function selectedWidgetsForTemplate(): { form: FormDef; widgets: WidgetDef[] } | null {
   const form = get(activeForm);
   if (!form) return null;
   const widgets = widgetsFromSelection(form);
@@ -595,9 +598,216 @@ function stripUnsafeTemplateConfig(config: Record<string, unknown>): Record<stri
   return clean;
 }
 
+/** Check if a config key refers to a tag binding */
+export function isTagKey(key: string): boolean {
+  const k = key.toLowerCase();
+  return (
+    k === "tag_id" ||
+    k.endsWith("tagid") ||
+    k.endsWith("tag_id") ||
+    k.endsWith("tag") ||
+    k.includes("tagid")
+  );
+}
+
+export type TagSlot = {
+  /** Unique ID for mapping: `${widgetId}::${field}` */
+  id: string;
+  /** Template placeholder value or raw value, e.g. "{tagPrefix}Run" or "1p" */
+  slotKey: string;
+  /** User-facing name of the slot (defaults to tag name / slotKey, editable) */
+  name: string;
+  /** Comment / description for the slot */
+  comment: string;
+  /** Config field key, e.g. "stateTagId", "blinkTagId", "tag_id" */
+  field: string;
+  /** Source widget ID */
+  widgetId: string;
+  /** Widget type, e.g. "image", "label" */
+  widgetType: string;
+  /** Widget user-facing label or text for grouping */
+  widgetLabel: string;
+};
+
+export function fieldLabel(field: string): string {
+  const map: Record<string, string> = {
+    tag_id: "Główna zmienna",
+    blinkTagId: "Miganie (Blink)",
+    stateTagId: "Stan (State)",
+    animationTagId: "Animacja",
+    visibilityTagId: "Widoczność",
+    scrollTagId: "Przewijanie",
+    setpointTagId: "Wartość zadana (SP)",
+    levelTagId: "Poziom",
+    flowTagId: "Przepływ",
+    pressureTagId: "Ciśnienie",
+    speedTagId: "Prędkość",
+    tempTagId: "Temperatura",
+    cmdTagId: "Komenda",
+    runTagId: "Praca",
+    faultTagId: "Awaria",
+    enableTagId: "Zezwolenie",
+    feedbackTagId: "Sprzężenie zwrotne",
+    startTagId: "Komenda START",
+    stopTagId: "Komenda STOP",
+    statusTagId: "Stan (Status)",
+    valTagId: "Wartość (Val)",
+  };
+  return map[field] ?? field;
+}
+
+/**
+ * Extracts **all** tag references from widgets, grouped per widget and field.
+ * Includes name and comment for each slot.
+ */
+export function extractTagSlotsFromWidgets(
+  widgets: WidgetDef[],
+  templateMeta?: ComponentTagSlotMeta[],
+  projectTags?: TagDefinition[],
+): TagSlot[] {
+  const result: TagSlot[] = [];
+  const seenKeys = new Set<string>();
+
+  const metaMap = new Map<string, ComponentTagSlotMeta>();
+  if (templateMeta) {
+    for (const m of templateMeta) {
+      metaMap.set(m.slotKey, m);
+    }
+  }
+
+  const tagMap = new Map<string, TagDefinition>();
+  if (projectTags) {
+    for (const t of projectTags) {
+      tagMap.set(t.id, t);
+    }
+  }
+
+  function cleanSlotVarName(key: string): string {
+    const stripped = key.replace(/^\{[^}]+\}/, "").replace(/^_/, "");
+    return stripped || key;
+  }
+
+  for (const w of widgets) {
+    const label =
+      (w.config as Record<string, unknown>)?.label as string ||
+      (w.config as Record<string, unknown>)?.text as string ||
+      (w.config as Record<string, unknown>)?.alt as string ||
+      w.widget_type;
+
+    const addSlot = (field: string, value: string) => {
+      if (value === undefined || value === null) return;
+      const valStr = String(value).trim();
+      if (!valStr) return;
+      const uniqueId = `${w.id}::${field}`;
+      if (seenKeys.has(uniqueId)) return;
+      seenKeys.add(uniqueId);
+
+      const meta = metaMap.get(uniqueId) ?? metaMap.get(valStr);
+      const tag = tagMap.get(valStr);
+
+      const slotName = meta?.name || tag?.id || cleanSlotVarName(valStr);
+      const slotComment =
+        meta?.comment ||
+        meta?.description ||
+        tag?.description ||
+        `Zmienna: ${slotName} (${fieldLabel(field)})`;
+
+      result.push({
+        id: uniqueId,
+        slotKey: valStr,
+        name: slotName,
+        comment: slotComment,
+        field,
+        widgetId: w.id,
+        widgetType: w.widget_type,
+        widgetLabel: String(label ?? w.widget_type),
+      });
+    };
+
+    // 1. tag_id (primary binding)
+    if (w.tag_id) addSlot("tag_id", w.tag_id);
+
+    // 2. all config tag fields
+    if (w.config) {
+      const cfg = w.config as Record<string, unknown>;
+      for (const [k, v] of Object.entries(cfg)) {
+        if (k !== "tag_id" && isTagKey(k) && typeof v === "string") {
+          addSlot(k, v);
+        }
+      }
+    }
+  }
+
+  return result;
+}
+
+export function extractTagsFromWidgets(widgets: WidgetDef[]): string[] {
+  const found = new Set<string>();
+
+  for (const w of widgets) {
+    if (w.tag_id && w.tag_id.trim()) found.add(w.tag_id.trim());
+    if (w.config) {
+      const cfg = w.config as Record<string, unknown>;
+      for (const [k, v] of Object.entries(cfg)) {
+        if (isTagKey(k) && typeof v === "string" && v.trim()) {
+          found.add(v.trim());
+        }
+      }
+    }
+  }
+
+  return Array.from(found);
+}
+
+
+export function autoCreateMissingTagsForComponent(
+  tagNames: string[],
+  currentTags: TagDefinition[],
+): TagDefinition[] {
+  const existingIds = new Set(currentTags.map((t) => t.id));
+  const newTags: TagDefinition[] = [];
+
+  for (const rawName of tagNames) {
+    const cleanName = rawName.trim();
+    if (!cleanName || existingIds.has(cleanName) || cleanName.startsWith("{")) continue;
+
+    let dataType: TagDataType = "i16";
+    if (/status|cmd|alarm|err|fault|run|trip|sw|btn|start|stop|en/i.test(cleanName)) {
+      dataType = "bool";
+    } else if (/speed|pv|sp|temp|pres|flow|level|val|freq|volt|curr/i.test(cleanName)) {
+      dataType = "f32";
+    }
+
+    const tag: TagDefinition = {
+      id: cleanName,
+      name: cleanName,
+      device_id: "memory",
+      data_type: dataType,
+      binding: { table: "memory", address: 0 },
+      unit: "",
+      description: "Automatycznie utworzona zmienna komponentu",
+      scale: 1,
+      offset: 0,
+      decimals: 2,
+    };
+    newTags.push(tag);
+    existingIds.add(cleanName);
+  }
+
+  return newTags;
+}
+
+export const createComponentModalOpen = writable<boolean>(false);
+
+export function openCreateComponentModal() {
+  createComponentModalOpen.set(true);
+}
+
 export function createComponentTemplateFromSelection(
   name: string,
   category = "Custom",
+  version = "1.0.0",
+  description = "",
 ): string | null {
   const selection = selectedWidgetsForTemplate();
   const trimmedName = name.trim();
@@ -605,16 +815,25 @@ export function createComponentTemplateFromSelection(
     log("Select at least one widget and provide a component name", "warn");
     return null;
   }
+  const current = get(project);
+  if (current?.component_templates?.some((t) => t.name.toLowerCase() === trimmedName.toLowerCase())) {
+    log(`Component name already exists: ${trimmedName}`, "err");
+    return null;
+  }
+
   const minX = Math.min(...selection.widgets.map((widget) => widget.x));
   const minY = Math.min(...selection.widgets.map((widget) => widget.y));
   const maxX = Math.max(...selection.widgets.map((widget) => widget.x + widget.w));
   const maxY = Math.max(...selection.widgets.map((widget) => widget.y + widget.h));
+  const extractedTags = extractTagsFromWidgets(selection.widgets);
+  const slots = extractTagSlotsFromWidgets(selection.widgets, undefined, current?.tags);
+
   const template: ComponentTemplate = {
     id: uid("cmp"),
     name: trimmedName,
     category: category.trim() || "Custom",
-    version: "1.0.0",
-    description: `Created from ${selection.widgets.length} widget(s) on ${selection.form.name}`,
+    version: version.trim() || "1.0.0",
+    description: description.trim() || `Utworzono z ${selection.widgets.length} kontrolek na ekranie ${selection.form.name}`,
     width: Math.max(1, maxX - minX),
     height: Math.max(1, maxY - minY),
     parameter_names: [
@@ -627,6 +846,12 @@ export function createComponentTemplateFromSelection(
       "baseAddress",
     ],
     alarm_templates: [],
+    extracted_tags: extractedTags,
+    tag_slots_meta: slots.map((s) => ({
+      slotKey: s.id,
+      name: s.name,
+      comment: s.comment,
+    })),
     widgets: selection.widgets.map((widget) => ({
       ...cloneWidgetDeep(widget),
       x: widget.x - minX,
@@ -635,15 +860,17 @@ export function createComponentTemplateFromSelection(
       config: stripUnsafeTemplateConfig(widget.config ?? {}),
     })),
   };
-  project.update((current) => {
-    if (!current) return current;
+
+  project.update((curr) => {
+    if (!curr) return curr;
     dirty.set(true);
-    return {
-      ...current,
-      component_templates: [...(current.component_templates ?? []), template],
+    const updated = {
+      ...curr,
+      component_templates: [...(curr.component_templates ?? []), template],
     };
+    return ensureProjectTree(updated);
   });
-  log(`Component template created: ${template.name} v${template.version}`, "ok");
+  log(`Utworzono komponent: ${template.name} v${template.version}`, "ok");
   return template.id;
 }
 
@@ -702,6 +929,7 @@ export function instantiateComponentTemplate(
   x = 60,
   y = 60,
   parameters: Record<string, string> = {},
+  options: { autoCreateTags?: boolean; tagMapping?: Record<string, string> } = {},
 ): string[] {
   const current = get(project);
   const form = get(activeForm);
@@ -710,24 +938,203 @@ export function instantiateComponentTemplate(
     log(`Component template not found: ${templateId}`, "err");
     return [];
   }
+
+  // If direct tagMapping is provided, build a substitution that replaces
+  // each template tag placeholder with the mapped real tag id.
+  // The template tags look like "{tagPrefix}Nazwa" — we need to resolve
+  // them to actual IDs using the mapping.
+  let effectiveParameters = { ...parameters };
+  if (options.tagMapping && Object.keys(options.tagMapping).length > 0) {
+    // We'll substitute tag IDs post-build via a custom widget mapper
+    const mapping = options.tagMapping;
+    const instanceGroup = generateUniqueWidgetId().replace("w_", "cmpgrp_");
+    const widgets = template.widgets.map((source, index) => {
+      const cloned = {
+        ...cloneWidgetDeep(source),
+        id: generateUniqueWidgetId(),
+        x: x + source.x,
+        y: y + source.y,
+        z: form.widgets.length + 1 + index,
+        group_id: instanceGroup,
+        locked: false,
+      };
+
+      // Resolve tag_id using mapping — try exact `${source.id}::tag_id` first, then tag_id string
+      if (source.tag_id) {
+        const slotId = `${source.id}::tag_id`;
+        const resolved = mapping[slotId] ?? mapping[source.tag_id];
+        cloned.tag_id = resolved !== undefined ? resolved : source.tag_id;
+      } else {
+        cloned.tag_id = null;
+      }
+
+      // Resolve all config tag fields (blinkTagId, stateTagId, animationTagId, visibilityTagId, etc.)
+      if (cloned.config) {
+        const cfg = cloned.config as Record<string, unknown>;
+        for (const [key, val] of Object.entries(cfg)) {
+          if (isTagKey(key) && typeof val === "string" && val.length > 0) {
+            const slotId = `${source.id}::${key}`;
+            const resolved = mapping[slotId] ?? mapping[val];
+            if (resolved !== undefined) {
+              cfg[key] = resolved;
+            }
+          }
+        }
+      }
+
+      return cloned;
+    });
+
+    project.update((value) => {
+      if (!value) return value;
+      const forms = value.forms.map((item) =>
+        item.id === form.id ? { ...item, widgets: [...item.widgets, ...widgets] } : item,
+      );
+      dirty.set(true);
+      return { ...value, forms };
+    });
+    setSelection(widgets.map((w) => w.id), widgets[0]?.id);
+    log(`Instantiated ${template.name} with direct tag mapping: ${widgets.length} widget(s)`, "ok");
+    return widgets.map((w) => w.id);
+  }
+
   const widgets = buildComponentInstance(
     template,
     x,
     y,
     form.widgets.length + 1,
-    parameters,
+    effectiveParameters,
   );
+
+  const usedTags = extractTagsFromWidgets(widgets);
+
   project.update((value) => {
     if (!value) return value;
+    let nextTags = value.tags;
+    if (options.autoCreateTags) {
+      const createdTags = autoCreateMissingTagsForComponent(usedTags, value.tags);
+      if (createdTags.length > 0) {
+        nextTags = [...value.tags, ...createdTags];
+        log(`Auto-created ${createdTags.length} missing variable(s)`, "ok");
+      }
+    }
     const forms = value.forms.map((item) =>
       item.id === form.id ? { ...item, widgets: [...item.widgets, ...widgets] } : item,
     );
     dirty.set(true);
-    return { ...value, forms };
+    return { ...value, tags: nextTags, forms };
   });
   setSelection(widgets.map((widget) => widget.id), widgets[0]?.id);
   log(`Instantiated ${template.name}: ${widgets.length} widget(s)`, "ok");
   return widgets.map((widget) => widget.id);
+}
+
+export function generateComponentInstancesBatch(
+  templateId: string,
+  count: number,
+  prefixPattern: string,
+  options: {
+    autoCreateTags?: boolean;
+    layout?: "grid" | "row" | "column";
+    startX?: number;
+    startY?: number;
+    offsetX?: number;
+    offsetY?: number;
+  } = {},
+): string[] {
+  const current = get(project);
+  const form = get(activeForm);
+  const template = current?.component_templates?.find((item) => item.id === templateId);
+  if (!current || !form || !template) {
+    log(`Component template not found: ${templateId}`, "err");
+    return [];
+  }
+
+  const startX = options.startX ?? 60;
+  const startY = options.startY ?? 60;
+  const layout = options.layout ?? "row";
+  const offsetX = options.offsetX ?? Math.max(template.width + 30, 150);
+  const offsetY = options.offsetY ?? Math.max(template.height + 30, 150);
+  const columns = Math.ceil(Math.sqrt(count));
+
+  const allCreatedWidgetIds: string[] = [];
+  const allInstantiatedWidgets: WidgetDef[] = [];
+  let currentZ = form.widgets.length + 1;
+
+  for (let i = 0; i < count; i++) {
+    const idx = i + 1;
+    const prefix = prefixPattern.includes("{n}")
+      ? prefixPattern.replace(/\{n\}/g, String(idx))
+      : `${prefixPattern}${idx}`;
+    const cleanPrefix = prefix.endsWith("_") || prefix.endsWith(".") ? prefix : `${prefix}_`;
+
+    let posX = startX;
+    let posY = startY;
+
+    if (layout === "row") {
+      posX = startX + i * offsetX;
+    } else if (layout === "column") {
+      posY = startY + i * offsetY;
+    } else if (layout === "grid") {
+      const r = Math.floor(i / columns);
+      const c = i % columns;
+      posX = startX + c * offsetX;
+      posY = startY + r * offsetY;
+    }
+
+    const params: Record<string, string> = {
+      tagPrefix: cleanPrefix,
+      name: `${template.name} ${idx}`,
+      objectId: `${template.name.toLowerCase().replace(/\s+/g, "_")}_${idx}`,
+    };
+
+    const instWidgets = buildComponentInstance(template, posX, posY, currentZ, params);
+    currentZ += instWidgets.length;
+
+    for (const w of instWidgets) {
+      if (w.tag_id && !w.tag_id.startsWith(cleanPrefix) && !w.tag_id.includes("{")) {
+        w.tag_id = `${cleanPrefix}${w.tag_id}`;
+      }
+      if (w.config) {
+        for (const [k, v] of Object.entries(w.config)) {
+          if (
+            typeof v === "string" &&
+            k.toLowerCase().includes("tag") &&
+            !v.startsWith(cleanPrefix) &&
+            !v.includes("{")
+          ) {
+            w.config[k] = `${cleanPrefix}${v}`;
+          }
+        }
+      }
+    }
+
+    allInstantiatedWidgets.push(...instWidgets);
+    allCreatedWidgetIds.push(...instWidgets.map((w) => w.id));
+  }
+
+  const allTags = extractTagsFromWidgets(allInstantiatedWidgets);
+
+  project.update((value) => {
+    if (!value) return value;
+    let nextTags = value.tags;
+    if (options.autoCreateTags !== false) {
+      const createdTags = autoCreateMissingTagsForComponent(allTags, value.tags);
+      if (createdTags.length > 0) {
+        nextTags = [...value.tags, ...createdTags];
+        log(`Auto-created ${createdTags.length} missing variable(s) for ${count} instance(s)`, "ok");
+      }
+    }
+    const forms = value.forms.map((item) =>
+      item.id === form.id ? { ...item, widgets: [...item.widgets, ...allInstantiatedWidgets] } : item,
+    );
+    dirty.set(true);
+    return { ...value, tags: nextTags, forms };
+  });
+
+  setSelection(allCreatedWidgetIds, allCreatedWidgetIds[0]);
+  log(`Instantiated ${count} instance(s) of ${template.name}`, "ok");
+  return allCreatedWidgetIds;
 }
 
 export function deleteComponentTemplate(templateId: string) {
@@ -738,7 +1145,8 @@ export function deleteComponentTemplate(templateId: string) {
     );
     if (templates.length === (current.component_templates ?? []).length) return current;
     dirty.set(true);
-    return { ...current, component_templates: templates };
+    const updated = { ...current, component_templates: templates };
+    return ensureProjectTree(updated);
   });
   log(`Component template removed: ${templateId}`, "warn");
 }
@@ -861,7 +1269,8 @@ export async function importComponentTemplateFile() {
       (item) => item.id !== template.id,
     );
     dirty.set(true);
-    return { ...current, component_templates: [...templates, template] };
+    const updated = { ...current, component_templates: [...templates, template] };
+    return ensureProjectTree(updated);
   });
   log(`Component imported: ${template.name} v${template.version}`, "ok");
 }
@@ -1886,7 +2295,7 @@ export function updateProjectNode(id: string, patch: Partial<ProjectNode>) {
 export function toggleFolderCollapsed(id: string) {
   const p = get(project);
   const n = p?.tree?.find((x) => x.id === id);
-  if (!n || n.kind !== "folder") return;
+  if (!n || (n.kind !== "folder" && n.kind !== "components_folder")) return;
   updateProjectNode(id, { collapsed: !(n.collapsed ?? false) });
 }
 

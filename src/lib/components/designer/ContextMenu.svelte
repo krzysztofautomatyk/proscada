@@ -19,6 +19,7 @@
     clipboard,
     selectedWidgetIds,
     selectedWidgetId,
+    openCreateComponentModal,
   } from "$lib/stores/app";
 
   interface Props {
@@ -97,6 +98,15 @@
     </button>
     <button type="button" role="menuitem" disabled={!hasSel} onclick={() => run(ungroupSelectedWidgets)}>
       <span>Ungroup</span><kbd>Ctrl+Shift+G</kbd>
+    </button>
+    <div class="sep"></div>
+    <button
+      type="button"
+      role="menuitem"
+      disabled={!hasSel}
+      onclick={() => run(() => openCreateComponentModal())}
+    >
+      <span>🧩 Zapisz jako komponent…</span>
     </button>
     {#if multi}
       <div class="sep"></div>

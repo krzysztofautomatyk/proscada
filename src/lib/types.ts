@@ -193,6 +193,13 @@ export interface ProjectDesignSystem {
   animations: ProjectAnimationPreset[];
 }
 
+export interface ComponentTagSlotMeta {
+  slotKey: string;
+  name: string;
+  comment?: string;
+  description?: string;
+}
+
 export interface ComponentTemplate {
   id: string;
   name: string;
@@ -204,6 +211,8 @@ export interface ComponentTemplate {
   widgets: WidgetDef[];
   parameter_names: string[];
   alarm_templates?: AlarmDefinition[];
+  extracted_tags?: string[];
+  tag_slots_meta?: ComponentTagSlotMeta[];
 }
 
 /** Solution Explorer node kinds (VS-style project tree). */
@@ -215,7 +224,9 @@ export type ProjectNodeKind =
   | "note"
   | "markdown"
   | "image"
-  | "style";
+  | "style"
+  | "components_folder"
+  | "component";
 
 export interface AppSettings {
   autosaveEnabled: boolean;

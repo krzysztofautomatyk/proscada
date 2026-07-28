@@ -4,7 +4,7 @@ import { ensureMainFormExists } from "$lib/utils/screenProtection";
 
 export const CURRENT_SCHEMA = 3;
 
-const DOC_KINDS: ProjectNodeKind[] = ["script", "note", "markdown", "variables", "style"];
+const DOC_KINDS: ProjectNodeKind[] = ["script", "note", "markdown", "variables", "style", "component"];
 
 export function uid(prefix = "n"): string {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
@@ -18,6 +18,10 @@ export function iconFor(kind: ProjectNodeKind): string {
   switch (kind) {
     case "folder":
       return "📁";
+    case "components_folder":
+      return "🧩";
+    case "component":
+      return "⚙️";
     case "screen":
       return "🗂";
     case "variables":
@@ -240,6 +244,60 @@ export function ensureProjectTree(p: ScadaProject): ScadaProject {
   tree = tree.filter((n) => {
     if (n.kind === "screen" && n.ref_id) {
       return formIds.has(n.ref_id);
+    }
+    return true;
+  });
+
+  // 6. Guarantee root 'Components' folder node
+  let componentsFolder = tree.find(
+    (n) => n.kind === "components_folder" || (n.kind === "folder" && n.parent_id == null && n.name.toLowerCase() === "komponenty"),
+  );
+  if (!componentsFolder) {
+    componentsFolder = {
+      id: uid("cmpfld"),
+      parent_id: null,
+      kind: "components_folder",
+      name: "Komponenty",
+      order: nextOrder(tree, null),
+      collapsed: false,
+    };
+    tree.push(componentsFolder);
+  } else {
+    componentsFolder.kind = "components_folder";
+    componentsFolder.name = "Komponenty";
+  }
+
+  // 7. Synchronize component_templates with tree
+  const componentTemplates = normalized.component_templates ?? [];
+  const templateIds = new Set(componentTemplates.map((t) => t.id));
+
+  for (let i = 0; i < componentTemplates.length; i++) {
+    const tmpl = componentTemplates[i];
+    let existingNodeIndex = tree.findIndex(
+      (n) => n.kind === "component" && n.ref_id === tmpl.id,
+    );
+    if (existingNodeIndex >= 0) {
+      tree[existingNodeIndex] = {
+        ...tree[existingNodeIndex],
+        name: tmpl.name,
+        parent_id: componentsFolder.id,
+      };
+    } else {
+      tree.push({
+        id: uid("cmpnode"),
+        parent_id: componentsFolder.id,
+        kind: "component",
+        name: tmpl.name,
+        order: i,
+        ref_id: tmpl.id,
+      });
+    }
+  }
+
+  // 8. Remove component nodes whose ref_id no longer exists in component_templates
+  tree = tree.filter((n) => {
+    if (n.kind === "component" && n.ref_id) {
+      return templateIds.has(n.ref_id);
     }
     return true;
   });
