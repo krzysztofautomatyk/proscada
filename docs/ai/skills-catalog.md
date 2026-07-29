@@ -36,7 +36,7 @@ Ten dokument wyjaśnia, **jak wybrać właściwy skill** dla zadania AI w tym re
 
 - Kanoniczny zestaw = **35** kontrolek, a pełny Toolbox = 35 kontrolek + 10 szablonów; każdy z 45 elementów ma osobny dokument.
 - Każdy zapis jest bramkowany i obserwowany read-backiem; equality zależy od `verify_readback`.
-- Audyt obejmuje zapisy, role/tryby i ACK/reset; trwały SOE nie jest jeszcze zaimplementowany.
+- Audyt jest trwałym JSONL z łańcuchem hashy; lifecycle alarmów ma osobny atomowy journal.
 - Dokumentacja pozostaje modularna (≤10 KB / ≤160 linii); brak sekretów i ścieżek absolutnych.
 - Fail closed: w razie wątpliwości (tryb, rola, jakość, checksum) — odmów, nie zezwalaj domyślnie.
 
@@ -48,8 +48,11 @@ npm run validate:widgets
 npm run validate:docs
 npm run validate:ai
 npm run validate:yaml
-npm run test:pump-template
+npm test
 npm run build
-cargo test --manifest-path src-tauri/Cargo.toml
+cargo fmt --all --manifest-path src-tauri/Cargo.toml -- --check
+cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+cargo test --locked --manifest-path src-tauri/Cargo.toml
+cargo build --locked --manifest-path src-tauri/Cargo.toml
 ```
 Szczegóły i obejście zablokowanego EXE: [proscada-validation](../../.github/skills/proscada-validation/SKILL.md).

@@ -10,18 +10,18 @@ Przegląda zdarzenia i wpisy audytu.
 
 ## Format danych
 
-Rekord zawiera `time`, `actor`, `action`, `result` i `correlationId`.
+Rekord zawiera `time`, `actor`, `role`, `action`, `detail` i `correlationId`.
 
 ## Najważniejsze pola
 
-`title`, `rows`, `pageSize`.
+`title`, `pageSize`. Pole `rows` jest nadpisywane danymi autoryzowanego backendu.
 
 ## Zachowanie
 
-Kontrolka ma filtr tekstowy, badge IMMUTABLE i paging. Błąd JSON nie jest ukrywany.
-
-Przycisk eksportu informuje, że eksport musi być dostarczony przez backend. Nie tworzy fałszywego pliku lokalnego.
+Kontrolka ma filtr tekstowy, badge IMMUTABLE i paging. Dane są dostępne po
+zalogowaniu jako Engineer lub Administrator.
 
 ## Ograniczenia
 
-`rows` jest źródłem konfiguracyjnym widoku. Niemodyfikowalność i retencję realnego audytu musi zapewnić backend.
+Projekt nie może podstawić własnych rekordów. Retencję i organizacyjny eksport
+trzeba określić w polityce wdrożenia.

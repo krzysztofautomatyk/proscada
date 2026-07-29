@@ -1,5 +1,5 @@
 import type { Quality, TagValue, WidgetDef } from "$lib/types";
-import type { WidgetConfig } from "./types";
+import type { ProcessWrite, ProcessWriteResult, WidgetConfig } from "./types";
 
 export function configOf(widget: WidgetDef): WidgetConfig {
   return widget.config ?? {};
@@ -113,22 +113,31 @@ export function qualityLabel(quality: Quality | undefined): string {
 export function invokeWrite(
   widget: WidgetDef,
   design: boolean,
-  onWrite: ((tagId: string, value: number) => void) | undefined,
+  onWrite: ProcessWrite | undefined,
   value: number,
-): boolean {
+): Promise<ProcessWriteResult> {
   return invokeWriteToTag(widget.tag_id, design, onWrite, value);
 }
 
-export function invokeWriteToTag(
+export async function invokeWriteToTag(
   tagId: string | null | undefined,
   design: boolean,
-  onWrite: ((tagId: string, value: number) => void) | undefined,
+  onWrite: ProcessWrite | undefined,
   value: number,
-): boolean {
-  if (design || !tagId || !onWrite) return false;
-  if (typeof value === "number" && !Number.isFinite(value)) return false;
-  onWrite(tagId, value);
-  return true;
+): Promise<ProcessWriteResult> {
+  if (design) throw new Error("Process writes are blocked in Designer");
+  if (!tagId || !onWrite) throw new Error("Tag write transport is unavailable");
+  if (!Number.isFinite(value)) throw new Error("Write value must be finite");
+  return onWrite(tagId, value);
+}
+
+export function writeResultLabel(result: ProcessWriteResult, noun = "WRITE"): string {
+  if (result.selfCleared) {
+    return `${noun} OBSERVED ${result.observedValue ?? "––"} · SELF-CLEARED`;
+  }
+  return result.status === "observed"
+    ? `${noun} OBSERVED${result.observedValue === undefined ? "" : ` ${result.observedValue}`}`
+    : `${noun} ACCEPTED · AWAITING READBACK`;
 }
 
 export function formatNumericValue(
@@ -149,4 +158,3 @@ export function formatNumericValue(
   }
   return isNegative ? `-${formatted}` : formatted;
 }
-

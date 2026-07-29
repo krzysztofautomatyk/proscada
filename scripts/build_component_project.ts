@@ -140,10 +140,6 @@ const finalProj = ensureProjectTree(proj);
 // Write back to user file
 fs.writeFileSync(path, JSON.stringify(finalProj, null, 2), "utf-8");
 
-// Also update WaterTank.proscada.json in public/projects if it exists
-const builtinPath = "./public/projects/WaterTank.proscada.json";
-if (fs.existsSync(builtinPath)) {
-  fs.writeFileSync(builtinPath, JSON.stringify(finalProj, null, 2), "utf-8");
-}
-
-console.log("Updated user project and created component + screen + 2 pump instances successfully!");
+// Never copy a user project into a public fixture: project files can contain
+// credential hashes and site-specific OT configuration.
+console.log("Updated the selected user project with the component and screen.");

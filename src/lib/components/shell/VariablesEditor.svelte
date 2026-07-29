@@ -109,7 +109,7 @@
 
   function formatLiveValue(tag: TagDefinition): string {
     const live = tagValueMap.get(tag.id);
-    if (!live) return "—";
+    if (!live || live.quality !== "good") return "––";
 
     if (live.stringValue !== undefined) {
       return live.stringValue;

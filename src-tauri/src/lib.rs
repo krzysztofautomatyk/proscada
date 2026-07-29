@@ -26,6 +26,7 @@ pub fn run() {
     if let Err(error) = engine.load_builtin(project::water_tank_project()) {
         tracing::error!("failed to load the built-in Water Tank project: {error}");
     }
+    let setup_engine = engine.clone();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -47,6 +48,20 @@ pub fn run() {
                             tracing::error!("audit trail is memory-only: {error}");
                         }
                     }
+                    let user_realm_path = dir.join("user-realm.json");
+                    if let Err(error) = setup_engine.attach_user_realm_store(&user_realm_path) {
+                        tracing::error!(
+                            "user realm restore/persistence is degraded at {}: {error}",
+                            user_realm_path.display()
+                        );
+                    }
+                    let alarm_state_path = dir.join("alarm-state.json");
+                    if let Err(error) = setup_engine.attach_alarm_state_store(&alarm_state_path) {
+                        tracing::error!(
+                            "alarm lifecycle restore/persistence is degraded at {}: {error}",
+                            alarm_state_path.display()
+                        );
+                    }
                 }
                 Err(error) => tracing::error!("audit trail is memory-only: {error}"),
             }
@@ -59,6 +74,7 @@ pub fn run() {
             commands::load_builtin_water_tank,
             commands::get_project,
             commands::save_project_in_memory,
+            commands::save_project_file,
             commands::get_snapshot,
             commands::start_polling,
             commands::stop_polling,
@@ -68,7 +84,7 @@ pub fn run() {
             commands::login,
             commands::logout,
             commands::change_password,
-            commands::verify_pin,
+            commands::bootstrap_admin,
             commands::list_users,
             commands::save_user,
             commands::delete_user,

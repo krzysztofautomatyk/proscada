@@ -30,6 +30,7 @@ import {
   isAncestor,
   nextOrder,
   normalizeImportedProject,
+  validateImportedProjectEnvelope,
   uid,
 } from "$lib/utils/projectTree";
 import { expandSelectionWithGroups } from "$lib/stores/selection";
@@ -63,7 +64,9 @@ export type AppMode = "designer" | "runtime";
 
 export const project = writable<ScadaProject | null>(null);
 export const snapshot = writable<EngineSnapshot | null>(null);
-export const mode = writable<AppMode>("designer");
+/** IPC/snapshot transport health is separate from PLC connection health. */
+export const snapshotTransportError = writable<string | null>(null);
+export const mode = writable<AppMode>("runtime");
 export const selectedWidgetId = writable<string | null>(null);
 export const selectedWidgetIds = writable<string[]>([]);
 export const selectedFormId = writable<string | null>(null);
@@ -111,6 +114,19 @@ function widgetsFromSelection(form: FormDef): WidgetDef[] {
 export function log(msg: string, level: "info" | "ok" | "warn" | "err" = "info") {
   const t = new Date().toLocaleTimeString();
   logs.update((xs) => [{ t, level, msg }, ...xs].slice(0, 500));
+}
+
+function requireEngineeringSession(operation: string): boolean {
+  if ((get(snapshot)?.security_level ?? 0) >= 500) return true;
+  log(`${operation} requires Engineer or Administrator login`, "warn");
+  return false;
+}
+
+function requireRuntimeOperator(operation: string): boolean {
+  const current = get(snapshot);
+  if ((current?.security_level ?? 0) >= 100 && get(mode) === "runtime") return true;
+  log(`${operation} requires Operator or higher in Runtime`, "warn");
+  return false;
 }
 
 export const activeForm = derived([project, selectedFormId], ([$p, $id]) => {
@@ -169,8 +185,10 @@ export function redoAction() {
 }
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
+let pollGeneration = 0;
 let autosaveTimer: ReturnType<typeof setInterval> | null = null;
 let lastAutosaveCheckTime = Date.now();
+let lastAuditRefreshError: string | null = null;
 
 export function startAutosaveLoop() {
   if (autosaveTimer) clearInterval(autosaveTimer);
@@ -250,59 +268,73 @@ export async function initApp() {
       p = createEmptyProject("Standard SCADA Project");
     }
     applyLoadedProject(p, `Project loaded: ${p.name}`);
+    await api.setMode("runtime");
+    mode.set("runtime");
     if (get(appSettings).showStartWindowOnStart !== false) {
       startWindowOpen.set(true);
     }
-    const chainOk = await api.verifyAudit();
-    log(chainOk ? "Audit chain verified" : "Audit chain BROKEN", chainOk ? "ok" : "err");
+    // Viewer-safe audit health is part of every snapshot. Full audit
+    // verification is an Engineer operation and must not gate first startup.
     startUiPoll();
     startAutosaveLoop();
   } catch (e) {
     log(`Init error: ${e}`, "err");
-    try {
-      const p = createEmptyProject("Standard SCADA Project");
-      applyLoadedProject(p);
-      startUiPoll();
-      startAutosaveLoop();
-    } catch (e2) {
-      log(`Fallback failed: ${e2}`, "err");
-    }
+    // Never install a frontend-only fallback after a backend rejection. Doing
+    // so could leave the screen and the process mapping on different projects.
+    project.set(null);
+    snapshotTransportError.set(errorMessage(e, "Core initialization failed"));
+    startUiPoll();
   }
 }
 
 export function startUiPoll() {
   if (pollTimer) clearInterval(pollTimer);
-  pollTimer = setInterval(async () => {
+  const generation = ++pollGeneration;
+  const poll = async () => {
     try {
       const s = await api.getSnapshot();
-      snapshot.set(s);
-    } catch {
-      /* ignore transient */
+      if (generation === pollGeneration) {
+        snapshot.set(s);
+        snapshotTransportError.set(null);
+        if (s.security_level < 500 && get(mode) !== "runtime") {
+          mode.set("runtime");
+          selectedNodeId.set(null);
+          selectedWidgetId.set(null);
+          selectedWidgetIds.set([]);
+        }
+      }
+    } catch (error) {
+      if (generation === pollGeneration) {
+        snapshotTransportError.set(errorMessage(error, "Snapshot transport failed"));
+      }
+    } finally {
+      if (generation === pollGeneration) {
+        pollTimer = setTimeout(() => {
+          void poll();
+        }, 200);
+      }
     }
-  }, 200);
+  };
+  void poll();
 }
 
 export async function connectDevice() {
+  if (!requireRuntimeOperator("Connect")) return;
   const p = get(project);
   if (!p) return;
-
-  // Sync project definition with backend so the polling engine has updated device list
-  try {
-    await api.saveProject(p);
-  } catch {
-    /* fallback for mock */
+  const enabledDevices = p.devices.filter((device) => device.enabled);
+  if (enabledDevices.length !== 1) {
+    log(
+      enabledDevices.length === 0
+        ? "Connect blocked: enable exactly one Modbus device"
+        : `Connect blocked: Runtime supports one enabled device, found ${enabledDevices.length}`,
+      "err",
+    );
+    return;
   }
 
-  const dev = p.devices.find((d) => d.enabled) ?? p.devices[0];
+  const dev = enabledDevices[0];
   try {
-    const test = dev
-      ? await api.testDevice(dev.host, dev.port, dev.unit_id, dev.timeout_ms)
-      : { ok: false, message: "No device configured" };
-    if (!test.ok) {
-      log(`Device test failed: ${test.message}`, "warn");
-    } else {
-      log(`Device reachable ${dev?.host}:${dev?.port}`, "ok");
-    }
     await api.startPolling(dev?.id);
     log(`Polling started → ${dev?.name ?? "device"} (${dev?.host}:${dev?.port})`, "ok");
   } catch (e) {
@@ -311,6 +343,7 @@ export async function connectDevice() {
 }
 
 export async function disconnectDevice() {
+  if (!requireRuntimeOperator("Stop polling")) return;
   await api.stopPolling();
   log("Polling stopped", "warn");
 }
@@ -334,6 +367,11 @@ export async function switchMode(m: AppMode) {
     return;
   }
   mode.set(m);
+  if (m === "runtime") {
+    selectedNodeId.set(null);
+    selectedWidgetId.set(null);
+    selectedWidgetIds.set([]);
+  }
   const form = get(activeForm);
   const screen = form?.name ?? "(no screen)";
   if (m === "runtime") {
@@ -1979,6 +2017,11 @@ export async function persistProject(forceDialog = false): Promise<boolean> {
     const saved = await api.saveProject(p);
     project.set(saved);
     const diskResult = await saveProjectToDisk(saved, forceDialog);
+    if (!diskResult.ok) {
+      dirty.set(true);
+      log("Project accepted by engine, but disk save was cancelled or failed", "warn");
+      return false;
+    }
     dirty.set(false);
     if (diskResult.path) {
       log(`Project saved to disk → ${diskResult.path}`, "ok");
@@ -2419,43 +2462,48 @@ export function moveProjectNode(nodeId: string, newParentId: string | null) {
 }
 
 export async function newBlankProject(name?: string, description?: string) {
+  if (!requireEngineeringSession("New project")) return;
   const result = await createAndSaveNewProject(name || "New Project", description || "");
   if (!result) return;
   const { project: p, path } = result;
-  try {
-    await api.loadProject(p);
-  } catch {
-    /* browser mock */
+  applyLoadedProject(normalizeImportedProject(p), `Created project: ${p.name}`, path);
+  dirty.set(path === null);
+  if (path === null) {
+    log("New project is active in the engine but has not been saved to disk", "warn");
   }
-  applyLoadedProject(p, `Created project: ${p.name}`, path);
-  dirty.set(false);
 }
 
 export async function importProjectFromJson(text: string, path?: string) {
-  const raw = JSON.parse(text) as unknown;
-  const p = normalizeImportedProject(raw);
-  try {
-    await api.loadProject(p);
-  } catch {
-    /* browser mock — keep in UI store */
+  if (!requireEngineeringSession("Project import")) {
+    throw new Error("Engineer or Administrator login is required to import a project");
   }
+  const raw = JSON.parse(text) as unknown;
+  const incoming = validateImportedProjectEnvelope(raw);
+  await api.loadProject(incoming);
+  await api.setMode("runtime");
+  const adopted = await api.getProject();
+  if (!adopted) throw new Error("Engine accepted no project");
+  const p = normalizeImportedProject(adopted);
   applyLoadedProject(p, `Imported project: ${p.name}`, path);
+  mode.set("runtime");
   dirty.set(false);
 }
 
 export async function importProjectFile() {
+  if (!requireEngineeringSession("Project import")) return;
   try {
     const res = await openProjectFromDisk();
     if (!res) {
       log("Import cancelled", "warn");
       return;
     }
-    try {
-      await api.loadProject(res.project);
-    } catch {
-      /* browser mock */
-    }
-    applyLoadedProject(res.project, `Loaded project: ${res.project.name}`, res.path);
+    await api.loadProject(res.project);
+    await api.setMode("runtime");
+    const adopted = await api.getProject();
+    if (!adopted) throw new Error("Engine accepted no project");
+    const normalized = normalizeImportedProject(adopted);
+    applyLoadedProject(normalized, `Loaded project: ${normalized.name}`, res.path);
+    mode.set("runtime");
   } catch (e) {
     log(`Import failed: ${e}`, "err");
   }
@@ -2469,9 +2517,12 @@ export async function importProjectFile() {
  * apart removes the import cycle that previously forced dynamic imports.
  */
 export async function openRecentProjectItem(item: RecentProjectItem): Promise<boolean> {
+  if (!requireEngineeringSession("Open project")) return false;
   if (item.id === "water_tank_dual_pump" || item.name.includes("Water Tank")) {
-    const p = await api.loadBuiltinWaterTank();
-    project.set(ensureProjectTree(p));
+    const p = await api.getBuiltinWaterTank();
+    const saved = await api.saveProject(p);
+    applyLoadedProject(ensureProjectTree(saved), undefined, null);
+    dirty.set(true);
     log("Załadowano wbudowany projekt Water Tank", "ok");
     return true;
   }
@@ -2510,10 +2561,20 @@ export const scriptNodes = derived(project, ($p) =>
 );
 
 export async function refreshAudit() {
+  if ((get(snapshot)?.security_level ?? 0) < 500) {
+    audit.set([]);
+    return;
+  }
   try {
     audit.set(await api.getAudit(100));
-  } catch {
-    /* */
+    lastAuditRefreshError = null;
+  } catch (error) {
+    audit.set([]);
+    const message = errorMessage(error, "Audit refresh failed");
+    if (message !== lastAuditRefreshError) {
+      log(`Audit refresh failed: ${message}`, "warn");
+      lastAuditRefreshError = message;
+    }
   }
 }
 

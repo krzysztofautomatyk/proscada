@@ -1,9 +1,10 @@
 import { writable, get } from "svelte/store";
 import type { ScadaProject } from "$lib/types";
-import { saveTextFile, openTextFile, writeDirectTextFile, readDirectTextFile } from "$lib/services/fileIo";
+import { saveTextFile, openTextFile, readDirectTextFile } from "$lib/services/fileIo";
 import { recordRecentProject } from "$lib/stores/recentProjects";
-import { createEmptyProject, normalizeImportedProject } from "$lib/utils/projectTree";
+import { createEmptyProject, validateImportedProjectEnvelope } from "$lib/utils/projectTree";
 import { api } from "$lib/services/api";
+import { save as chooseSavePath } from "@tauri-apps/plugin-dialog";
 
 const STORAGE_KEY = "proscada.active.project.path";
 
@@ -33,14 +34,29 @@ export function setActiveProjectPath(path: string | null) {
   activeProjectPath.set(path);
 }
 
+const isTauri = () =>
+  typeof window !== "undefined" &&
+  ("__TAURI_INTERNALS__" in window || "__TAURI__" in window);
+
 /** Save active project to disk file. If path is already known, writes directly; otherwise prompts save dialog. */
 export async function saveProjectToDisk(projectObj: ScadaProject, forceDialog = false): Promise<{ ok: boolean; path?: string }> {
   const jsonText = JSON.stringify(projectObj, null, 2);
   let currentPath = get(activeProjectPath);
 
-  if (currentPath && !forceDialog) {
-    const directOk = await writeDirectTextFile(currentPath, jsonText);
-    if (directOk) {
+  if (isTauri()) {
+    if (!currentPath || forceDialog) {
+      const defaultName = `${(projectObj.name || projectObj.id || "project").replace(/[^a-z0-9_-]+/gi, "_")}.proscada.json`;
+      const selected = await chooseSavePath({
+        title: "Save ProScada Project",
+        defaultPath: defaultName,
+        filters: [{ name: "ProScada Project", extensions: ["proscada.json", "json"] }],
+      });
+      if (!selected) return { ok: false };
+      currentPath = selected;
+    }
+    try {
+      await api.saveProjectFile(currentPath);
+      activeProjectPath.set(currentPath);
       recordRecentProject({
         id: projectObj.id,
         name: projectObj.name,
@@ -48,10 +64,13 @@ export async function saveProjectToDisk(projectObj: ScadaProject, forceDialog = 
         description: projectObj.description,
       });
       return { ok: true, path: currentPath };
+    } catch {
+      return { ok: false };
     }
   }
 
-  // Prompt native save file dialog
+  // Browser-only development fallback. Production Tauri writes exclusively
+  // through the engine's temp+fsync+rename save_project_file command.
   const defaultName = `${(projectObj.name || projectObj.id || "project").replace(/[^a-z0-9_-]+/gi, "_")}.proscada.json`;
   const savedPath = await saveTextFile(defaultName, jsonText, [
     { name: "ProScada Project", extensions: ["proscada.json", "json"] },
@@ -79,32 +98,10 @@ export async function createAndSaveNewProject(
   const p = customProject || createEmptyProject(name || "New Project");
   if (description && !customProject) p.description = description;
 
-  const jsonText = JSON.stringify(p, null, 2);
-  const defaultName = `${name.replace(/[^a-z0-9_-]+/gi, "_")}.proscada.json`;
-
-  const savedPath = await saveTextFile(defaultName, jsonText, [
-    { name: "ProScada Project", extensions: ["proscada.json", "json"] },
-  ]);
-
-  if (savedPath) {
-    activeProjectPath.set(savedPath);
-    recordRecentProject({
-      id: p.id,
-      name: p.name,
-      path: savedPath,
-      description: p.description,
-    });
-    return { project: p, path: savedPath };
-  }
-
-  // Fallback: If user cancelled file save dialog, still return project with null path
+  const saved = await api.saveProject(p);
   activeProjectPath.set(null);
-  recordRecentProject({
-    id: p.id,
-    name: p.name,
-    description: p.description,
-  });
-  return { project: p, path: null };
+  const disk = await saveProjectToDisk(saved, true);
+  return { project: saved, path: disk.path ?? null };
 }
 
 /** Open/read project file directly from disk path. */
@@ -127,17 +124,10 @@ export async function openProjectFromDisk(filePath?: string): Promise<{ project:
 
   try {
     const raw = JSON.parse(textContent);
-    const normalized = normalizeImportedProject(raw);
-    activeProjectPath.set(targetPath);
-    recordRecentProject({
-      id: normalized.id,
-      name: normalized.name,
-      path: targetPath,
-      description: normalized.description,
-    });
-    return { project: normalized, path: targetPath };
+    const project = validateImportedProjectEnvelope(raw);
+    return { project, path: targetPath };
   } catch (e) {
     console.error("Failed to parse project file:", e);
-    return null;
+    throw e;
   }
 }

@@ -8,14 +8,15 @@
     onWrite?: (tagId: string, value: number) => void;
   }
 
-  let { widget, tag = null }: Props = $props();
+  let { widget, tag = null, design = false }: Props = $props();
 
   const cfg = $derived((widget.config ?? {}) as Record<string, unknown>);
   const str = (k: string, d = "") => String(cfg[k] ?? d);
   const num = (k: string, d = 0) => Number(cfg[k] ?? d);
 
   const quality = $derived(tag?.quality ?? "bad");
-  const on = $derived(tag?.bool_value ?? false);
+  const known = $derived(design || quality === "good");
+  const on = $derived(known && (tag?.bool_value ?? false));
 
   const fontFamily = $derived(str("fontFamily", "Segoe UI, system-ui, sans-serif"));
   const fontSize = $derived(num("fontSize", 12));
@@ -46,15 +47,15 @@
     <span
       class="lamp-dot"
       class:off={!on}
-      style:background={lampColor()}
-      style:color={lampColor()}
+      style:background={known ? lampColor() : "#64748b"}
+      style:color={known ? lampColor() : "#64748b"}
     ></span>
     <span
       style:font-weight={fontWeight}
       style:font-size="{fontSize}px"
       style:color={on ? lampColor() : "#9CA3AF"}
     >
-      {on ? str("onLabel", "ON") : str("offLabel", "OFF")}
+      {known ? (on ? str("onLabel", "ON") : str("offLabel", "OFF")) : "NO DATA"}
     </span>
   </div>
 </div>

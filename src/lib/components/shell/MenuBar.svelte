@@ -37,6 +37,7 @@
     addDeviceModalOpen,
     addAlarmModalOpen,
     addVariableModalOpen,
+    snapshot,
   } from "$lib/stores/app";
 
   interface Props {
@@ -54,6 +55,10 @@
   let rootEl = $state<HTMLDivElement | null>(null);
 
   const design = $derived($mode === "designer");
+  const canEngineer = $derived(($snapshot?.security_level ?? 0) >= 500);
+  const canOperateRuntime = $derived(
+    ($snapshot?.security_level ?? 0) >= 100 && $mode === "runtime",
+  );
   const hasSel = $derived(
     ($selectedWidgetIds?.length ?? 0) > 0 || !!$selectedWidgetId,
   );
@@ -139,23 +144,23 @@
               <span>Start Window / Ekran startowy…</span><kbd>Ctrl+Shift+W</kbd>
             </button>
             <div class="vs-menu-sep"></div>
-            <button type="button" role="menuitem" onclick={() => run(newProject)}>
+            <button type="button" role="menuitem" disabled={!canEngineer} onclick={() => run(newProject)}>
               <span>New Project…</span><kbd>Ctrl+Shift+N</kbd>
             </button>
-            <button type="button" role="menuitem" onclick={() => run(onNewWaterTank)}>
+            <button type="button" role="menuitem" disabled={!canEngineer} onclick={() => run(onNewWaterTank)}>
               <span>New Water Tank Project</span>
             </button>
-            <button type="button" role="menuitem" onclick={() => run(importProjectFile)}>
+            <button type="button" role="menuitem" disabled={!canEngineer} onclick={() => run(importProjectFile)}>
               <span>Open / Import…</span><kbd>Ctrl+O</kbd>
             </button>
             <div class="vs-menu-sep"></div>
-            <button type="button" role="menuitem" onclick={() => run(() => persistProject(false))}>
+            <button type="button" role="menuitem" disabled={!canEngineer || !design} onclick={() => run(() => persistProject(false))}>
               <span>Save</span><kbd>Ctrl+S</kbd>
             </button>
-            <button type="button" role="menuitem" onclick={() => run(() => persistProject(true))}>
+            <button type="button" role="menuitem" disabled={!canEngineer || !design} onclick={() => run(() => persistProject(true))}>
               <span>Save As…</span><kbd>Ctrl+Shift+S</kbd>
             </button>
-            <button type="button" role="menuitem" onclick={() => run(exportProjectJson)}>
+            <button type="button" role="menuitem" disabled={!canEngineer} onclick={() => run(exportProjectJson)}>
               <span>Export JSON…</span>
             </button>
             <div class="vs-menu-sep"></div>
@@ -311,6 +316,7 @@
               type="button"
               role="menuitem"
               class:checked={design}
+              disabled={!canEngineer}
               onclick={() => run(() => switchMode("designer"))}
             >
               <span>Design</span>
@@ -391,6 +397,7 @@
               <button
                 type="button"
                 role="menuitem"
+                disabled={!canEngineer}
                 onclick={() => run(() => switchMode("designer"))}
               >
                 <span>Stop Debugging</span><kbd>Shift+F5</kbd>
@@ -398,10 +405,10 @@
             {/if}
 
           {:else if m.id === "tools"}
-            <button type="button" role="menuitem" onclick={() => run(connectDevice)}>
+            <button type="button" role="menuitem" disabled={!canOperateRuntime} onclick={() => run(connectDevice)}>
               <span>Connect Modbus / Start Poll</span>
             </button>
-            <button type="button" role="menuitem" onclick={() => run(disconnectDevice)}>
+            <button type="button" role="menuitem" disabled={!canOperateRuntime} onclick={() => run(disconnectDevice)}>
               <span>Disconnect / Stop Poll</span>
             </button>
             <div class="vs-menu-sep"></div>

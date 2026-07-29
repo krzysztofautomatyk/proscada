@@ -10,6 +10,9 @@ export interface ConfigAlarm {
   message: string;
   group: string;
   shelved: boolean;
+  evaluationSuspended: boolean;
+  suspendedReason: string;
+  suspendedSince: string;
 }
 
 const priorities: AlarmPriority[] = ["low", "medium", "high", "critical"];
@@ -29,6 +32,9 @@ export const designAlarms: ConfigAlarm[] = [
     message: "LT-201 Wet well level high-high",
     group: "Lift station",
     shelved: false,
+    evaluationSuspended: false,
+    suspendedReason: "",
+    suspendedSince: "",
   },
   {
     id: "P-101-THERM",
@@ -38,6 +44,9 @@ export const designAlarms: ConfigAlarm[] = [
     message: "P-101 thermal overload active",
     group: "Pumping",
     shelved: false,
+    evaluationSuspended: false,
+    suspendedReason: "",
+    suspendedSince: "",
   },
 ];
 
@@ -81,6 +90,9 @@ export function parseAlarms(config: WidgetConfig): {
       message,
       group,
       shelved: boolCell(row, "shelved"),
+      evaluationSuspended: boolCell(row, "evaluationSuspended"),
+      suspendedReason: cell(row, "suspendedReason"),
+      suspendedSince: cell(row, "suspendedSince"),
     });
   }
   return { alarms, error: errors.length ? errors.join("; ") : null, configured };

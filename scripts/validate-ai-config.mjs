@@ -40,6 +40,7 @@ const requiredFiles = [
   ".github/copilot-instructions.md",
   ".github/workflows/copilot-setup-steps.yml",
   ".github/workflows/ci.yml",
+  ".github/workflows/release.yml",
   ".github/skills/README.md",
   ".github/agents/README.md",
   ".github/pull_request_template.md",
@@ -215,6 +216,22 @@ function validateWorkflow(relativePath) {
   if (!/permissions:\s*\r?\n\s+contents:\s*read/.test(content)) {
     errors.push(`${relativePath}: missing minimal contents: read permission`);
   }
+  if (/npm ci\s+--legacy-peer-deps/.test(content)) {
+    errors.push(`${relativePath}: must not bypass npm peer dependency checks`);
+  }
+  if (/command:\s*check\s+advisories/.test(content)) {
+    errors.push(
+      `${relativePath}: cargo-deny-action check names belong in command-arguments`,
+    );
+  }
+  if (content.includes("cargo-deny-action")) {
+    if (!/^\s*command:\s*check\s*$/m.test(content)) {
+      errors.push(`${relativePath}: cargo-deny-action must use command: check`);
+    }
+    if (!/^\s*command-arguments:\s*advisories licenses sources\s*$/m.test(content)) {
+      errors.push(`${relativePath}: cargo-deny-action must run advisories, licenses and sources`);
+    }
+  }
   for (const match of content.matchAll(/uses:\s*([^@\s]+)@([^\s#]+)/g)) {
     if (match[1].startsWith("./")) continue;
     if (!/^[a-f0-9]{40}$/.test(match[2])) {
@@ -254,12 +271,48 @@ for (const token of [
   // outside the gate is a test nobody sees.
   "npm test",
   "npm run build",
+  "npm ci",
+  "npm audit --audit-level=high",
   "cargo fmt",
   "cargo clippy",
   "cargo test",
   "cargo build",
+  "cargo-deny-action",
+  "command-arguments: advisories licenses sources",
+  "tauri:build",
+  "--no-bundle",
+  "windows-latest",
+  "macos-latest",
 ]) {
   if (!ci.includes(token)) errors.push(`ci.yml: missing ${token}`);
+}
+
+const release = validateWorkflow(".github/workflows/release.yml");
+for (const token of [
+  "workflow_dispatch",
+  'tags: ["v*"]',
+  "npm ci",
+  "npm run check",
+  "npm run validate:widgets",
+  "npm run validate:docs",
+  "npm run validate:ai",
+  "npm run validate:yaml",
+  "npm test",
+  "npm run build",
+  "npm audit --audit-level=high",
+  "cargo fmt",
+  "cargo clippy",
+  "cargo test",
+  "cargo build",
+  "cargo-deny-action",
+  "command-arguments: advisories licenses sources",
+  "tauri:build",
+  "--no-sign",
+  "anchore/sbom-action",
+  "actions/attest",
+  "actions/upload-artifact",
+]) {
+  if (!release.includes(token)) errors.push(`release.yml: missing ${token}`);
 }
 
 const agents = text("AGENTS.md");
@@ -269,6 +322,44 @@ if (!text("package.json").includes('"validate:ai"')) errors.push("package.json: 
 if (!text("package.json").includes('"validate:yaml"')) errors.push("package.json: missing validate:yaml");
 if (!text("package.json").includes('"test:pump-template"')) {
   errors.push("package.json: missing test:pump-template");
+}
+const packageJson = JSON.parse(text("package.json"));
+if (!/^npm@\d+\.\d+\.\d+$/.test(packageJson.packageManager ?? "")) {
+  errors.push("package.json: packageManager must pin an exact npm version");
+}
+if (packageJson.scripts?.check !== "node scripts/check-svelte.mjs") {
+  errors.push("package.json: check must enforce the zero-warning Svelte policy");
+}
+if (Number(String(packageJson.devDependencies?.typescript ?? "").match(/\d+/)?.[0]) >= 7) {
+  errors.push("package.json: TypeScript 7 requires an explicit svelte-check compatibility plan");
+}
+const fullGateFiles = [
+  "README.md",
+  "CONTRIBUTING.md",
+  ".github/pull_request_template.md",
+  ".github/skills/proscada-validation/SKILL.md",
+];
+const fullGateCommands = [
+  "npm ci",
+  "npm run check",
+  "npm run validate:widgets",
+  "npm run validate:docs",
+  "npm run validate:ai",
+  "npm run validate:yaml",
+  "npm test",
+  "npm run build",
+  "cargo fmt --all --manifest-path src-tauri/Cargo.toml -- --check",
+  "cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings",
+  "cargo test --locked --manifest-path src-tauri/Cargo.toml",
+  "cargo build --locked --manifest-path src-tauri/Cargo.toml",
+  "npm audit --audit-level=high",
+  "cargo deny --manifest-path src-tauri/Cargo.toml check advisories licenses sources",
+];
+for (const path of fullGateFiles) {
+  const content = text(path);
+  for (const command of fullGateCommands) {
+    if (!content.includes(command)) errors.push(`${path}: full gate is missing ${command}`);
+  }
 }
 if (text(".node-version").trim() !== "22") errors.push(".node-version must pin Node 22");
 if (!text("rust-toolchain.toml").includes('channel = "1.88.0"')) {
@@ -296,5 +387,5 @@ if (errors.length) {
 }
 
 console.log(
-  `AI config OK: ${expectedInstructions.length} path instructions, ${expectedAgents.length} expert agents, ${expectedSkills.length} skills and 2 pinned workflows.`,
+  `AI config OK: ${expectedInstructions.length} path instructions, ${expectedAgents.length} expert agents, ${expectedSkills.length} skills and 3 pinned workflows.`,
 );

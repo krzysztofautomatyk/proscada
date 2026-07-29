@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ensureProjectTree, createEmptyProject, childrenOf } from "./projectTree";
+import {
+  ensureProjectTree,
+  createEmptyProject,
+  childrenOf,
+  normalizeImportedProject,
+  validateImportedProjectEnvelope,
+} from "./projectTree";
 
 test("ensureProjectTree guarantees Screens folder and syncs screen nodes for all forms", () => {
   // Scenario: Project has tree with only Images and Styles, but 2 forms (Main and Detail) in forms[]
@@ -214,3 +220,22 @@ test("childrenOf and ensureProjectTree handle undefined or omitted parent_id on 
   }
 });
 
+test("import validation preserves the incoming content hash until engine verification", () => {
+  const incoming = {
+    schema_version: 3,
+    id: "signed-project",
+    name: "Signed Project",
+    description: "",
+    devices: [],
+    tags: [],
+    forms: [],
+    alarms: [],
+    tree: [],
+    content_hash: "sha256-from-file",
+  };
+
+  assert.equal(validateImportedProjectEnvelope(incoming).content_hash, "sha256-from-file");
+  const normalized = normalizeImportedProject(incoming);
+  assert.equal(normalized.content_hash, "sha256-from-file");
+  assert.equal(incoming.content_hash, "sha256-from-file", "normalization must not mutate input");
+});

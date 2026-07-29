@@ -3,6 +3,7 @@
 ## Frontend
 
 ```powershell
+npm ci
 npm run check
 npm run validate:widgets
 npm run validate:docs
@@ -15,14 +16,33 @@ npm run build
 `npm test` uruchamia **wszystkie** pliki `src/**/*.test.ts`. Pojedynczy plik można
 uruchomić skryptem `test:*`, ale bramka odbiorcza i CI wykonują pełny zestaw.
 
+`npm run check` wymaga 0 błędów i 0 ostrzeżeń `svelte-check`. Każde ostrzeżenie
+blokuje bramkę lokalną i CI.
+
 ## Rust
 
 ```powershell
 cargo fmt --all --manifest-path src-tauri/Cargo.toml -- --check
-cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
-cargo test --manifest-path src-tauri/Cargo.toml
-cargo build --manifest-path src-tauri/Cargo.toml
+cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+cargo test --locked --manifest-path src-tauri/Cargo.toml
+cargo build --locked --manifest-path src-tauri/Cargo.toml
 ```
+
+## Łańcuch dostaw
+
+```powershell
+npm audit --audit-level=high
+cargo deny --manifest-path src-tauri/Cargo.toml check advisories licenses sources
+```
+
+CI uruchamia przypięty `cargo-deny 0.20.2` z polityką `deny.toml`. Workflow release
+tworzy SPDX JSON SBOM, sumy SHA-256 i — dla tagów `v*` — atestację provenance
+GitHub. Artefakty pozostają niepodpisanymi kandydatami, dopóki organizacja nie
+dostarczy własnego procesu code signing.
+
+`deny.toml` jawnie dokumentuje terminowy wyjątek dla transitive Linux GTK/glib;
+dotyczy wyłącznie nieużywanej przez ProScada ścieżki `VariantStrIter` i wymaga
+ponownego przeglądu do 2026-10-31.
 
 ## Pokrycie istotnych przypadków
 
@@ -36,7 +56,7 @@ cargo build --manifest-path src-tauri/Cargo.toml
 - kasowanie sesji przy wczytaniu projektu i odrzucenie podmienionego hashu;
 - wymuszona zmiana domyślnego hasła przed zapisem do procesu;
 - migracja starego skrótu SHA-256 na Argon2id przy logowaniu;
-- PIN potwierdzający wyłącznie konto zalogowane;
+- PIN sprawdzany atomowo w tym samym żądaniu zapisu zalogowanego użytkownika;
 - odmowy zapisu: rola, tryb, writable, poziom taga, jakość;
 - latching alarmu, deadband analogowy i zawieszenie ewaluacji przy złej jakości;
 - ciągłość łańcucha audytu po przycięciu okna i po restarcie;

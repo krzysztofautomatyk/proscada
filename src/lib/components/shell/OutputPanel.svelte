@@ -1,8 +1,9 @@
 <script lang="ts">
   import type { AlarmInstance, AuditEntry, EngineSnapshot } from "$lib/types";
-  import { logs, project, navigateToValidationIssue } from "$lib/stores/app";
+  import { logs, project, navigateToValidationIssue, log } from "$lib/stores/app";
   import { api } from "$lib/services/api";
   import { validateProject, type ValidationIssue } from "$lib/utils/validation";
+  import { onMount } from "svelte";
 
   interface Props {
     snapshot: EngineSnapshot | null;
@@ -12,6 +13,7 @@
   let { snapshot, audit }: Props = $props();
   let tab = $state<"output" | "errors" | "alarms" | "audit">("output");
   let copyFeedback = $state(false);
+  let focusedAlarmId = $state<string | null>(null);
 
   const validation = $derived(validateProject($project));
   const errorCount = $derived(validation.errors.length);
@@ -20,17 +22,28 @@
   async function ack(id: string) {
     try {
       await api.ackAlarm(id);
+      log(`Alarm ACK accepted: ${id}`, "ok");
     } catch (e) {
-      console.error(e);
+      log(`Alarm ACK rejected: ${e}`, "err");
     }
   }
 
   function stateClass(s: string) {
-    if (s.includes("active")) return "active";
     if (s.includes("cleared")) return "clear";
     if (s.includes("acked")) return "acked";
+    if (s.includes("active")) return "active";
     return "idle";
   }
+
+  onMount(() => {
+    const showAlarms = (event: Event) => {
+      const detail = (event as CustomEvent<{ alarmId?: string | null }>).detail;
+      focusedAlarmId = detail?.alarmId ?? null;
+      tab = "alarms";
+    };
+    window.addEventListener("proscada:show-alarms", showAlarms);
+    return () => window.removeEventListener("proscada:show-alarms", showAlarms);
+  });
 
   function handleIssueClick(issue: ValidationIssue) {
     navigateToValidationIssue(issue);
@@ -146,8 +159,13 @@
         </div>
       {/if}
     {:else if tab === "alarms"}
+      {#if snapshot?.alarms_suspended || snapshot?.alarms.some((alarm) => alarm.evaluation_suspended)}
+        <div class="alarms-stale" role="alert">
+          ▲ ALARMS STALE · evaluation suspended · displayed states are last known
+        </div>
+      {/if}
       {#each (snapshot?.alarms ?? []).filter((a) => a.state !== "inactive") as a}
-        <div class="alarm-row {a.priority}">
+        <div class="alarm-row {a.priority}" class:focused={focusedAlarmId === a.def_id}>
           <span class="pill {stateClass(a.state)}">{a.state.replaceAll("_", " ")}</span>
           <span>
             <strong>{a.name}</strong> — {a.message}
@@ -218,6 +236,19 @@
   .has-errors {
     color: #f87171 !important;
     font-weight: 700;
+  }
+  .alarms-stale {
+    padding: 7px 10px;
+    border: 2px solid #991b1b;
+    background: repeating-linear-gradient(135deg,#3f0d12,#3f0d12 7px,#5f1219 7px,#5f1219 14px);
+    color: #fecaca;
+    font-size: 11px;
+    font-weight: 900;
+    letter-spacing: .04em;
+  }
+  .alarm-row.focused {
+    outline: 2px solid #38bdf8;
+    outline-offset: -2px;
   }
 
   .error-table {

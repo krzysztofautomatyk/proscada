@@ -27,7 +27,7 @@ Desktopowa stacja inżynierska SCADA i Runtime HMI oparta na Tauri, Rust oraz Sv
 ## Szybki start
 
 ```powershell
-npm install
+npm ci
 npm run tauri:dev
 ```
 
@@ -40,14 +40,20 @@ npm run dev
 ## Walidacja
 
 ```powershell
+npm ci
 npm run check
 npm run validate:widgets
 npm run validate:docs
 npm run validate:ai
 npm run validate:yaml
-npm run test:pump-template
+npm test
 npm run build
-cargo test --manifest-path src-tauri/Cargo.toml
+cargo fmt --all --manifest-path src-tauri/Cargo.toml -- --check
+cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+cargo test --locked --manifest-path src-tauri/Cargo.toml
+cargo build --locked --manifest-path src-tauri/Cargo.toml
+npm audit --audit-level=high
+cargo deny --manifest-path src-tauri/Cargo.toml check advisories licenses sources
 ```
 
 ## Dokumentacja

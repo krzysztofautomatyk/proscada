@@ -6,8 +6,10 @@ use serde::Serialize;
 use tauri::State;
 
 use crate::audit::{AuditEntry, AuditStatus};
-use crate::engine::{AlarmInstance, Engine, EngineSnapshot, TagValue, UserAccountInput};
-use crate::modbus::{self, ConnectionConfig};
+use crate::engine::{
+    AlarmInstance, Engine, EngineSnapshot, TagValue, UserAccountInput, WriteReceipt,
+};
+use crate::modbus;
 use crate::project::{water_tank_project, ScadaProject, UserSummary};
 
 pub struct AppState {
@@ -22,24 +24,32 @@ pub struct StatusMsg {
 
 #[tauri::command]
 pub fn get_builtin_water_tank() -> ScadaProject {
-    water_tank_project()
+    let mut project = water_tank_project();
+    project.users.clear();
+    project.recompute_hash();
+    project
 }
 
 #[tauri::command]
 pub fn load_project(state: State<'_, AppState>, project: ScadaProject) -> Result<(), String> {
+    state.engine.authorize_project_load()?;
     state.engine.load_project(project)
 }
 
 #[tauri::command]
 pub fn load_builtin_water_tank(state: State<'_, AppState>) -> Result<ScadaProject, String> {
+    state.engine.authorize_project_load()?;
     let p = water_tank_project();
-    state.engine.load_builtin(p.clone())?;
-    Ok(p)
+    state.engine.load_builtin_preserving_users(p)?;
+    state
+        .engine
+        .get_project_redacted()
+        .ok_or_else(|| "Built-in project missing after load".into())
 }
 
 #[tauri::command]
 pub fn get_project(state: State<'_, AppState>) -> Option<ScadaProject> {
-    state.engine.get_project()
+    state.engine.get_project_redacted()
 }
 
 #[tauri::command]
@@ -50,8 +60,13 @@ pub fn save_project_in_memory(
     state.engine.set_project_mut(project)?;
     state
         .engine
-        .get_project()
+        .get_project_redacted()
         .ok_or_else(|| "Project missing after save".into())
+}
+
+#[tauri::command]
+pub fn save_project_file(state: State<'_, AppState>, path: String) -> Result<(), String> {
+    state.engine.save_project_file(&path)
 }
 
 #[tauri::command]
@@ -68,8 +83,8 @@ pub fn start_polling(state: State<'_, AppState>, device_id: Option<String>) -> R
 }
 
 #[tauri::command]
-pub fn stop_polling(state: State<'_, AppState>) {
-    state.engine.stop_polling();
+pub fn stop_polling(state: State<'_, AppState>) -> Result<(), String> {
+    state.engine.stop_polling()
 }
 
 #[tauri::command]
@@ -77,8 +92,12 @@ pub async fn write_tag(
     state: State<'_, AppState>,
     tag_id: String,
     value: f64,
-) -> Result<(), String> {
-    state.engine.write_tag(&tag_id, value).await
+    pin: Option<String>,
+) -> Result<WriteReceipt, String> {
+    state
+        .engine
+        .write_tag_with_pin(&tag_id, value, pin.as_deref())
+        .await
 }
 
 #[tauri::command]
@@ -94,10 +113,10 @@ pub fn set_mode(state: State<'_, AppState>, mode: String) -> Result<(), String> 
 #[tauri::command]
 pub fn login(
     state: State<'_, AppState>,
-    username_or_pin: String,
+    username: String,
     password: Option<String>,
 ) -> Result<UserSummary, String> {
-    state.engine.login(&username_or_pin, password.as_deref())
+    state.engine.login(&username, password.as_deref())
 }
 
 #[tauri::command]
@@ -117,8 +136,11 @@ pub fn change_password(
 }
 
 #[tauri::command]
-pub fn verify_pin(state: State<'_, AppState>, pin: String) -> Result<bool, String> {
-    state.engine.verify_pin(&pin)
+pub fn bootstrap_admin(
+    state: State<'_, AppState>,
+    password: String,
+) -> Result<UserSummary, String> {
+    state.engine.bootstrap_admin(&password)
 }
 
 #[tauri::command]
@@ -140,35 +162,34 @@ pub fn delete_user(state: State<'_, AppState>, user_id: String) -> Result<(), St
 }
 
 #[tauri::command]
-pub fn get_audit(state: State<'_, AppState>, limit: Option<usize>) -> Vec<AuditEntry> {
-    state.engine.audit().list(limit.unwrap_or(200))
+pub fn get_audit(
+    state: State<'_, AppState>,
+    limit: Option<usize>,
+) -> Result<Vec<AuditEntry>, String> {
+    state.engine.authorize_audit_read()?;
+    Ok(state.engine.audit().list(limit.unwrap_or(200)))
 }
 
 #[tauri::command]
-pub fn verify_audit(state: State<'_, AppState>) -> bool {
-    state.engine.audit().verify_chain()
+pub fn verify_audit(state: State<'_, AppState>) -> Result<bool, String> {
+    state.engine.authorize_audit_read()?;
+    Ok(state.engine.audit().verify_chain())
 }
 
 #[tauri::command]
-pub fn get_audit_status(state: State<'_, AppState>) -> AuditStatus {
-    state.engine.audit().status()
+pub fn get_audit_status(state: State<'_, AppState>) -> Result<AuditStatus, String> {
+    state.engine.authorize_audit_status()?;
+    Ok(state.engine.audit().status_redacted())
 }
 
 #[tauri::command]
 pub async fn test_device(
     state: State<'_, AppState>,
-    host: String,
-    port: u16,
-    unit_id: u8,
-    timeout_ms: u64,
+    device_id: String,
 ) -> Result<StatusMsg, String> {
-    // Reuse engine runtime so test works even when invoked from mixed contexts.
-    let cfg = ConnectionConfig {
-        host,
-        port,
-        unit_id,
-        timeout_ms,
-    };
+    // Only a validated, canonical project device can be tested. The webview
+    // cannot turn this command into an arbitrary host/port probe.
+    let cfg = state.engine.device_connection_config_for_test(&device_id)?;
     let result = state
         .engine
         .runtime()
@@ -178,21 +199,23 @@ pub async fn test_device(
     match result {
         Ok(()) => Ok(StatusMsg {
             ok: true,
-            message: "Connection OK".into(),
+            message: "Transport reachable; no Modbus data was read".into(),
         }),
         Err(e) => Ok(StatusMsg {
             ok: false,
-            message: e.to_string(),
+            message: format!("Transport unavailable: {e}"),
         }),
     }
 }
 
 #[tauri::command]
 pub fn get_tag_values(state: State<'_, AppState>) -> Vec<TagValue> {
+    state.engine.expire_idle_session();
     state.engine.snapshot().tags
 }
 
 #[tauri::command]
 pub fn get_alarms(state: State<'_, AppState>) -> Vec<AlarmInstance> {
+    state.engine.expire_idle_session();
     state.engine.snapshot().alarms
 }

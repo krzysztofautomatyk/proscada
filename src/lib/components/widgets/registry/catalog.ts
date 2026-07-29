@@ -288,7 +288,7 @@ const canonicalWidgets: WidgetCatalogItem[] = [
       confirm: true,
       confirmText: "Send command?",
       disabledWhenBad: true,
-      pendingLabel: "COMMAND SENT",
+      pendingLabel: "COMMAND REQUESTED",
       watchdogConfigured: false,
     },
   }),
@@ -779,7 +779,7 @@ const processTemplates: WidgetCatalogItem[] = [
     defaultH: 230,
     capabilities: ["DAT", "CMD", "WR"],
     status: "template",
-    defaultConfig: { title: "Setpoints" },
+    defaultConfig: { title: "Setpoints", stopTagId: "", p1TagId: "", p2TagId: "" },
   }),
   defineWidget({
     canonicalId: "TPL-INFLOW",
@@ -805,7 +805,7 @@ const processTemplates: WidgetCatalogItem[] = [
     defaultH: 120,
     capabilities: ["DAT", "CMD", "WR"],
     status: "template",
-    defaultConfig: { title: "Process Freeze" },
+    defaultConfig: { title: "Process Freeze", restoreValue: 10 },
   }),
   defineWidget({
     canonicalId: "TPL-METRICS",

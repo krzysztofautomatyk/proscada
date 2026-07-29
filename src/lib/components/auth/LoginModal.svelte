@@ -13,51 +13,29 @@
     onsuccess?: (user: UserSummary) => void;
   } = $props();
 
-  let mode: "pin" | "password" = $state("pin");
-  let pin: string = $state("");
   let username: string = $state("");
   let password: string = $state("");
   let errorMsg: string = $state("");
   let loading: boolean = $state(false);
+  let dialogEl = $state<HTMLDivElement | null>(null);
 
-  function appendPinDigit(d: string) {
-    if (pin.length < 8) {
-      pin += d;
-      errorMsg = "";
-    }
-  }
-
-  function clearPin() {
-    pin = "";
-    errorMsg = "";
-  }
-
-  function deletePinDigit() {
-    pin = pin.slice(0, -1);
-    errorMsg = "";
-  }
+  $effect(() => {
+    if (!open || !dialogEl) return;
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    queueMicrotask(() => dialogEl?.querySelector<HTMLElement>("#input-username")?.focus());
+    return () => previous?.focus();
+  });
 
   async function handleLogin() {
+    if (loading) return;
     errorMsg = "";
+    if (!username.trim() || !password.trim()) {
+      errorMsg = "Podaj nazwę użytkownika i hasło";
+      return;
+    }
     loading = true;
     try {
-      let user: UserSummary;
-      if (mode === "pin") {
-        if (!pin.trim()) {
-          errorMsg = "Wprowadź PIN autoryzacyjny";
-          loading = false;
-          return;
-        }
-        user = await api.login(pin.trim());
-      } else {
-        if (!username.trim() || !password.trim()) {
-          errorMsg = "Podaj nazwę użytkownika i hasło";
-          loading = false;
-          return;
-        }
-        user = await api.login(username.trim(), password.trim());
-      }
-      pin = "";
+      const user = await api.login(username.trim(), password);
       username = "";
       password = "";
       onsuccess(user);
@@ -71,14 +49,24 @@
 
   function handleKeydown(e: KeyboardEvent) {
     if (!open) return;
+    if (e.key === "Tab" && dialogEl) {
+      const focusable = Array.from(
+        dialogEl.querySelectorAll<HTMLElement>(
+          'button:not(:disabled), input:not(:disabled), [tabindex]:not([tabindex="-1"])',
+        ),
+      );
+      if (focusable.length > 0) {
+        const current = focusable.indexOf(document.activeElement as HTMLElement);
+        const next = e.shiftKey
+          ? (current <= 0 ? focusable.length - 1 : current - 1)
+          : (current < 0 || current === focusable.length - 1 ? 0 : current + 1);
+        e.preventDefault();
+        focusable[next]?.focus();
+      }
+      return;
+    }
     if (e.key === "Escape") {
       onclose();
-    } else if (e.key === "Enter") {
-      handleLogin();
-    } else if (mode === "pin" && /^[0-9]$/.test(e.key)) {
-      appendPinDigit(e.key);
-    } else if (mode === "pin" && e.key === "Backspace") {
-      deletePinDigit();
     }
   }
 </script>
@@ -91,9 +79,16 @@
       type="button"
       class="backdrop-dismiss"
       aria-label="Zamknij okno logowania"
+      tabindex="-1"
       onclick={onclose}
     ></button>
-    <div class="modal-card" role="dialog" aria-modal="true">
+    <div
+      class="modal-card"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="login-title"
+      bind:this={dialogEl}
+    >
       <header class="modal-header">
         <div class="title-group">
           <div class="shield-icon">
@@ -102,37 +97,18 @@
             </svg>
           </div>
           <div>
-            <h3>Autoryzacja ProScada</h3>
-            <p class="subtitle">Wybierz metodę uwierzytelniania w systemie</p>
+            <h3 id="login-title">Autoryzacja ProScada</h3>
+            <p class="subtitle">Zaloguj się nazwą użytkownika i hasłem</p>
           </div>
         </div>
-        <button class="close-btn" onclick={onclose} title="Zamknij (Esc)">&times;</button>
+        <button
+          type="button"
+          class="close-btn"
+          aria-label="Zamknij logowanie"
+          onclick={onclose}
+          title="Zamknij (Esc)"
+        >&times;</button>
       </header>
-
-      <div class="tabs">
-        <button
-          class="tab-btn"
-          class:active={mode === "pin"}
-          onclick={() => { mode = "pin"; errorMsg = ""; }}
-        >
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="5" y="11" width="14" height="10" rx="2" />
-            <path d="M8 11V7a4 4 0 0 1 8 0v4" />
-          </svg>
-          Szybki PIN HMI
-        </button>
-        <button
-          class="tab-btn"
-          class:active={mode === "password"}
-          onclick={() => { mode = "password"; errorMsg = ""; }}
-        >
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-            <circle cx="12" cy="7" r="4" />
-          </svg>
-          Login + Hasło
-        </button>
-      </div>
 
       <div class="modal-body">
         {#if errorMsg}
@@ -146,56 +122,33 @@
           </div>
         {/if}
 
-        {#if mode === "pin"}
-          <div class="pin-section">
-            <div class="pin-display">
-              <div class="pin-dots">
-                {#each [0, 1, 2, 3] as idx}
-                  <span class="dot" class:filled={pin.length > idx}></span>
-                {/each}
-              </div>
-              <span class="pin-text">{pin ? "•".repeat(pin.length) : "Wprowadź PIN..."}</span>
-            </div>
-
-            <!-- Touch Screen HMI Keypad -->
-            <div class="keypad">
-              {#each ["1", "2", "3", "4", "5", "6", "7", "8", "9"] as num}
-                <button class="key-btn" onclick={() => appendPinDigit(num)}>{num}</button>
-              {/each}
-              <button class="key-btn key-action text-red" onclick={clearPin}>CLR</button>
-              <button class="key-btn" onclick={() => appendPinDigit("0")}>0</button>
-              <button class="key-btn key-action" onclick={deletePinDigit}>⌫</button>
-            </div>
+        <form class="form-section" onsubmit={(e) => { e.preventDefault(); void handleLogin(); }}>
+          <div class="field">
+            <label for="input-username">Nazwa Użytkownika</label>
+            <input
+              id="input-username"
+              type="text"
+              bind:value={username}
+              placeholder="np. operator lub admin"
+              autocomplete="username"
+            />
           </div>
-        {:else}
-          <form class="form-section" onsubmit={(e) => { e.preventDefault(); handleLogin(); }}>
-            <div class="field">
-              <label for="input-username">Nazwa Użytkownika</label>
-              <input
-                id="input-username"
-                type="text"
-                bind:value={username}
-                placeholder="np. operator lub admin"
-                autocomplete="username"
-              />
-            </div>
-            <div class="field">
-              <label for="input-password">Hasło Główne</label>
-              <input
-                id="input-password"
-                type="password"
-                bind:value={password}
-                placeholder="••••••••"
-                autocomplete="current-password"
-              />
-            </div>
-          </form>
-        {/if}
+          <div class="field">
+            <label for="input-password">Hasło Główne</label>
+            <input
+              id="input-password"
+              type="password"
+              bind:value={password}
+              placeholder="••••••••"
+              autocomplete="current-password"
+            />
+          </div>
+        </form>
       </div>
 
       <footer class="modal-footer">
-        <button class="btn btn-secondary" onclick={onclose} disabled={loading}>Anuluj</button>
-        <button class="btn btn-primary" onclick={handleLogin} disabled={loading}>
+        <button type="button" class="btn btn-secondary" onclick={onclose} disabled={loading}>Anuluj</button>
+        <button type="button" class="btn btn-primary" onclick={handleLogin} disabled={loading}>
           {#if loading}
             <span class="spinner"></span> Zaloguj...
           {:else}
@@ -300,37 +253,6 @@
     background: #334155;
   }
 
-  .tabs {
-    display: flex;
-    background: #090d16;
-    padding: 6px;
-    gap: 6px;
-    border-bottom: 1px solid #1e293b;
-  }
-
-  .tab-btn {
-    flex: 1;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    padding: 10px;
-    background: transparent;
-    border: none;
-    color: #94a3b8;
-    font-weight: 600;
-    font-size: 0.88rem;
-    border-radius: 8px;
-    cursor: pointer;
-    transition: all 0.15s ease;
-  }
-
-  .tab-btn.active {
-    background: #1e293b;
-    color: #38bdf8;
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
-  }
-
   .modal-body {
     padding: 24px;
     display: flex;
@@ -348,88 +270,6 @@
     color: #fb7185;
     border-radius: 10px;
     font-size: 0.88rem;
-  }
-
-  .pin-section {
-    display: flex;
-    flex-direction: column;
-    gap: 18px;
-    align-items: center;
-  }
-
-  .pin-display {
-    width: 100%;
-    background: #020617;
-    border: 1px solid #334155;
-    border-radius: 12px;
-    padding: 14px;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 8px;
-  }
-
-  .pin-dots {
-    display: flex;
-    gap: 12px;
-  }
-
-  .dot {
-    width: 14px;
-    height: 14px;
-    border-radius: 50%;
-    border: 2px solid #475569;
-    transition: all 0.15s ease;
-  }
-
-  .dot.filled {
-    background: #38bdf8;
-    border-color: #38bdf8;
-    box-shadow: 0 0 10px rgba(56, 189, 248, 0.5);
-  }
-
-  .pin-text {
-    font-size: 1rem;
-    font-weight: 600;
-    color: #94a3b8;
-    letter-spacing: 4px;
-    min-height: 24px;
-  }
-
-  .keypad {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 10px;
-    width: 100%;
-  }
-
-  .key-btn {
-    background: #1e293b;
-    border: 1px solid #334155;
-    color: #f8fafc;
-    font-size: 1.35rem;
-    font-weight: 700;
-    padding: 16px 0;
-    border-radius: 12px;
-    cursor: pointer;
-    transition: all 0.1s ease;
-    user-select: none;
-  }
-
-  .key-btn:active {
-    transform: scale(0.95);
-    background: #0284c7;
-    border-color: #38bdf8;
-  }
-
-  .key-action {
-    font-size: 0.95rem;
-    color: #94a3b8;
-    background: #0f172a;
-  }
-
-  .text-red {
-    color: #f43f5e;
   }
 
   .form-section {

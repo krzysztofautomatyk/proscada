@@ -140,10 +140,24 @@
         onclick={onShellClick}
       ></button>
     {/if}
-    {@render children()}
+    <div
+      class="process-content"
+      aria-hidden={quality.degraded && !design ? "true" : undefined}
+      inert={quality.degraded && !design}
+    >
+      {@render children()}
+    </div>
 
     {#if quality.degraded}
-      <div class="quality-veil" title={`${quality.label}: ${quality.reason}`} aria-hidden="true"></div>
+      <div
+        class="quality-veil"
+        title={`${quality.label}: ${quality.reason}`}
+        role="status"
+        aria-live="polite"
+      >
+        <strong>{quality.label}</strong>
+        <span>VALUE UNAVAILABLE</span>
+      </div>
     {/if}
 
     {#if isUnauthorized && behavior === "disabled"}
@@ -171,6 +185,9 @@
     height: 100%;
     position: relative;
     box-sizing: border-box;
+  }
+  .process-content {
+    display: contents;
   }
   .clickable {
     cursor: pointer;
@@ -270,10 +287,33 @@
     position: absolute;
     inset: 0;
     z-index: 11;
-    pointer-events: none;
+    pointer-events: auto;
     border-radius: inherit;
-    outline: 1.5px solid rgba(239, 68, 68, 0.85);
+    outline: 2px solid rgba(153, 27, 27, 0.95);
     outline-offset: -1.5px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    background: repeating-linear-gradient(
+      135deg,
+      rgba(254, 242, 242, 0.96),
+      rgba(254, 242, 242, 0.96) 7px,
+      rgba(254, 226, 226, 0.96) 7px,
+      rgba(254, 226, 226, 0.96) 14px
+    );
+    color: #7f1d1d;
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    text-align: center;
+  }
+  .quality-veil strong {
+    font-size: 11px;
+  }
+  .quality-veil span {
+    font-size: 8px;
   }
   @keyframes scada-blink {
     0%,

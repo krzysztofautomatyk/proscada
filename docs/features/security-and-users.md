@@ -1,24 +1,27 @@
 # System Użytkowników i Poziomów Uprawnień (Security Levels 0–1000)
 
-ProScada realizuje zarządzenie użytkownikami, uwierzytelnianie i autoryzację w oparciu o poziom bezpieczeństwa (Security Levels 0–1000) wgranym bezpośrednio w schemat projektu `.proscada`.
+ProScada realizuje zarządzanie użytkownikami, uwierzytelnianie i autoryzację
+w oparciu o poziom bezpieczeństwa 0–1000 egzekwowany w Rust.
 
 ## Główne założenia
 
-1. **Przechowywanie w pliku projektu**: Użytkownicy, skróty haseł (Argon2id z losową
-   solą per sekret) oraz PIN-y autoryzacyjne są zapisywane w pliku projektu.
+1. **Zaufana baza kont**: kanoniczny zapis backendu może zawierać konta, ale
+   `get_project` i eksport UI są redagowane. Importowany plik nie zastępuje
+   istniejącej bazy kont. Instalacyjny realm jest atomowo utrwalany w katalogu
+   danych aplikacji.
 2. **Kompaktowe Poziomy Numeryczne (0–1000)**:
    - `Level 0`: Podgląd (Viewer / Niezalogowany)
    - `Level 100`: Operator (Sterowanie procesowe i kasowanie alarmów)
    - `Level 500`: Inżynier / Technolog (Zaawansowane nastawy, edycja projektów)
    - `Level 1000`: Administrator (Zarządzanie kontami i bezpieczeństwem)
-3. **Logowanie z ekranową klawiaturą PIN**: HMI Touch Keypad dedykowana dla paneli dotykowych w hali produkcyjnej.
-4. **Wymuszona zmiana hasła**: konta zasiewane w nowym projekcie mają flagę
-   `password_change_required`. Do czasu zmiany hasła backend odmawia zapisu do
-   procesu, edycji projektu i administracji użytkownikami. Nowe hasło musi mieć co
-   najmniej 12 znaków.
-5. **Auto-logout & PIN Challenge**: sesja wygasa po czasie liczonym od ostatniej
-   akcji użytkownika (logowanie, zapis, ACK, potwierdzenie PIN). `verify_pin`
-   potwierdza wyłącznie PIN zalogowanego operatora.
+3. **Provisioning bez sekretów fabrycznych**: projekt startuje bez kont. Jednorazowy
+   bootstrap tworzy pierwszego Administratora z hasłem co najmniej 12 znaków.
+   Uszkodzony realm zamyka bootstrap zamiast otwierać go ponownie.
+4. **Logowanie**: sesję tworzy wyłącznie nazwa użytkownika i hasło. PIN nie jest
+   loginem i nie istnieje osobna komenda jego weryfikacji.
+5. **Auto-logout i PIN zapisu**: sesja wygasa także na granicach komend. Gdy projekt
+   wymaga PIN-u, jest on sprawdzany w tym samym wywołaniu `write_tag`; nie powstaje
+   ponownie używalne uprawnienie.
 6. **Dziennik Zdarzeń (Audit Trail)**: wszystkie próby zalogowania i akcje
    użytkowników są rejestrowane w łańcuchu SHA-256 utrwalanym na dysku.
 7. **Poziom per tag**: `binding.min_security_level` jest egzekwowany w backendzie,
@@ -26,9 +29,9 @@ ProScada realizuje zarządzenie użytkownikami, uwierzytelnianie i autoryzację 
 
 ## Migracja starych projektów
 
-Rekord hasła w starym formacie SHA-256 jest akceptowany raz i natychmiast
-przepisywany na Argon2id przy pierwszym poprawnym logowaniu. Projekt trzeba potem
-zapisać, aby utrwalić nową postać.
+Rekord hasła w starym formacie SHA-256 jest akceptowany raz i przepisywany na
+Argon2id przy pierwszym poprawnym logowaniu. Znane historyczne hasła wymuszają
+zmianę, a odpowiadające im fabryczne PIN-y są usuwane.
 
 ## Powiązane pliki
 

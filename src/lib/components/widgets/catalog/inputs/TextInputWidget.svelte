@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { WidgetRendererProps } from "$lib/components/widgets/shared/types";
-  import { configOf, invokeWrite, readBoolean, readNumber, readString } from "$lib/components/widgets/shared/config";
+  import { configOf, invokeWrite, readBoolean, readNumber, readString, writeResultLabel } from "$lib/components/widgets/shared/config";
   import WidgetCard from "$lib/components/widgets/shared/WidgetCard.svelte";
 
   let { widget, tag = null, design = false, onWrite }: WidgetRendererProps = $props();
@@ -53,7 +53,7 @@
     return "";
   }
 
-  function commit() {
+  async function commit() {
     if (disabled) return;
     const error = validate();
     if (error) {
@@ -66,9 +66,12 @@
       message = "TEXT WRITE NOT SUPPORTED BY THE PROCESS GATEWAY";
       return;
     }
-    message = invokeWrite(widget, design, onWrite, Number(draft))
-      ? "WRITE REQUESTED"
-      : "TAG WRITE UNAVAILABLE";
+    message = "WRITE REQUESTED";
+    try {
+      message = writeResultLabel(await invokeWrite(widget, design, onWrite, Number(draft)));
+    } catch (error) {
+      message = `WRITE REJECTED: ${error instanceof Error ? error.message : String(error)}`;
+    }
   }
 
   function cancel() {
@@ -82,7 +85,7 @@
 </script>
 
 <WidgetCard {title} {tag} accent="#0369a1">
-  <form class="control" onsubmit={(event) => { event.preventDefault(); commit(); }}>
+  <form class="control" onsubmit={(event) => { event.preventDefault(); void commit(); }}>
     <input
       aria-label={title}
       type={mode}

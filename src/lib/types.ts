@@ -296,6 +296,16 @@ export interface TagValue {
   raw: number;
 }
 
+export interface WriteReceipt {
+  tag_id: string;
+  requested_value: number;
+  observed_value: number;
+  raw_readback: number;
+  protocol: string;
+  verify_readback: boolean;
+  matches: boolean;
+}
+
 export interface AlarmInstance {
   def_id: string;
   name: string;
@@ -330,6 +340,19 @@ export interface EngineSnapshot {
   /** True when at least one alarm is not evaluated against live data. */
   alarms_suspended?: boolean;
   password_change_required?: boolean;
+  /** True only while the loaded project has no user accounts yet. */
+  requires_bootstrap?: boolean;
+  /** False means the audit hash chain failed verification and process writes are blocked. */
+  audit_chain_ok?: boolean;
+  /** False means audit entries are not durably persisted and process writes are blocked. */
+  audit_persisted?: boolean;
+  audit_last_error?: string | null;
+  /** False means alarm lifecycle/ACK state is not durably persisted. */
+  alarm_state_persisted?: boolean;
+  alarm_state_last_error?: string | null;
+  /** False means the installation account realm is absent, corrupt or not durable. */
+  user_realm_persisted?: boolean;
+  user_realm_last_error?: string | null;
 }
 
 export interface AuditEntry {

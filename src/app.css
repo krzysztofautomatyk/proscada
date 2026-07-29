@@ -219,8 +219,12 @@ textarea:focus {
 }
 
 .workspace.runtime-only {
-  grid-template-columns: var(--pane-left) 5px 1fr;
+  grid-template-columns: 1fr;
   grid-template-rows: 1fr 5px var(--pane-bottom);
+}
+
+.workspace.runtime-only .center {
+  grid-column: 1;
 }
 
 .panel {
@@ -343,7 +347,8 @@ textarea:focus {
 }
 
 .workspace.runtime-only .properties,
-.workspace.runtime-only .split-v-right {
+.workspace.runtime-only .split-v-right,
+.workspace.runtime-only .split-v-left {
   display: none;
 }
 

@@ -23,6 +23,7 @@ Najpierw przeczytaj `AGENTS.md` i dobierz skill z `.github/skills/README.md`.
 Dobierz testy do zmiany, a przed końcem uruchom:
 
 ```powershell
+npm ci
 npm run check
 npm run validate:widgets
 npm run validate:docs
@@ -31,8 +32,11 @@ npm run validate:yaml
 npm test
 npm run build
 cargo fmt --all --manifest-path src-tauri/Cargo.toml -- --check
-cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
-cargo test --manifest-path src-tauri/Cargo.toml
+cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+cargo test --locked --manifest-path src-tauri/Cargo.toml
+cargo build --locked --manifest-path src-tauri/Cargo.toml
+npm audit --audit-level=high
+cargo deny --manifest-path src-tauri/Cargo.toml check advisories licenses sources
 ```
 
 Zmiana dokumentacji nie wymaga Rust build. Zmiana Rust I/O wymaga testów Rust i przeglądu fail-closed.

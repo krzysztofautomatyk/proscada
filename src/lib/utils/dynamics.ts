@@ -87,7 +87,7 @@ export function evaluateCondition(
   if (!actualTagId) return false;
 
   const tag = tagMap.get(actualTagId);
-  if (!tag) return false;
+  if (!tag || tag.quality !== "good") return false;
 
   const numVal = tag.value ?? 0;
   const boolVal = tag.bool_value ?? numVal !== 0;

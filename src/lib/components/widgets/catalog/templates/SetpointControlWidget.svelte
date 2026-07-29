@@ -1,11 +1,14 @@
 <script lang="ts">
   import type { WidgetDef, TagValue } from "$lib/types";
+  import type { ProcessWrite } from "$lib/components/widgets/shared/types";
+  import { tagMap } from "$lib/stores/app";
+  import { writeResultLabel } from "$lib/components/widgets/shared/config";
 
   interface Props {
     widget: WidgetDef;
     tag?: TagValue | null;
     design?: boolean;
-    onWrite?: (tagId: string, value: number) => void;
+    onWrite?: ProcessWrite;
   }
 
   let { widget, design = false, onWrite }: Props = $props();
@@ -14,16 +17,61 @@
   const str = (k: string, d = "") => String(cfg[k] ?? d);
   const num = (k: string, d = 0) => Number(cfg[k] ?? d);
 
-  let stop = $state(200);
-  let p1 = $state(700);
-  let p2 = $state(800);
+  let stopDraft = $state("");
+  let p1Draft = $state("");
+  let p2Draft = $state("");
+  let stopEdited = $state(false);
+  let p1Edited = $state(false);
+  let p2Edited = $state(false);
+  let stopStatus = $state("");
+  let p1Status = $state("");
+  let p2Status = $state("");
   const borderRadius = $derived(num("borderRadius", 10));
+  const stopTagId = $derived(str("stopTagId"));
+  const p1TagId = $derived(str("p1TagId"));
+  const p2TagId = $derived(str("p2TagId"));
+  const targetIds = $derived([stopTagId, p1TagId, p2TagId]);
 
-  function apply() {
-    if (design || !onWrite) return;
-    onWrite("wt.sp_stop", stop);
-    onWrite("wt.sp_p1_on", p1);
-    onWrite("wt.sp_p2_on", p2);
+  $effect(() => {
+    const stopTag = stopTagId ? $tagMap.get(stopTagId) : undefined;
+    const p1Tag = p1TagId ? $tagMap.get(p1TagId) : undefined;
+    const p2Tag = p2TagId ? $tagMap.get(p2TagId) : undefined;
+    if (!stopEdited) stopDraft = stopTag?.quality === "good" ? String(stopTag.value) : "";
+    if (!p1Edited) p1Draft = p1Tag?.quality === "good" ? String(p1Tag.value) : "";
+    if (!p2Edited) p2Draft = p2Tag?.quality === "good" ? String(p2Tag.value) : "";
+  });
+
+  function targetGood(tagId: string): boolean {
+    return Boolean(tagId && $tagMap.get(tagId)?.quality === "good");
+  }
+
+  function validDraft(draft: string): boolean {
+    return draft.trim() !== "" && Number.isFinite(Number(draft));
+  }
+
+  function adjust(
+    draft: string,
+    delta: number,
+    assign: (value: string) => void,
+  ) {
+    const current = Number(draft);
+    assign(String(Math.min(1000, Math.max(0, (Number.isFinite(current) ? current : 0) + delta))));
+  }
+
+  async function writeOne(
+    tagId: string,
+    draft: string,
+    setStatus: (status: string) => void,
+  ) {
+    const value = Number(draft);
+    if (design || !onWrite || !targetGood(tagId) || !validDraft(draft)) return;
+    setStatus("WRITE REQUESTED");
+    try {
+      const result = await onWrite(tagId, value);
+      setStatus(writeResultLabel(result));
+    } catch (error) {
+      setStatus(`WRITE REJECTED: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 </script>
 
@@ -34,42 +82,50 @@
     <div class="stepper-item">
       <div class="stepper-head">
         <span style:color="#16A34A">SP_STOP</span>
-        <span class="val-badge">{stop} cm</span>
+        <span class="val-badge">{stopDraft || "––"} cm</span>
       </div>
       <div class="step-controls">
-        <button type="button" disabled={design} onclick={() => (stop = Math.max(0, stop - 50))}>−</button>
-        <input type="number" bind:value={stop} disabled={design} />
-        <button type="button" disabled={design} onclick={() => (stop = Math.min(1000, stop + 50))}>+</button>
+        <button type="button" disabled={design} onclick={() => { stopEdited = true; adjust(stopDraft, -50, (value) => (stopDraft = value)); }}>−</button>
+        <input aria-label="SP_STOP setpoint" type="number" value={stopDraft} disabled={design} oninput={(event) => { stopEdited = true; stopDraft = event.currentTarget.value; stopStatus = ""; }} />
+        <button type="button" disabled={design} onclick={() => { stopEdited = true; adjust(stopDraft, 50, (value) => (stopDraft = value)); }}>+</button>
+        <button type="button" class="write-one" disabled={design || !onWrite || !targetGood(stopTagId) || !validDraft(stopDraft)} onclick={() => void writeOne(stopTagId, stopDraft, (value) => (stopStatus = value))}>WRITE</button>
       </div>
+      {#if stopStatus}<p class="write-state" role="status">{stopStatus}</p>{/if}
     </div>
 
     <!-- SP_P1_ON Stepper -->
     <div class="stepper-item">
       <div class="stepper-head">
         <span style:color="#EAB308">SP_P1_ON</span>
-        <span class="val-badge">{p1} cm</span>
+        <span class="val-badge">{p1Draft || "––"} cm</span>
       </div>
       <div class="step-controls">
-        <button type="button" disabled={design} onclick={() => (p1 = Math.max(0, p1 - 50))}>−</button>
-        <input type="number" bind:value={p1} disabled={design} />
-        <button type="button" disabled={design} onclick={() => (p1 = Math.min(1000, p1 + 50))}>+</button>
+        <button type="button" disabled={design} onclick={() => { p1Edited = true; adjust(p1Draft, -50, (value) => (p1Draft = value)); }}>−</button>
+        <input aria-label="SP_P1_ON setpoint" type="number" value={p1Draft} disabled={design} oninput={(event) => { p1Edited = true; p1Draft = event.currentTarget.value; p1Status = ""; }} />
+        <button type="button" disabled={design} onclick={() => { p1Edited = true; adjust(p1Draft, 50, (value) => (p1Draft = value)); }}>+</button>
+        <button type="button" class="write-one" disabled={design || !onWrite || !targetGood(p1TagId) || !validDraft(p1Draft)} onclick={() => void writeOne(p1TagId, p1Draft, (value) => (p1Status = value))}>WRITE</button>
       </div>
+      {#if p1Status}<p class="write-state" role="status">{p1Status}</p>{/if}
     </div>
 
     <!-- SP_P2_ON Stepper -->
     <div class="stepper-item">
       <div class="stepper-head">
         <span style:color="#DC2626">SP_P2_ON</span>
-        <span class="val-badge">{p2} cm</span>
+        <span class="val-badge">{p2Draft || "––"} cm</span>
       </div>
       <div class="step-controls">
-        <button type="button" disabled={design} onclick={() => (p2 = Math.max(0, p2 - 50))}>−</button>
-        <input type="number" bind:value={p2} disabled={design} />
-        <button type="button" disabled={design} onclick={() => (p2 = Math.min(1000, p2 + 50))}>+</button>
+        <button type="button" disabled={design} onclick={() => { p2Edited = true; adjust(p2Draft, -50, (value) => (p2Draft = value)); }}>−</button>
+        <input aria-label="SP_P2_ON setpoint" type="number" value={p2Draft} disabled={design} oninput={(event) => { p2Edited = true; p2Draft = event.currentTarget.value; p2Status = ""; }} />
+        <button type="button" disabled={design} onclick={() => { p2Edited = true; adjust(p2Draft, 50, (value) => (p2Draft = value)); }}>+</button>
+        <button type="button" class="write-one" disabled={design || !onWrite || !targetGood(p2TagId) || !validDraft(p2Draft)} onclick={() => void writeOne(p2TagId, p2Draft, (value) => (p2Status = value))}>WRITE</button>
       </div>
+      {#if p2Status}<p class="write-state" role="status">{p2Status}</p>{/if}
     </div>
 
-    <button class="btn-apply" disabled={design} onclick={apply}>Apply setpoints</button>
+    {#if !targetIds.every(Boolean)}
+      <p class="write-state error">CONFIG: stopTagId, p1TagId and p2TagId are required</p>
+    {/if}
   </div>
 </div>
 
@@ -118,9 +174,12 @@
   }
   .step-controls {
     display: grid;
-    grid-template-columns: 28px 1fr 28px;
+    grid-template-columns: 28px minmax(0, 1fr) 28px 48px;
     gap: 4px;
   }
+  .write-state { margin: 0; color: #0369a1; font-size: 8px; font-weight: 800; text-align: center; }
+  .write-state.error { color: #b91c1c; }
+  .write-one { font-size: 8px; }
   .step-controls input {
     text-align: center;
     background: #f9fafb;
@@ -142,21 +201,6 @@
   .step-controls button:disabled,
   .step-controls input:disabled {
     opacity: 0.6;
-    cursor: default;
-  }
-  .btn-apply {
-    background: #1f2937;
-    color: #ffffff;
-    border: none;
-    border-radius: 6px;
-    padding: 6px;
-    font-size: 11px;
-    font-weight: 700;
-    cursor: pointer;
-    margin-top: 4px;
-  }
-  .btn-apply:disabled {
-    opacity: 0.5;
     cursor: default;
   }
 </style>

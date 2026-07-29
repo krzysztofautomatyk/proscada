@@ -3,6 +3,7 @@
   import {
     project,
     snapshot,
+    snapshotTransportError,
     mode,
     activeForm,
     selectedWidget,
@@ -41,6 +42,7 @@
     undoAction,
     redoAction,
     startWindowOpen,
+    applyLoadedProject,
   } from "$lib/stores/app";
   import { api } from "$lib/services/api";
   import type { LeftPanelTab, Role } from "$lib/types";
@@ -67,11 +69,16 @@
   import { validateProject } from "$lib/utils/validation";
   import { activate, resizeOnKey } from "$lib/utils/a11y";
   import { getCurrentWindow } from "@tauri-apps/api/window";
+  import type {
+    ProcessWrite,
+    ProcessWriteResult,
+  } from "$lib/components/widgets/shared/types";
 
   import LoginModal from "$lib/components/auth/LoginModal.svelte";
   import PinChallengeModal from "$lib/components/auth/PinChallengeModal.svelte";
   import UserManagementModal from "$lib/components/auth/UserManagementModal.svelte";
   import ChangePasswordModal from "$lib/components/auth/ChangePasswordModal.svelte";
+  import BootstrapAdminModal from "$lib/components/auth/BootstrapAdminModal.svelte";
 
   let leftTab = $state<LeftPanelTab>("solution");
   let settingsOpen = $state(false);
@@ -79,7 +86,12 @@
   let pinChallengeOpen = $state(false);
   let userMgmtModalOpen = $state(false);
   let pinChallengeAction = $state("Potwierdzenie operacji");
-  let pendingWriteFn = $state<(() => void) | null>(null);
+  let pendingWrite = $state<{
+    tagId: string;
+    value: number;
+    resolve: (result: ProcessWriteResult) => void;
+    reject: (error: Error) => void;
+  } | null>(null);
 
   let propertiesEl = $state<HTMLDivElement | null>(null);
   let workspaceEl = $state<HTMLDivElement | null>(null);
@@ -88,6 +100,8 @@
   // Fail-closed: an unknown snapshot means no privileges, not full privileges.
   const securityLevel = $derived($snapshot?.security_level ?? 0);
   const isSuperAdmin = $derived(securityLevel >= 1000);
+  const canEngineer = $derived(securityLevel >= 500);
+  const canOperateRuntime = $derived(securityLevel >= 100 && $mode === "runtime");
   // The backend blocks writes and user administration until a seeded account
   // replaces its default password, so the dialog is not dismissible.
   const mustChangePassword = $derived($snapshot?.password_change_required === true);
@@ -95,6 +109,11 @@
   async function handleLogout() {
     try {
       await api.logout();
+      await api.setMode("runtime");
+      mode.set("runtime");
+      selectSolutionNode(null);
+      selectedWidgetId.set(null);
+      selectedWidgetIds.set([]);
       log("Wylogowano użytkownika", "info");
     } catch (e) {
       log(`Błąd wylogowania: ${e}`, "err");
@@ -219,10 +238,6 @@
     initApp();
     const onKey = (e: KeyboardEvent) => {
       if ($mode !== "designer") {
-        if ((e.ctrlKey || e.metaKey) && e.key === "s") {
-          e.preventDefault();
-          persistProject();
-        }
         return;
       }
       const mod = e.ctrlKey || e.metaKey;
@@ -342,39 +357,71 @@
     };
   });
 
-  async function onWrite(tagId: string, value: number) {
-    if ($project?.session_config?.pin_challenge_on_write) {
-      pinChallengeAction = `Zapis wartości ${tagId} = ${value}`;
-      pendingWriteFn = async () => {
-        try {
-          await api.writeTag(tagId, value);
-          log(`Write ${tagId} = ${value}`, "ok");
-          await refreshAudit();
-        } catch (e) {
-          log(`Write failed: ${e}`, "err");
-          throw e;
-        }
-      };
-      pinChallengeOpen = true;
-      return;
-    }
-
+  async function performWrite(
+    tagId: string,
+    value: number,
+    pin?: string,
+  ): Promise<ProcessWriteResult> {
     try {
-      await api.writeTag(tagId, value);
-      log(`Write ${tagId} = ${value}`, "ok");
+      const receipt = await api.writeTag(tagId, value, pin);
+      log(
+        `Write observed ${tagId}: requested=${receipt.requested_value}, observed=${receipt.observed_value}, protocol=${receipt.protocol}`,
+        "ok",
+      );
       await refreshAudit();
-    } catch (e) {
-      log(`Write failed: ${e}`, "err");
-      throw e;
+      return {
+        status: "observed",
+        tagId: receipt.tag_id,
+        requestedValue: receipt.requested_value,
+        observedValue: receipt.observed_value,
+        rawReadback: receipt.raw_readback,
+        protocol: receipt.protocol,
+        verifyReadback: receipt.verify_readback,
+        matches: receipt.matches,
+        selfCleared: !receipt.verify_readback && !receipt.matches,
+      };
+    } catch (error) {
+      log(`Write rejected: ${error}`, "err");
+      throw error;
     }
+  }
+
+  const onWrite: ProcessWrite = async (tagId, value) => {
+    if ($project?.session_config?.pin_challenge_on_write) {
+      if (pendingWrite) {
+        throw new Error("Another write authorization is pending");
+      }
+      pinChallengeAction = `Zapis wartości ${tagId} = ${value}`;
+      return new Promise<ProcessWriteResult>((resolve, reject) => {
+        pendingWrite = { tagId, value, resolve, reject };
+        pinChallengeOpen = true;
+      });
+    }
+    return performWrite(tagId, value);
+  };
+
+  function cancelPinWrite() {
+    pendingWrite?.reject(new Error("PIN challenge cancelled"));
+    pendingWrite = null;
+    pinChallengeOpen = false;
+  }
+
+  async function completePinWrite(pin: string) {
+    const request = pendingWrite;
+    if (!request) throw new Error("No pending process write");
+    const result = await performWrite(request.tagId, request.value, pin);
+    pendingWrite = null;
+    request.resolve(result);
   }
 
   async function reloadWaterTank() {
     try {
-      const p = await api.loadBuiltinWaterTank();
-      const normalized = ensureProjectTree(p);
-      project.set(normalized);
-      dirty.set(false);
+      if (!canEngineer) throw new Error("Engineer or Administrator role is required");
+      const p = await api.getBuiltinWaterTank();
+      const saved = await api.saveProject(p);
+      const normalized = ensureProjectTree(saved);
+      applyLoadedProject(normalized, undefined, null);
+      dirty.set(true);
       log("Reloaded factory Water Tank project", "ok");
     } catch (e) {
       log(`Reload failed: ${e}`, "err");
@@ -384,11 +431,19 @@
   onMount(() => {
     const onAlarmAction = (event: Event) => {
       const detail = (event as CustomEvent<{ action?: string; alarmId?: string }>).detail;
+      if (detail?.action === "navigate") {
+        window.dispatchEvent(
+          new CustomEvent("proscada:show-alarms", {
+            detail: { alarmId: detail.alarmId ?? null },
+          }),
+        );
+        return;
+      }
       if (detail?.action !== "ack" || !detail.alarmId) return;
       void api
         .ackAlarm(detail.alarmId)
         .then(() => {
-          log(`Alarm ACK requested: ${detail.alarmId}`, "ok");
+          log(`Alarm ACK accepted: ${detail.alarmId}`, "ok");
           return refreshAudit();
         })
         .catch((error: unknown) => log(`Alarm ACK failed: ${error}`, "err"));
@@ -438,7 +493,7 @@
   );
 
   const centerDoc = $derived(
-    $selectedSolutionNode && isDocKind($selectedSolutionNode.kind)
+    $mode === "designer" && $selectedSolutionNode && isDocKind($selectedSolutionNode.kind)
       ? $selectedSolutionNode
       : null,
   );
@@ -459,16 +514,8 @@
 <PinChallengeModal
   open={pinChallengeOpen}
   actionName={pinChallengeAction}
-  onclose={() => {
-    pinChallengeOpen = false;
-    pendingWriteFn = null;
-  }}
-  onsuccess={() => {
-    if (pendingWriteFn) {
-      pendingWriteFn();
-      pendingWriteFn = null;
-    }
-  }}
+  onclose={cancelPinWrite}
+  onsuccess={completePinWrite}
 />
 
 <UserManagementModal
@@ -481,6 +528,14 @@
   mandatory={true}
   username={currentUser?.username ?? ""}
   onsuccess={() => log("Hasło zostało zmienione", "ok")}
+/>
+
+<BootstrapAdminModal
+  open={$snapshot?.requires_bootstrap === true}
+  onsuccess={async (user) => {
+    log(`Utworzono i zalogowano pierwszego Administratora: ${user.username}`, "ok");
+    snapshot.set(await api.getSnapshot());
+  }}
 />
 
 <div class="shell">
@@ -497,7 +552,7 @@
       class:primary={$mode === "designer"}
       title="Design"
       onclick={() => switchMode("designer")}
-      disabled={$mode === "designer"}
+      disabled={$mode === "designer" || !canEngineer}
     >
       Design
     </button>
@@ -511,14 +566,18 @@
       ▶ Start
     </button>
     <div class="sep"></div>
-    <button class="tb" title="Save (Ctrl+S)" onclick={() => persistProject()}>Save</button>
+    {#if canEngineer && $mode === "designer"}
+      <button class="tb" title="Save (Ctrl+S)" onclick={() => persistProject()}>Save</button>
+    {/if}
     <button class="tb" title="Application Settings" onclick={() => (settingsOpen = true)}>⚙️ Settings</button>
     {#if $mode === "designer"}
       <button class="tb" title="Add New Screen" onclick={() => addNewForm()}>+ Screen</button>
     {/if}
     <div class="sep"></div>
-    <button class="tb" title="Connect Modbus" onclick={() => connectDevice()}>Connect</button>
-    <button class="tb" title="Stop Poll" onclick={() => disconnectDevice()}>Stop</button>
+    {#if canOperateRuntime}
+      <button class="tb" title="Connect Modbus" onclick={() => connectDevice()}>Connect</button>
+      <button class="tb" title="Stop Poll" onclick={() => disconnectDevice()}>Stop</button>
+    {/if}
     <div class="sep"></div>
 
     <!-- Security & User Identity Badge Controls -->
@@ -530,7 +589,7 @@
       </span>
     </div>
 
-    <button class="tb user-btn" title="Logowanie / PIN HMI" onclick={() => (loginModalOpen = true)}>
+    <button class="tb user-btn" title="Logowanie użytkownika" onclick={() => (loginModalOpen = true)}>
       🔑 Logowanie
     </button>
 
@@ -602,6 +661,49 @@
         · {$snapshot.last_error}
       {/if}
     </span>
+    {#if $snapshot?.alarms_suspended ||
+      $snapshot?.alarms.some((alarm) => alarm.evaluation_suspended) ||
+      $snapshot?.audit_chain_ok === false ||
+      $snapshot?.audit_persisted === false ||
+      $snapshot?.alarm_state_persisted === false ||
+      $snapshot?.user_realm_persisted === false ||
+      $snapshotTransportError}
+      <div class="global-statuses">
+        {#if $snapshot?.alarms_suspended || $snapshot?.alarms.some((alarm) => alarm.evaluation_suspended)}
+          <span class="global-alarm-stale" role="alert">
+            ▲ ALARMS STALE · LAST KNOWN STATES
+          </span>
+        {/if}
+        {#if $snapshot?.audit_chain_ok === false || $snapshot?.audit_persisted === false}
+          <span class="global-audit-degraded" role="alert" title={$snapshot?.audit_last_error ?? ""}>
+            ⛔ AUDIT DEGRADED · WRITES BLOCKED
+          </span>
+        {/if}
+        {#if $snapshot?.alarm_state_persisted === false}
+          <span
+            class="global-alarm-state-degraded"
+            role="alert"
+            title={$snapshot?.alarm_state_last_error ?? ""}
+          >
+            ⛔ ALARM STATE NOT DURABLE
+          </span>
+        {/if}
+        {#if $snapshot?.user_realm_persisted === false}
+          <span
+            class="global-user-realm-degraded"
+            role="alert"
+            title={$snapshot?.user_realm_last_error ?? ""}
+          >
+            ⛔ USER REALM DEGRADED · BOOTSTRAP CLOSED
+          </span>
+        {/if}
+        {#if $snapshotTransportError}
+          <span class="global-transport-degraded" role="alert" title={$snapshotTransportError}>
+            ⛔ CORE LINK LOST · DATA NOT CURRENT
+          </span>
+        {/if}
+      </div>
+    {/if}
   </div>
 
   <div
@@ -628,10 +730,6 @@
           {:else if leftTab === "objects" && $activeForm}
             <ObjectList form={$activeForm} />
           {/if}
-        </div>
-      {:else}
-        <div class="solution">
-          <SolutionExplorer project={$project} design={false} />
         </div>
       {/if}
 
@@ -944,6 +1042,61 @@
   .user-btn.danger:hover {
     background: #be123c !important;
     color: #ffffff !important;
+  }
+  .global-statuses {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .global-alarm-stale {
+    padding: 3px 8px;
+    border: 2px solid #ef4444;
+    background: repeating-linear-gradient(135deg,#450a0a,#450a0a 5px,#7f1d1d 5px,#7f1d1d 10px);
+    color: #fee2e2;
+    font-size: 10px;
+    font-weight: 900;
+    letter-spacing: .04em;
+    white-space: nowrap;
+  }
+  .global-audit-degraded {
+    padding: 3px 8px;
+    border: 2px solid #f87171;
+    background: #7f1d1d;
+    color: #fff1f2;
+    font-size: 10px;
+    font-weight: 900;
+    letter-spacing: .04em;
+    white-space: nowrap;
+  }
+  .global-transport-degraded {
+    padding: 3px 8px;
+    border: 2px solid #fb923c;
+    background: #7c2d12;
+    color: #fff7ed;
+    font-size: 10px;
+    font-weight: 900;
+    letter-spacing: .04em;
+    white-space: nowrap;
+  }
+  .global-alarm-state-degraded {
+    padding: 3px 8px;
+    border: 2px solid #f59e0b;
+    background: #78350f;
+    color: #fffbeb;
+    font-size: 10px;
+    font-weight: 900;
+    letter-spacing: .04em;
+    white-space: nowrap;
+  }
+  .global-user-realm-degraded {
+    padding: 3px 8px;
+    border: 2px solid #f43f5e;
+    background: #881337;
+    color: #fff1f2;
+    font-size: 10px;
+    font-weight: 900;
+    letter-spacing: .04em;
+    white-space: nowrap;
   }
   .doc-host {
     flex: 1;

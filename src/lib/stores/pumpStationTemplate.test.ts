@@ -143,11 +143,9 @@ test("pump template rejects missing mapping, unknown devices and address collisi
 });
 
 test("entering Runtime persists a dirty generated project", async () => {
-  // The backend refuses project edits to an unauthenticated session and to a
-  // seeded account that still uses its default password, so the flow that a
-  // real engineer follows is reproduced here.
-  await api.login("admin", "admin123");
-  await api.changePassword("admin123", "a-much-longer-password");
+  const password = "test-only-bootstrap-password";
+  await api.bootstrapAdmin(password);
+  await api.login("admin", password);
 
   const templateId = installPumpStationTemplate();
   bulkInstantiateComponentTemplate(templateId, csv());
@@ -158,4 +156,3 @@ test("entering Runtime persists a dirty generated project", async () => {
   assert.equal(get(dirty), false);
   assert.equal(get(mode), "runtime");
 });
-

@@ -6,6 +6,11 @@ updates:
     schedule:
       interval: monthly
     open-pull-requests-limit: 5
+    ignore:
+      # svelte-check 4.7.x requires TypeScript 5 or 6. Remove this guard only
+      # together with a tested TS7/tsgo migration.
+      - dependency-name: typescript
+        versions: [">= 7"]
 
   - package-ecosystem: cargo
     directory: /src-tauri

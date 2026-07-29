@@ -15,6 +15,8 @@
     importProjectFromJson,
     startWindowOpen,
     log,
+    snapshot,
+    dirty,
   } from "$lib/stores/app";
   import { api } from "$lib/services/api";
   import { activate } from "$lib/utils/a11y";
@@ -32,6 +34,7 @@
   let newProjectName = $state("Nowy Projekt SCADA");
   let newProjectDesc = $state("");
   let selectedTemplate = $state<"blank" | "water_tank">("blank");
+  const canEngineer = $derived(($snapshot?.security_level ?? 0) >= 500);
 
   // Sorted and filtered recent projects
   const filteredProjects = $derived.by(() => {
@@ -102,7 +105,7 @@
   }
 
   async function handleSelectRecent(item: RecentProjectItem) {
-    if (!item) return;
+    if (!item || !canEngineer) return;
     try {
       if ($project && $project.id === item.id) {
         log(`Otwarto projekt z historii: ${item.name}`, "info");
@@ -117,15 +120,18 @@
   }
 
   async function handleCreateSubmit() {
-    if (!newProjectName.trim()) return;
+    if (!canEngineer || !newProjectName.trim()) return;
     try {
       if (selectedTemplate === "water_tank") {
-        const p = await api.loadBuiltinWaterTank();
+        const p = await api.getBuiltinWaterTank();
         const customP = { ...ensureProjectTree(p), name: newProjectName.trim(), description: newProjectDesc.trim() };
         const result = await createAndSaveNewProject(newProjectName.trim(), newProjectDesc.trim(), customP);
         if (result) {
-          await api.loadProject(result.project);
           applyLoadedProject(result.project, `Utworzono projekt na bazie szablonu Water Tank: ${newProjectName}`, result.path);
+          dirty.set(result.path === null);
+          if (result.path === null) {
+            log("Nowy projekt jest aktywny w engine, ale nie został zapisany na dysku", "warn");
+          }
         }
       } else {
         await newBlankProject(newProjectName.trim(), newProjectDesc.trim());
@@ -138,19 +144,28 @@
   }
 
   async function handleOpenProject() {
+    if (!canEngineer) return;
     await importProjectFile();
     closeWindow();
   }
 
   async function handleImportProject() {
+    if (!canEngineer) return;
     await importProjectFile();
     closeWindow();
   }
 
   async function handleLoadWaterTankDemo() {
+    if (!canEngineer) return;
     try {
-      const p = await api.loadBuiltinWaterTank();
-      project.set(ensureProjectTree(p));
+      const p = await api.getBuiltinWaterTank();
+      const saved = await api.saveProject(p);
+      applyLoadedProject(
+        ensureProjectTree(saved),
+        "Załadowano projekt demonstracyjny Stacji Pomp Wodnych",
+        null,
+      );
+      dirty.set(true);
       log("Załadowano projekt demonstracyjny Stacji Pomp Wodnych", "ok");
       closeWindow();
     } catch (e) {
@@ -195,6 +210,10 @@
   async function handleDrop(e: DragEvent) {
     e.preventDefault();
     isDraggingOver = false;
+    if (!canEngineer) {
+      log("Import projektu wymaga roli Engineer lub Administrator", "warn");
+      return;
+    }
     const file = e.dataTransfer?.files?.[0];
     if (!file) return;
     if (file.name.endsWith(".json") || file.name.endsWith(".proscada.json")) {
@@ -362,7 +381,7 @@
 
           <div class="vs-action-cards">
             <!-- Action 1: Create New Project -->
-            <button type="button" class="vs-action-card primary" onclick={() => (createModalOpen = true)}>
+            <button type="button" class="vs-action-card primary" disabled={!canEngineer} onclick={() => (createModalOpen = true)}>
               <div class="vs-card-icon">➕</div>
               <div class="vs-card-content">
                 <div class="vs-card-title">Stwórz nowy projekt</div>
@@ -374,7 +393,7 @@
             </button>
 
             <!-- Action 2: Open Existing Project -->
-            <button type="button" class="vs-action-card" onclick={handleOpenProject}>
+            <button type="button" class="vs-action-card" disabled={!canEngineer} onclick={handleOpenProject}>
               <div class="vs-card-icon">📂</div>
               <div class="vs-card-content">
                 <div class="vs-card-title">Otwórz plik projektu</div>
@@ -386,7 +405,7 @@
             </button>
 
             <!-- Action 3: Import Project Package -->
-            <button type="button" class="vs-action-card" onclick={handleImportProject}>
+            <button type="button" class="vs-action-card" disabled={!canEngineer} onclick={handleImportProject}>
               <div class="vs-card-icon">📦</div>
               <div class="vs-card-content">
                 <div class="vs-card-title">Importuj projekt</div>
@@ -398,7 +417,7 @@
             </button>
 
             <!-- Action 4: Load Built-in Demo -->
-            <button type="button" class="vs-action-card accent" onclick={handleLoadWaterTankDemo}>
+            <button type="button" class="vs-action-card accent" disabled={!canEngineer} onclick={handleLoadWaterTankDemo}>
               <div class="vs-card-icon">🏭</div>
               <div class="vs-card-content">
                 <div class="vs-card-title">Stacja Pomp Wodnych (Demo)</div>
@@ -409,6 +428,15 @@
               <div class="vs-card-arrow">➔</div>
             </button>
           </div>
+          {#if !canEngineer}
+            <button
+              type="button"
+              class="vs-btn-primary"
+              onclick={() => window.dispatchEvent(new CustomEvent("proscada:open-login"))}
+            >
+              Zaloguj jako Engineer lub Administrator
+            </button>
+          {/if}
         </div>
       </div>
 

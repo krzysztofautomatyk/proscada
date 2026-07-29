@@ -2,6 +2,21 @@ node_modules/
 dist/
 src-tauri/target/
 /.cargo-target-*/
+artifacts/
+*.spdx.json
+
+# Local configuration and signing material must never enter the repository.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.mobileprovision
+
 .DS_Store
 *.log
 .vscode/

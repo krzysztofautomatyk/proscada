@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { api } from "$lib/services/api";
   import { errorMessage } from "$lib/utils/errors";
 
   let {
@@ -11,12 +10,20 @@
     open?: boolean;
     actionName?: string;
     onclose?: () => void;
-    onsuccess?: () => void;
+    onsuccess?: (pin: string) => void | Promise<void>;
   } = $props();
 
   let pin: string = $state("");
   let errorMsg: string = $state("");
   let loading: boolean = $state(false);
+  let dialogEl = $state<HTMLDivElement | null>(null);
+
+  $effect(() => {
+    if (!open || !dialogEl) return;
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    queueMicrotask(() => dialogEl?.querySelector<HTMLElement>(".key-btn")?.focus());
+    return () => previous?.focus();
+  });
 
   function appendPinDigit(d: string) {
     if (pin.length < 8) {
@@ -36,6 +43,7 @@
   }
 
   async function handleVerify() {
+    if (loading) return;
     if (!pin.trim()) {
       errorMsg = "Wprowadź PIN autoryzacyjny";
       return;
@@ -43,14 +51,10 @@
     loading = true;
     errorMsg = "";
     try {
-      const valid = await api.verifyPin(pin.trim());
-      if (valid) {
-        pin = "";
-        onsuccess();
-        onclose();
-      } else {
-        errorMsg = "Niepoprawny PIN autoryzacyjny";
-      }
+      const submittedPin = pin.trim();
+      await onsuccess(submittedPin);
+      pin = "";
+      onclose();
     } catch (e) {
       errorMsg = errorMessage(e, "Błąd autoryzacji PIN");
     } finally {
@@ -60,10 +64,27 @@
 
   function handleKeydown(e: KeyboardEvent) {
     if (!open) return;
+    if (e.key === "Tab" && dialogEl) {
+      const focusable = Array.from(
+        dialogEl.querySelectorAll<HTMLElement>(
+          'button:not(:disabled), input:not(:disabled), [tabindex]:not([tabindex="-1"])',
+        ),
+      );
+      if (focusable.length > 0) {
+        const current = focusable.indexOf(document.activeElement as HTMLElement);
+        const next = e.shiftKey
+          ? (current <= 0 ? focusable.length - 1 : current - 1)
+          : (current < 0 || current === focusable.length - 1 ? 0 : current + 1);
+        e.preventDefault();
+        focusable[next]?.focus();
+      }
+      return;
+    }
     if (e.key === "Escape") {
       onclose();
     } else if (e.key === "Enter") {
-      handleVerify();
+      e.preventDefault();
+      void handleVerify();
     } else if (/^[0-9]$/.test(e.key)) {
       appendPinDigit(e.key);
     } else if (e.key === "Backspace") {
@@ -80,9 +101,16 @@
       type="button"
       class="backdrop-dismiss"
       aria-label="Zamknij okno autoryzacji PIN"
+      tabindex="-1"
       onclick={onclose}
     ></button>
-    <div class="modal-card" role="dialog" aria-modal="true">
+    <div
+      class="modal-card"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="pin-challenge-title"
+      bind:this={dialogEl}
+    >
       <header class="modal-header">
         <div class="title-group">
           <div class="warning-icon">
@@ -93,11 +121,16 @@
             </svg>
           </div>
           <div>
-            <h3>Wymagana Autoryzacja PIN</h3>
+            <h3 id="pin-challenge-title">Wymagana Autoryzacja PIN</h3>
             <p class="subtitle">{actionName}</p>
           </div>
         </div>
-        <button class="close-btn" onclick={onclose}>&times;</button>
+        <button
+          type="button"
+          class="close-btn"
+          aria-label="Zamknij autoryzację PIN"
+          onclick={onclose}
+        >&times;</button>
       </header>
 
       <div class="modal-body">

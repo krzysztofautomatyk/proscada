@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { WidgetDef, TagValue } from "$lib/types";
+  import { snapshot, tagMap } from "$lib/stores/app";
 
   interface Props {
     widget: WidgetDef;
@@ -12,18 +13,26 @@
 
   const cfg = $derived((widget.config ?? {}) as Record<string, unknown>);
   const str = (k: string, d = "") => String(cfg[k] ?? d);
-  const bool = (k: string, d = false) => Boolean(cfg[k] ?? d);
-
-  const simOn = $derived(bool("simEn", true));
-  const isFrozen = $derived(bool("frozen", false));
-  const isConnected = $derived(tag ? tag.quality === "good" : true);
+  const simTagId = $derived(str("simTagId"));
+  const frozenTagId = $derived(str("frozenTagId"));
+  const simTag = $derived(simTagId ? ($tagMap.get(simTagId) ?? null) : tag);
+  const frozenTag = $derived(frozenTagId ? ($tagMap.get(frozenTagId) ?? null) : null);
+  const simKnown = $derived(simTag?.quality === "good");
+  const frozenKnown = $derived(frozenTag?.quality === "good");
+  const isConnected = $derived($snapshot?.connected === true);
 </script>
 
 <div class="status-badges-wrap">
-  <span class="pill" class:g={simOn}>{simOn ? "SIM ON" : "SIM OFF"}</span>
-  <span class="pill" class:y={isFrozen}>{isFrozen ? "FROZEN" : "LIVE"}</span>
+  <span class="pill" class:g={simKnown && simTag?.bool_value} class:r={!simKnown}>
+    {simKnown ? (simTag?.bool_value ? "SIM ON" : "SIM OFF") : "SIM NO DATA"}
+  </span>
+  {#if frozenTagId}
+    <span class="pill" class:y={frozenKnown && frozenTag?.bool_value} class:r={!frozenKnown}>
+      {frozenKnown ? (frozenTag?.bool_value ? "FROZEN" : "LIVE") : "STATE NO DATA"}
+    </span>
+  {/if}
   <span class="pill" class:g={isConnected} class:r={!isConnected}>
-    {isConnected ? "MODBUS OK" : "OFFLINE"}
+    {isConnected ? "PLC ONLINE" : "PLC OFFLINE"}
   </span>
 </div>
 

@@ -1,7 +1,8 @@
 <script lang="ts">
   import type { WidgetRendererProps } from "$lib/components/widgets/shared/types";
-  import { configOf, invokeWrite, readBoolean, readNumber, readString } from "$lib/components/widgets/shared/config";
+  import { configOf, invokeWrite, readBoolean, readNumber, readString, writeResultLabel } from "$lib/components/widgets/shared/config";
   import WidgetCard from "$lib/components/widgets/shared/WidgetCard.svelte";
+  import { project } from "$lib/stores/app";
 
   let { widget, tag = null, design = false, onWrite }: WidgetRendererProps = $props();
 
@@ -24,8 +25,11 @@
   );
   const qualityLocked = $derived(disabledWhenBad && tag?.quality !== "good");
   const momentaryUnsafe = $derived(mode === "momentary" && !watchdogConfigured);
+  const pinMomentaryUnsafe = $derived(
+    mode === "momentary" && $project?.session_config?.pin_challenge_on_write === true,
+  );
   const writeUnavailable = $derived(!widget.tag_id || !onWrite);
-  const disabled = $derived(design || !widget.tag_id || !onWrite || Boolean(configError) || qualityLocked || momentaryUnsafe);
+  const disabled = $derived(design || !widget.tag_id || !onWrite || Boolean(configError) || qualityLocked || momentaryUnsafe || pinMomentaryUnsafe);
   let holding = $state(false);
   let status = $state("");
 
@@ -33,13 +37,18 @@
     return readBoolean(config, "confirm", false) && ["set", "reset", "toggle", "value"].includes(mode);
   }
 
-  function send(value: number, needsConfirmation = true) {
+  async function send(value: number, needsConfirmation = true) {
     if (disabled) return;
     if (needsConfirmation && shouldConfirm()) {
       const message = readString(config, "confirmText", `Send command to ${widget.tag_id}?`);
       if (!window.confirm(message)) return;
     }
-    if (invokeWrite(widget, design, onWrite, value)) status = "COMMAND SENT";
+    status = "COMMAND REQUESTED";
+    try {
+      status = writeResultLabel(await invokeWrite(widget, design, onWrite, value), "COMMAND");
+    } catch (error) {
+      status = `COMMAND REJECTED: ${error instanceof Error ? error.message : String(error)}`;
+    }
   }
 
   function commandValue() {
@@ -53,19 +62,24 @@
   }
 
   function activate() {
-    if (mode !== "momentary") send(commandValue());
+    if (mode !== "momentary") void send(commandValue());
   }
 
   function press() {
     if (mode !== "momentary" || disabled || holding) return;
     holding = true;
-    send(1, false);
+    void send(1, false);
   }
 
-  function release() {
+  async function release() {
     if (mode !== "momentary" || !holding) return;
     holding = false;
-    if (invokeWrite(widget, design, onWrite, 0)) status = "COMMAND SENT";
+    status = "COMMAND RELEASE REQUESTED";
+    try {
+      status = writeResultLabel(await invokeWrite(widget, design, onWrite, 0), "COMMAND");
+    } catch (error) {
+      status = `COMMAND RELEASE REJECTED: ${error instanceof Error ? error.message : String(error)}`;
+    }
   }
 </script>
 
@@ -79,9 +93,9 @@
       {disabled}
       onclick={activate}
       onpointerdown={press}
-      onpointerup={release}
-      onpointercancel={release}
-      onblur={release}
+      onpointerup={() => void release()}
+      onpointercancel={() => void release()}
+      onblur={() => void release()}
       onkeydown={(event) => {
         if (mode === "momentary" && (event.key === " " || event.key === "Enter")) {
           event.preventDefault();
@@ -91,12 +105,13 @@
       onkeyup={(event) => {
         if (mode === "momentary" && (event.key === " " || event.key === "Enter")) {
           event.preventDefault();
-          release();
+          void release();
         }
       }}
     >{holding ? pendingLabel : label}</button>
     {#if configError}<p class="error">CONFIG: {configError}</p>
     {:else if momentaryUnsafe}<p class="error">MOMENTARY DISABLED: PLC watchdog required</p>
+    {:else if pinMomentaryUnsafe}<p class="error">MOMENTARY DISABLED: interactive PIN cannot guarantee release</p>
     {:else if qualityLocked}<p class="warning">READ-ONLY: quality is not GOOD</p>
     {:else if writeUnavailable}<p class="warning">TAG WRITE UNAVAILABLE</p>
     {:else if status}<p class="sent">{status}</p>{/if}

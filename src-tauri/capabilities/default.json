@@ -14,12 +14,20 @@
     {
       "identifier": "fs:scope",
       "allow": [
-        { "path": "$DOCUMENT/**" },
-        { "path": "$DESKTOP/**" },
-        { "path": "$DOWNLOAD/**" },
-        { "path": "$APPDATA/**" }
+        { "path": "$DOCUMENT/**/*.json" },
+        { "path": "$DOCUMENT/**/*.pscctrl" },
+        { "path": "$DOCUMENT/**/*.csv" },
+        { "path": "$DESKTOP/**/*.json" },
+        { "path": "$DESKTOP/**/*.pscctrl" },
+        { "path": "$DESKTOP/**/*.csv" },
+        { "path": "$DOWNLOAD/**/*.json" },
+        { "path": "$DOWNLOAD/**/*.pscctrl" },
+        { "path": "$DOWNLOAD/**/*.csv" }
       ],
       "deny": [
+        { "path": "$APPDATA/audit.jsonl" },
+        { "path": "$APPDATA/alarm-state.json" },
+        { "path": "$APPDATA/user-realm.json" },
         { "path": "$HOME/.ssh/**" },
         { "path": "$HOME/.aws/**" },
         { "path": "$HOME/.config/**" }

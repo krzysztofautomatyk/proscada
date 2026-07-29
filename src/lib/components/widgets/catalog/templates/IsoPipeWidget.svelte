@@ -8,11 +8,12 @@
     onWrite?: (tagId: string, value: number) => void;
   }
 
-  let { widget, tag = null }: Props = $props();
+  let { widget, tag = null, design = false }: Props = $props();
 
   const cfg = $derived((widget.config ?? {}) as Record<string, unknown>);
   const str = (k: string, d = "") => String(cfg[k] ?? d);
-  const active = $derived(tag?.bool_value ?? true);
+  const known = $derived(design || tag?.quality === "good");
+  const active = $derived(known && (tag?.bool_value ?? false));
 </script>
 
 <div class="iso-pipe-wrap">
@@ -33,6 +34,7 @@
     />
   </svg>
   <div class="pipe-label">{str("label", "Inlet Pipe")}</div>
+  {#if !known}<div class="no-data">NO DATA</div>{/if}
 </div>
 
 <style>
@@ -66,6 +68,14 @@
   }
   .stream.flowing {
     animation: pipeFlow 0.5s linear infinite;
+  }
+  .no-data {
+    position: absolute;
+    top: 4px;
+    right: 6px;
+    color: #991b1b;
+    font-size: 9px;
+    font-weight: 900;
   }
   @keyframes pipeFlow {
     to {

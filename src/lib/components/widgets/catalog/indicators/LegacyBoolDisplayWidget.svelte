@@ -8,13 +8,14 @@
     onWrite?: (tagId: string, value: number) => void;
   }
 
-  let { widget, tag = null }: Props = $props();
+  let { widget, tag = null, design = false }: Props = $props();
 
   const cfg = $derived((widget.config ?? {}) as Record<string, unknown>);
   const str = (k: string, d = "") => String(cfg[k] ?? d);
   const num = (k: string, d = 0) => Number(cfg[k] ?? d);
 
-  const isTrue = $derived(tag?.bool_value ?? false);
+  const known = $derived(design || tag?.quality === "good");
+  const isTrue = $derived(known && (tag?.bool_value ?? false));
   const label = $derived(str("label", "BOOL STATUS"));
   const trueLabel = $derived(str("trueLabel", "TRUE"));
   const falseLabel = $derived(str("falseLabel", "FALSE"));
@@ -37,17 +38,17 @@
   style:border-radius="{borderRadius}px"
   style:font-family={fontFamily}
 >
-  <span class="bool-dot" style:background={isTrue ? trueColor : falseColor}></span>
+  <span class="bool-dot" style:background={known ? (isTrue ? trueColor : falseColor) : "#64748b"}></span>
   <span class="bool-title" style:color={textColor} style:font-size="{fontSize}px" style:font-weight={fontWeight}>
     {label}
   </span>
   <span
     class="bool-badge"
-    style:background={isTrue ? trueColor : "#f3f4f6"}
-    style:color={isTrue ? "#ffffff" : "#4b5563"}
+    style:background={known ? (isTrue ? trueColor : "#f3f4f6") : "#e2e8f0"}
+    style:color={known ? (isTrue ? "#ffffff" : "#4b5563") : "#334155"}
     style:font-size="{Math.max(8, fontSize - 2)}px"
   >
-    {isTrue ? trueLabel : falseLabel}
+    {known ? (isTrue ? trueLabel : falseLabel) : "NO DATA"}
   </span>
 </div>
 

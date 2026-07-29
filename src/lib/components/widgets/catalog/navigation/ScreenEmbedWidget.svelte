@@ -2,12 +2,13 @@
   import type { WidgetDef, TagValue, FormDef } from "$lib/types";
   import { project } from "$lib/stores/app";
   import WidgetView from "../../WidgetView.svelte";
+  import type { ProcessWrite } from "$lib/components/widgets/shared/types";
 
   interface Props {
     widget: WidgetDef;
     tagMap: Map<string, TagValue>;
     design?: boolean;
-    onWrite?: (tagId: string, value: number) => void;
+    onWrite?: ProcessWrite;
     ancestorFormIds?: Set<string>;
   }
 
@@ -63,11 +64,12 @@
     return resolved ? tagMap.get(resolved) ?? null : null;
   }
 
-  function innerOnWrite(rawTagId: string, value: number) {
+  async function innerOnWrite(rawTagId: string, value: number) {
     const resolved = resolveInnerTagId(rawTagId);
     if (resolved && onWrite) {
-      onWrite(resolved, value);
+      return onWrite(resolved, value);
     }
+    throw new Error("Embedded screen write target is unavailable");
   }
 
   const nativeW = $derived(targetForm?.width ?? 800);

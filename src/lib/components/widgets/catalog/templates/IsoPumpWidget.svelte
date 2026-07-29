@@ -8,14 +8,15 @@
     onWrite?: (tagId: string, value: number) => void;
   }
 
-  let { widget, tag = null }: Props = $props();
+  let { widget, tag = null, design = false }: Props = $props();
 
   const cfg = $derived((widget.config ?? {}) as Record<string, unknown>);
   const str = (k: string, d = "") => String(cfg[k] ?? d);
   const pumpName = $derived(str("pumpName", "PUMP 1"));
 
-  const isRunning = $derived(tag?.bool_value ?? false);
-  const isFault = $derived(Boolean(cfg.fault ?? false));
+  const known = $derived(design || tag?.quality === "good");
+  const isRunning = $derived(known && (tag?.bool_value ?? false));
+  const isFault = $derived(known && Boolean(cfg.fault ?? false));
 </script>
 
 <div class="iso-pump-card" class:running={isRunning} class:fault={isFault}>
@@ -23,7 +24,7 @@
     <span class="dot" class:run={isRunning} class:flt={isFault}></span>
     <span class="pump-title">{pumpName}</span>
     <span class="badge" class:green={isRunning} class:red={isFault}>
-      {isFault ? "FAULT" : isRunning ? "RUNNING" : "STOPPED"}
+      {known ? (isFault ? "FAULT" : isRunning ? "RUNNING" : "STOPPED") : "NO DATA"}
     </span>
   </div>
 

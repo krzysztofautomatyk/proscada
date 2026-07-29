@@ -390,33 +390,44 @@ export function isAncestor(
 }
 
 /**
- * Validate imported JSON shape loosely and normalize it for the Designer.
- *
- * The stored `content_hash` describes the project exactly as the Rust core last
- * serialized it. Normalization legitimately changes the content (missing system
- * folders, schema migration), so the hash is cleared rather than carried
- * forward: keeping a hash that no longer matches would make the backend reject
- * every imported file, and silently ignoring the mismatch would make the check
- * meaningless. The backend recomputes the hash when it adopts the project.
+ * Validate only the minimum envelope needed before handing an imported project
+ * to the engine. This function must not normalize, migrate or otherwise mutate
+ * the payload: `content_hash` authenticates the incoming representation and the
+ * engine must see it before any UI transformation.
  */
-export function normalizeImportedProject(raw: unknown): ScadaProject {
+export function validateImportedProjectEnvelope(raw: unknown): ScadaProject {
   if (!raw || typeof raw !== "object") throw new Error("Invalid project file");
   const o = raw as Record<string, unknown>;
   if (typeof o.id !== "string" || typeof o.name !== "string") {
     throw new Error("Project must have id and name");
   }
   if (!Array.isArray(o.forms)) throw new Error("Project must have forms[]");
-  const p = o as unknown as ScadaProject;
-  p.devices = Array.isArray(p.devices) ? p.devices : [];
-  p.tags = Array.isArray(p.tags) ? p.tags : [];
-  p.alarms = Array.isArray(p.alarms) ? p.alarms : [];
-  p.alarm_groups = Array.isArray(p.alarm_groups) ? p.alarm_groups : [];
-  p.component_templates = Array.isArray(p.component_templates) ? p.component_templates : [];
-  p.design_system = normalizeProjectDesignSystem(p.design_system);
-  p.tree = Array.isArray(p.tree) ? p.tree : [];
-  p.description = p.description ?? "";
-  p.content_hash = "";
-  p.schema_version = Number(p.schema_version) || CURRENT_SCHEMA;
+  return o as unknown as ScadaProject;
+}
+
+/**
+ * Normalize a project only after the engine has accepted and verified it.
+ * Preserve `content_hash`; clearing an incoming hash would turn integrity
+ * verification into an opt-out controlled by the file being imported.
+ */
+export function normalizeImportedProject(raw: unknown): ScadaProject {
+  const source = validateImportedProjectEnvelope(raw);
+  const p: ScadaProject = {
+    ...source,
+    devices: Array.isArray(source.devices) ? source.devices : [],
+    tags: Array.isArray(source.tags) ? source.tags : [],
+    forms: Array.isArray(source.forms) ? source.forms : [],
+    alarms: Array.isArray(source.alarms) ? source.alarms : [],
+    alarm_groups: Array.isArray(source.alarm_groups) ? source.alarm_groups : [],
+    component_templates: Array.isArray(source.component_templates)
+      ? source.component_templates
+      : [],
+    design_system: normalizeProjectDesignSystem(source.design_system),
+    tree: Array.isArray(source.tree) ? source.tree : [],
+    description: source.description ?? "",
+    content_hash: typeof source.content_hash === "string" ? source.content_hash : "",
+    schema_version: Number(source.schema_version) || CURRENT_SCHEMA,
+  };
   return ensureProjectTree(p);
 }
 

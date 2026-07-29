@@ -7,6 +7,7 @@
     updateDeviceInProject,
     deleteDeviceFromProject,
     closeDeviceModal,
+    snapshot,
   } from "$lib/stores/app";
   import { api } from "$lib/services/api";
   import { uid } from "$lib/utils/projectTree";
@@ -21,6 +22,7 @@
   const isModalOpen = $derived(externalOpen ?? $deviceModalState.open);
   const modalMode = $derived($deviceModalState.mode ?? "add");
   const editDeviceId = $derived($deviceModalState.deviceId);
+  const canEngineer = $derived(($snapshot?.security_level ?? 0) >= 500);
 
   let activeTab = $state<"params" | "queries">("params");
 
@@ -81,7 +83,9 @@
       } else {
         resetForm();
       }
-      activeTab = $deviceModalState.initialTab ?? "params";
+      // Runtime currently polls the tag map directly; custom query scheduling
+      // is intentionally unavailable until the engine implements it.
+      activeTab = "params";
       editingQueryId = null;
       testStatus = "idle";
       testMessage = "";
@@ -131,14 +135,18 @@
   }
 
   async function handleTestConnection() {
-    if (!host.trim()) {
-      errorMessage = "Wymagany jest adres IP / host.";
+    if (!canEngineer) {
+      errorMessage = "Test połączenia wymaga roli Engineer lub Administrator.";
+      return;
+    }
+    if (modalMode !== "edit" || !originalId) {
+      errorMessage = "Najpierw zapisz urządzenie w projekcie, a następnie uruchom test.";
       return;
     }
     testStatus = "testing";
     testMessage = "Testowanie nawiązania połączenia TCP...";
     try {
-      const res = await api.testDevice(host.trim(), Number(port), Number(unit_id), Number(timeout_ms));
+      const res = await api.testDevice(originalId);
       if (res.ok) {
         testStatus = "success";
         testMessage = res.message || "Połączenie z urządzeniem osiągnięte!";
@@ -251,6 +259,16 @@
         return;
       }
     }
+    if (
+      enabled &&
+      ($project?.devices ?? []).some(
+        (device) => device.enabled && device.id !== originalId,
+      )
+    ) {
+      errorMessage =
+        "Runtime obsługuje jedno aktywne urządzenie. Najpierw wyłącz obecnie aktywne urządzenie.";
+      return;
+    }
 
     const device: DeviceConfig = {
       id: trimmedId,
@@ -261,7 +279,6 @@
       poll_ms: Number(poll_ms),
       timeout_ms: Number(timeout_ms),
       enabled,
-      queries,
     };
 
     if (modalMode === "edit" && originalId) {
@@ -305,8 +322,13 @@
       <button type="button" class="tab-btn" class:active={activeTab === "params"} onclick={() => (activeTab = "params")}>
         ⚙️ Połączenie & Parametry (TCP Settings)
       </button>
-      <button type="button" class="tab-btn" class:active={activeTab === "queries"} onclick={() => (activeTab = "queries")}>
-        📡 Definicje Zapytań Modbus ({queries.length})
+      <button
+        type="button"
+        class="tab-btn"
+        disabled
+        title="Niestandardowy scheduler zapytań nie jest zaimplementowany w engine"
+      >
+        📡 Definicje Zapytań Modbus — UNSUPPORTED
       </button>
     </div>
 
@@ -384,11 +406,12 @@
         <!-- Test Connection Box -->
         <div class="test-box">
           <div class="test-header">
-            <span>🔍 Test Połączenia Sieciowego Modbus TCP</span>
-            <button type="button" class="btn-test" disabled={testStatus === "testing"} onclick={handleTestConnection}>
-              {testStatus === "testing" ? "Łączenie..." : "🔌 Testuj Połączenie"}
+            <span>🔍 Test zapisanego urządzenia z zaakceptowanego projektu</span>
+            <button type="button" class="btn-test" disabled={!canEngineer || modalMode !== "edit" || testStatus === "testing"} onclick={handleTestConnection}>
+              {testStatus === "testing" ? "Łączenie..." : "🔌 Testuj zapisane urządzenie"}
             </button>
           </div>
+          <small>Zmiany w formularzu nie są używane przez test, dopóki nie zapiszesz projektu.</small>
           {#if testStatus !== "idle"}
             <div class="test-result {testStatus}">
               {#if testStatus === "testing"}

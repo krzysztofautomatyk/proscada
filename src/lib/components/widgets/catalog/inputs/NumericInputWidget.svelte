@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { WidgetRendererProps } from "$lib/components/widgets/shared/types";
-  import { clamp, configOf, invokeWrite, readNumber, readString, tagNumber } from "$lib/components/widgets/shared/config";
+  import { clamp, configOf, invokeWrite, readNumber, readString, tagNumber, writeResultLabel } from "$lib/components/widgets/shared/config";
   import WidgetCard from "$lib/components/widgets/shared/WidgetCard.svelte";
 
   import { project } from "$lib/stores/app";
@@ -58,7 +58,7 @@
     draft = next.toFixed(decimals);
   });
 
-  function update(raw: string, write: boolean) {
+  async function update(raw: string, write: boolean) {
     const next = Number(raw);
     if (!Number.isFinite(next)) {
       status = "Enter a finite numeric value";
@@ -68,12 +68,19 @@
     value = bounded;
     draft = bounded.toFixed(decimals);
     status = bounded !== next ? `Limited to ${bounded.toFixed(decimals)}` : "";
-    if (write && !configError && invokeWrite(widget, design, onWrite, bounded)) status = "WRITE REQUESTED";
+    if (write && !configError) {
+      status = "WRITE REQUESTED";
+      try {
+        status = writeResultLabel(await invokeWrite(widget, design, onWrite, bounded));
+      } catch (error) {
+        status = `WRITE REJECTED: ${error instanceof Error ? error.message : String(error)}`;
+      }
+    }
   }
 
   function sliderInput(raw: string) {
     draft = raw;
-    update(raw, commitMode === "change");
+    void update(raw, commitMode === "change");
   }
 </script>
 
@@ -91,13 +98,13 @@
         disabled={readOnly}
         oninput={(event) => sliderInput(event.currentTarget.value)}
         onchange={(event) => {
-          if (commitMode === "release") update(event.currentTarget.value, true);
+          if (commitMode === "release") void update(event.currentTarget.value, true);
         }}
       />
     {:else}
       <div class:field-only={variant === "field"} class="entry">
         {#if variant === "stepper"}
-          <button type="button" aria-label={`Decrease ${title}`} disabled={readOnly} onclick={() => update(String(value - step), true)}>−</button>
+          <button type="button" aria-label={`Decrease ${title}`} disabled={readOnly} onclick={() => void update(String(value - step), true)}>−</button>
         {/if}
         <input
           aria-label={title}
@@ -108,13 +115,13 @@
           value={draft}
           disabled={readOnly}
           oninput={(event) => (draft = event.currentTarget.value)}
-          onchange={(event) => update(event.currentTarget.value, true)}
+          onchange={(event) => void update(event.currentTarget.value, true)}
           onkeydown={(event) => {
-            if (event.key === "Enter") update(event.currentTarget.value, true);
+            if (event.key === "Enter") void update(event.currentTarget.value, true);
           }}
         />
         {#if variant === "stepper"}
-          <button type="button" aria-label={`Increase ${title}`} disabled={readOnly} onclick={() => update(String(value + step), true)}>+</button>
+          <button type="button" aria-label={`Increase ${title}`} disabled={readOnly} onclick={() => void update(String(value + step), true)}>+</button>
         {/if}
       </div>
     {/if}

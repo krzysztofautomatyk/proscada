@@ -18,5 +18,10 @@ Job musi nazywać się `copilot-setup-steps` i trafić na domyślną gałąź.
 
 `ci.yml` rozdziela frontend/repository contracts od Rust core. Oba joby są offline względem urządzeń.
 
-Bundlowanie Windows MSI wykonuj na zaufanym runnerze Windows po przejściu wspólnych walidacji.
+CI dodatkowo sprawdza npm/Rust SCA i buduje bez instalatora binarny smoke test na
+Linux, Windows i macOS. `release.yml` tworzy niepodpisane kandydaty desktopowe,
+SPDX JSON SBOM, sumy SHA-256 i provenance dla tagów `v*`.
 
+Brak sekretów oznacza brak organizacyjnego code signing. Podpisanie finalnego
+MSI/EXE, aplikacji macOS lub pakietu Linux wykonuj dopiero na zaufanym runnerze z
+kluczem przechowywanym poza repozytorium.

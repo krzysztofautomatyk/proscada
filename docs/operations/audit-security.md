@@ -5,7 +5,7 @@
 Log jest append-only i łączony hashami SHA-256. Rejestrowane są m.in.:
 
 - wczytanie projektu i kasowanie sesji;
-- logowanie udane i nieudane, zmiana hasła, odrzucony PIN;
+- logowanie udane i nieudane, bootstrap i zmiana hasła;
 - zmiana trybu;
 - start pollingu;
 - zapis taga oraz **nieudana próba zapisu**;
@@ -21,13 +21,14 @@ starcie, więc przetrwa restart. Okno w pamięci jest ograniczone; przycięcie p
 kotwicę łańcucha zamiast go zrywać, dlatego `verify_audit` nie zaczyna fałszywie
 raportować naruszenia po długiej pracy.
 
-Komenda `get_audit_status` zwraca ścieżkę pliku, informację czy zapis się powiódł oraz
-ostatni błąd utrwalania. Nieudany zapis jest raportowany, nie połykany.
+Snapshot i `get_audit_status` zwracają stan trwałości oraz ostatni błąd, ale nie
+ujawniają webview lokalnej ścieżki sinka. Po awarii trwałości stan jest sticky:
+chronione mutacje i zapisy procesu są blokowane do bezpiecznego odtworzenia.
 
 ## Weryfikacja
 
-Łańcuch jest sprawdzany na żądanie. Naruszenie integralności musi być traktowane jako
-błąd operacyjny.
+Istniejący plik jest weryfikowany przed odtworzeniem. Naruszenie integralności lub
+brak trwałego sinka daje globalny komunikat `AUDIT DEGRADED · WRITES BLOCKED`.
 
 ## Role
 
@@ -42,4 +43,3 @@ przechowywane jako Argon2id z losową solą per sekret.
 ## Eksport
 
 Eksport audytu powinien podlegać polityce organizacji i uprawnieniu administracyjnemu.
-

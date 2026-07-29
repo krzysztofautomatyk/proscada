@@ -15,7 +15,7 @@ npm run validate:widgets
 npm run validate:docs
 npm run validate:ai
 npm run validate:yaml
-npm run test:pump-template
+npm test
 npm run build
 cargo fmt --all --manifest-path src-tauri/Cargo.toml -- --check
 cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings

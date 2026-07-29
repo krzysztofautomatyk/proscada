@@ -49,6 +49,7 @@ Dokumentacja jest celowo podzielona na małe pliki tematyczne. Ten plik jest jed
 - [Typy danych i kolejność słów](operations/data-types.md)
 - [Runtime i jakość danych](operations/runtime-quality.md)
 - [Audyt i uprawnienia](operations/audit-security.md)
+- [Trwałość i odtwarzanie](operations/persistence-recovery.md)
 - [Rozwiązywanie problemów](operations/troubleshooting.md)
 - [Format projektu](reference/project-files.md)
 - [Skróty klawiaturowe](reference/keyboard.md)

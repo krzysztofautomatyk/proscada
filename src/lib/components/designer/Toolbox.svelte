@@ -190,8 +190,8 @@
             onpointerdown={(e) => onPointerDown(e, item.type)}
             onpointerup={onPointerUp}
             title={`${item.canonicalId} · ${item.description}`}
-            role="button"
-            tabindex="0"
+            role="group"
+            aria-label={item.label}
           >
             <span class="icon">{item.icon}</span>
             <span class="item-label">{item.label}</span>
@@ -271,8 +271,8 @@
             onpointerdown={(e) => onPointerDown(e, item.type)}
             onpointerup={onPointerUp}
             title={`${item.canonicalId} · ${item.description}`}
-            role="button"
-            tabindex="0"
+            role="group"
+            aria-label={item.label}
           >
             <span class="icon">{item.icon}</span>
             <span class="item-label">{item.label}</span>

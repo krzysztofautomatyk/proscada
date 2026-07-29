@@ -37,7 +37,7 @@ pub enum ModbusTable {
     System,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum BitWriteMode {
     #[default]
@@ -401,6 +401,7 @@ fn default_auto_logout_minutes() -> u32 {
     15
 }
 
+#[cfg(test)]
 pub fn hash_password(password: &str, salt: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(salt.as_bytes());
@@ -439,39 +440,34 @@ pub struct ScadaProject {
 }
 
 impl ScadaProject {
-    pub fn ensure_default_users(&mut self) {
-        if self.users.is_empty() {
-            let salt = LEGACY_SALT;
-            self.users.push(UserAccount {
-                id: "usr_admin".into(),
-                username: "admin".into(),
-                display_name: "Administrator".into(),
-                password_hash: credentials::hash_secret("admin123")
-                    .unwrap_or_else(|_| hash_password("admin123", salt)),
-                salt: salt.into(),
-                pin_hash: Some(
-                    credentials::hash_secret("1234")
-                        .unwrap_or_else(|_| hash_password("1234", salt)),
-                ),
-                security_level: 1000,
-                enabled: true,
-                password_change_required: true,
-            });
-            self.users.push(UserAccount {
-                id: "usr_operator".into(),
-                username: "operator".into(),
-                display_name: "Operator Zmianowy".into(),
-                password_hash: credentials::hash_secret("operator123")
-                    .unwrap_or_else(|_| hash_password("operator123", salt)),
-                salt: salt.into(),
-                pin_hash: Some(
-                    credentials::hash_secret("1111")
-                        .unwrap_or_else(|_| hash_password("1111", salt)),
-                ),
-                security_level: 100,
-                enabled: true,
-                password_change_required: true,
-            });
+    /// Migrate projects created with the public demonstration credentials.
+    ///
+    /// Old files did not always carry `password_change_required`, and some
+    /// shipped factory PINs. Detect the known secrets using the stored hash
+    /// format, force first-use password replacement, and remove those PINs.
+    pub fn harden_seeded_accounts(&mut self) {
+        for user in &mut self.users {
+            let default_password = match user.username.to_ascii_lowercase().as_str() {
+                "admin" => Some("admin123"),
+                "operator" => Some("operator123"),
+                _ => None,
+            };
+            if default_password.is_some_and(|secret| {
+                credentials::verify_secret(secret, &user.password_hash, &user.salt).is_accepted()
+            }) {
+                user.password_change_required = true;
+            }
+
+            let factory_pin = match user.username.to_ascii_lowercase().as_str() {
+                "admin" => Some("1234"),
+                "operator" => Some("1111"),
+                _ => None,
+            };
+            if let (Some(secret), Some(pin_hash)) = (factory_pin, user.pin_hash.as_ref()) {
+                if credentials::verify_secret(secret, pin_hash, &user.salt).is_accepted() {
+                    user.pin_hash = None;
+                }
+            }
         }
     }
 
@@ -480,19 +476,86 @@ impl ScadaProject {
     /// Every rule here exists because the alternative would be a silently wrong
     /// process value or an unenforceable write gate.
     pub fn validate(&self) -> Result<(), String> {
-        let device_ids: std::collections::HashSet<&str> =
-            self.devices.iter().map(|d| d.id.as_str()).collect();
+        use std::collections::HashSet;
+
+        if self.schema_version != SCHEMA_VERSION {
+            return Err(format!(
+                "Unsupported schema_version {}; expected {}",
+                self.schema_version, SCHEMA_VERSION
+            ));
+        }
+        if self.id.trim().is_empty() || self.name.trim().is_empty() {
+            return Err("Project id and name must not be empty".into());
+        }
+        if self.session_config.auto_logout_minutes > 24 * 60 {
+            return Err("Session auto-logout must be between 0 and 1440 minutes".into());
+        }
+        if self.devices.iter().filter(|device| device.enabled).count() > 1 {
+            return Err(
+                "Current runtime supports exactly one active device; disable additional devices"
+                    .into(),
+            );
+        }
+
+        let mut device_ids = HashSet::new();
+        for device in &self.devices {
+            if device.id.trim().is_empty() || !device_ids.insert(device.id.as_str()) {
+                return Err(format!("Duplicate or empty device id: {}", device.id));
+            }
+            if device.host.trim().is_empty() {
+                return Err(format!("Device {} has an empty host", device.id));
+            }
+            if device.port == 0 {
+                return Err(format!("Device {} has invalid port 0", device.id));
+            }
+            if !(100..=600_000).contains(&device.poll_ms) {
+                return Err(format!("Device {} poll_ms must be 100..=600000", device.id));
+            }
+            if !(50..=60_000).contains(&device.timeout_ms) {
+                return Err(format!(
+                    "Device {} timeout_ms must be 50..=60000",
+                    device.id
+                ));
+            }
+            if !device.queries.is_empty() {
+                return Err(format!(
+                    "Device {} defines queries, but the current runtime does not support query schedules",
+                    device.id
+                ));
+            }
+            let mut query_ids = HashSet::new();
+            for query in &device.queries {
+                if query.id.trim().is_empty() || !query_ids.insert(query.id.as_str()) {
+                    return Err(format!(
+                        "Device {} has a duplicate or empty query id: {}",
+                        device.id, query.id
+                    ));
+                }
+                if query.count == 0 {
+                    return Err(format!("Query {} has a zero register count", query.id));
+                }
+                if let Some(poll_ms) = query.poll_ms {
+                    if !(100..=600_000).contains(&poll_ms) {
+                        return Err(format!("Query {} poll_ms must be 100..=600000", query.id));
+                    }
+                }
+            }
+        }
         let mut seen_tag_ids = std::collections::HashSet::new();
 
         for tag in &self.tags {
-            if !seen_tag_ids.insert(tag.id.as_str()) {
-                return Err(format!("Duplicate tag id: {}", tag.id));
+            if tag.id.trim().is_empty() || !seen_tag_ids.insert(tag.id.as_str()) {
+                return Err(format!("Duplicate or empty tag id: {}", tag.id));
             }
-            if tag.binding.table != ModbusTable::Memory
-                && tag.binding.table != ModbusTable::System
-                && tag.device_id != "SYS_INTERNAL"
-                && !device_ids.contains(tag.device_id.as_str())
-            {
+            let is_internal =
+                matches!(tag.binding.table, ModbusTable::Memory | ModbusTable::System);
+            if is_internal && tag.device_id != "SYS_INTERNAL" {
+                return Err(format!(
+                    "Internal tag {} must use device SYS_INTERNAL",
+                    tag.id
+                ));
+            }
+            if !is_internal && !device_ids.contains(tag.device_id.as_str()) {
                 return Err(format!(
                     "Tag {} references unknown device {}",
                     tag.id, tag.device_id
@@ -504,10 +567,43 @@ impl ScadaProject {
             if !tag.offset.is_finite() {
                 return Err(format!("Tag {} has a non-finite offset", tag.id));
             }
+            if tag.binding.min_security_level > 1000 {
+                return Err(format!(
+                    "Tag {} min_security_level must be 0..=1000",
+                    tag.id
+                ));
+            }
 
             let binding = &tag.binding;
             match binding.table {
-                ModbusTable::Memory | ModbusTable::System => continue,
+                ModbusTable::Memory | ModbusTable::System => {
+                    if tag.data_type == TagDataType::String {
+                        return Err(format!(
+                            "Internal tag {} uses unsupported String data type",
+                            tag.id
+                        ));
+                    }
+                    if binding.table == ModbusTable::System && binding.writable {
+                        return Err(format!("System tag {} must be read-only", tag.id));
+                    }
+                    if binding.bit.is_some() {
+                        return Err(format!(
+                            "Internal tag {} must not define a Modbus register bit",
+                            tag.id
+                        ));
+                    }
+                    if binding.table == ModbusTable::System {
+                        validate_system_tag(tag)?;
+                    }
+                    if let Some(initial) = tag.initial_value.as_deref() {
+                        let parsed = parse_initial_value(tag, initial)?;
+                        let scaled = (parsed - tag.offset) / tag.scale;
+                        crate::modbus::codec::encode(tag.data_type, tag.binding.word_order, scaled)
+                            .map_err(|error| {
+                                format!("Tag {} initial_value is invalid: {error}", tag.id)
+                            })?;
+                    }
+                }
                 ModbusTable::Coil | ModbusTable::Discrete => {
                     if binding.bit.is_some() {
                         return Err(format!(
@@ -533,6 +629,15 @@ impl ScadaProject {
                                 tag.id
                             ));
                         }
+                        if binding.writable
+                            && binding.bit_write_mode == BitWriteMode::ReadModifyWrite
+                            && !binding.single_writer
+                        {
+                            return Err(format!(
+                                "Tag {} uses read-modify-write without single_writer=true",
+                                tag.id
+                            ));
+                        }
                     }
                     let Some(count) = tag.data_type.register_count() else {
                         return Err(format!(
@@ -550,24 +655,223 @@ impl ScadaProject {
             }
 
             if binding.writable
-                && matches!(binding.table, ModbusTable::Input | ModbusTable::Discrete)
+                && matches!(
+                    binding.table,
+                    ModbusTable::Input | ModbusTable::Discrete | ModbusTable::System
+                )
             {
                 return Err(format!(
-                    "Tag {} is marked writable but input registers and discrete inputs are read-only",
+                    "Tag {} is marked writable but its table is read-only",
                     tag.id
                 ));
             }
         }
 
-        let tag_ids: std::collections::HashSet<&str> =
-            self.tags.iter().map(|t| t.id.as_str()).collect();
+        let tag_ids: HashSet<&str> = self.tags.iter().map(|t| t.id.as_str()).collect();
+        let mut alarm_ids = HashSet::new();
         for alarm in &self.alarms {
+            if alarm.id.trim().is_empty() || !alarm_ids.insert(alarm.id.as_str()) {
+                return Err(format!("Duplicate or empty alarm id: {}", alarm.id));
+            }
             if !tag_ids.contains(alarm.tag_id.as_str()) {
                 return Err(format!(
                     "Alarm {} references unknown tag {}",
                     alarm.id, alarm.tag_id
                 ));
             }
+            let source = self
+                .tags
+                .iter()
+                .find(|tag| tag.id == alarm.tag_id)
+                .expect("tag id was checked");
+            if source.data_type == TagDataType::Bool {
+                if alarm.hi_limit.is_some() || alarm.lo_limit.is_some() {
+                    return Err(format!(
+                        "Boolean alarm {} must not define numeric limits",
+                        alarm.id
+                    ));
+                }
+            } else if alarm.hi_limit.is_some() == alarm.lo_limit.is_some() {
+                return Err(format!(
+                    "Numeric alarm {} must define exactly one of hi_limit or lo_limit",
+                    alarm.id
+                ));
+            }
+            if !alarm.deadband.is_finite() || alarm.deadband < 0.0 {
+                return Err(format!(
+                    "Alarm {} has a negative or non-finite deadband",
+                    alarm.id
+                ));
+            }
+            if alarm.hi_limit.is_some_and(|v| !v.is_finite())
+                || alarm.lo_limit.is_some_and(|v| !v.is_finite())
+            {
+                return Err(format!("Alarm {} has a non-finite limit", alarm.id));
+            }
+        }
+
+        let mut group_ids = HashSet::new();
+        for group in &self.alarm_groups {
+            if group.id.trim().is_empty() || !group_ids.insert(group.id.as_str()) {
+                return Err(format!("Duplicate or empty alarm group id: {}", group.id));
+            }
+        }
+        for group in &self.alarm_groups {
+            if group
+                .parent_id
+                .as_deref()
+                .is_some_and(|parent| parent == group.id || !group_ids.contains(parent))
+            {
+                return Err(format!(
+                    "Alarm group {} references an invalid parent",
+                    group.id
+                ));
+            }
+        }
+        for group in &self.alarm_groups {
+            let mut path = HashSet::new();
+            let mut current = Some(group.id.as_str());
+            while let Some(id) = current {
+                if !path.insert(id) {
+                    return Err(format!("Alarm group hierarchy contains a cycle at {id}"));
+                }
+                current = self
+                    .alarm_groups
+                    .iter()
+                    .find(|candidate| candidate.id == id)
+                    .and_then(|candidate| candidate.parent_id.as_deref());
+            }
+        }
+        for alarm in &self.alarms {
+            if !alarm.group_id.is_empty() && !group_ids.contains(alarm.group_id.as_str()) {
+                return Err(format!(
+                    "Alarm {} references unknown group {}",
+                    alarm.id, alarm.group_id
+                ));
+            }
+        }
+
+        let mut form_ids = HashSet::new();
+        let mut widget_ids = HashSet::new();
+        for form in &self.forms {
+            if form.id.trim().is_empty() || !form_ids.insert(form.id.as_str()) {
+                return Err(format!("Duplicate or empty form id: {}", form.id));
+            }
+            if !form.width.is_finite()
+                || !form.height.is_finite()
+                || form.width <= 0.0
+                || form.height <= 0.0
+            {
+                return Err(format!("Form {} has invalid dimensions", form.id));
+            }
+            for widget in &form.widgets {
+                if widget.id.trim().is_empty() || !widget_ids.insert(widget.id.as_str()) {
+                    return Err(format!("Duplicate or empty widget id: {}", widget.id));
+                }
+                if widget.min_level.is_some_and(|level| level > 1000) {
+                    return Err(format!("Widget {} min_level must be 0..=1000", widget.id));
+                }
+                if !widget.x.is_finite()
+                    || !widget.y.is_finite()
+                    || !widget.w.is_finite()
+                    || !widget.h.is_finite()
+                    || widget.w <= 0.0
+                    || widget.h <= 0.0
+                {
+                    return Err(format!("Widget {} has invalid geometry", widget.id));
+                }
+            }
+        }
+
+        for (index, template) in self.component_templates.iter().enumerate() {
+            if !template.is_object() {
+                return Err(format!("Component template {index} must be a JSON object"));
+            }
+            if json_contains_disallowed_content(template) {
+                return Err(format!(
+                    "Component template {index} contains executable or remote content"
+                ));
+            }
+        }
+
+        let mut node_ids = HashSet::new();
+        for node in &self.tree {
+            if node.id.trim().is_empty() || !node_ids.insert(node.id.as_str()) {
+                return Err(format!(
+                    "Duplicate or empty project tree node id: {}",
+                    node.id
+                ));
+            }
+        }
+        for node in &self.tree {
+            if node
+                .parent_id
+                .as_deref()
+                .is_some_and(|parent| parent == node.id || !node_ids.contains(parent))
+            {
+                return Err(format!(
+                    "Project tree node {} references an invalid parent",
+                    node.id
+                ));
+            }
+            if node.kind == ProjectNodeKind::Script
+                && node.language.as_deref() != Some("proscada-actions")
+            {
+                return Err(format!(
+                    "Script node {} must use language proscada-actions",
+                    node.id
+                ));
+            }
+            if node
+                .content
+                .as_deref()
+                .is_some_and(contains_disallowed_content)
+            {
+                return Err(format!(
+                    "Project tree node {} contains executable or remote content",
+                    node.id
+                ));
+            }
+        }
+        for node in &self.tree {
+            let mut path = HashSet::new();
+            let mut current = Some(node.id.as_str());
+            while let Some(id) = current {
+                if !path.insert(id) {
+                    return Err(format!("Project tree contains a cycle at {id}"));
+                }
+                current = self
+                    .tree
+                    .iter()
+                    .find(|candidate| candidate.id == id)
+                    .and_then(|candidate| candidate.parent_id.as_deref());
+            }
+        }
+
+        let mut user_ids = HashSet::new();
+        let mut usernames = HashSet::new();
+        for user in &self.users {
+            let normalized = user.username.trim().to_ascii_lowercase();
+            if user.id.trim().is_empty() || !user_ids.insert(user.id.as_str()) {
+                return Err(format!("Duplicate or empty user id: {}", user.id));
+            }
+            if normalized.is_empty() || !usernames.insert(normalized) {
+                return Err(format!("Duplicate or empty username: {}", user.username));
+            }
+            if user.security_level > 1000 {
+                return Err(format!(
+                    "User {} security_level must be 0..=1000",
+                    user.username
+                ));
+            }
+        }
+        if !self.users.is_empty()
+            && !self
+                .users
+                .iter()
+                .any(|u| u.enabled && u.security_level >= 1000)
+        {
+            return Err("Project must retain at least one active Administrator".into());
         }
         Ok(())
     }
@@ -589,6 +893,88 @@ impl ScadaProject {
         clone.recompute_hash();
         clone.content_hash == expected
     }
+}
+
+fn parse_initial_value(tag: &TagDefinition, initial: &str) -> Result<f64, String> {
+    if tag.data_type == TagDataType::Bool {
+        return match initial.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" => Ok(1.0),
+            "false" | "0" => Ok(0.0),
+            _ => Err(format!(
+                "Tag {} initial_value must be true, false, 0 or 1",
+                tag.id
+            )),
+        };
+    }
+    initial
+        .trim()
+        .parse::<f64>()
+        .map_err(|_| format!("Tag {} initial_value is not numeric", tag.id))
+        .and_then(|value| {
+            if value.is_finite() {
+                Ok(value)
+            } else {
+                Err(format!("Tag {} initial_value must be finite", tag.id))
+            }
+        })
+}
+
+fn validate_system_tag(tag: &TagDefinition) -> Result<(), String> {
+    let expected = match tag.id.as_str() {
+        "system.connected" | "system.mode" => TagDataType::Bool,
+        "system.poll_count" | "system.last_poll_ms" => TagDataType::U64,
+        "system.security_level" => TagDataType::U16,
+        _ => {
+            return Err(format!(
+                "Unknown System tag {}; allowed ids are system.connected, system.poll_count, system.last_poll_ms, system.security_level and system.mode",
+                tag.id
+            ))
+        }
+    };
+    if tag.data_type != expected {
+        return Err(format!(
+            "System tag {} must use data type {:?}",
+            tag.id, expected
+        ));
+    }
+    if tag.scale != 1.0 || tag.offset != 0.0 {
+        return Err(format!(
+            "System tag {} must use scale=1 and offset=0",
+            tag.id
+        ));
+    }
+    if tag.initial_value.is_some() {
+        return Err(format!(
+            "System tag {} cannot define an initial_value",
+            tag.id
+        ));
+    }
+    Ok(())
+}
+
+fn json_contains_disallowed_content(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Object(map) => map.iter().any(|(key, value)| {
+            contains_disallowed_content(key) || json_contains_disallowed_content(value)
+        }),
+        serde_json::Value::Array(values) => values.iter().any(json_contains_disallowed_content),
+        serde_json::Value::String(value) => contains_disallowed_content(value),
+        _ => false,
+    }
+}
+
+fn contains_disallowed_content(value: &str) -> bool {
+    let normalized = value.to_ascii_lowercase();
+    [
+        "javascript:",
+        "eval(",
+        "new function",
+        "<script",
+        "http://",
+        "https://",
+    ]
+    .iter()
+    .any(|needle| normalized.contains(needle))
 }
 
 /// Built-in Water Tank project matching PLC LAD SIM map HR100–121.
@@ -857,7 +1243,6 @@ pub fn water_tank_project() -> ScadaProject {
         tree,
         content_hash: String::new(),
     };
-    project.ensure_default_users();
     project.recompute_hash();
     project
 }
@@ -917,18 +1302,11 @@ fn default_water_tank_tree(
             id: "scr_demo_click".into(),
             parent_id: Some("fld_scripts".into()),
             kind: ProjectNodeKind::Script,
-            name: "OnButtonClick.js".into(),
+            name: "OnButtonClick.action".into(),
             order: 0,
             ref_id: None,
-            content: Some(
-                r#"// Demo HMI script — bind via Properties → On Click Script
-async function onEvent(event) {
-  log("HMI click from " + (event.widgetId || "?"));
-}
-"#
-                .into(),
-            ),
-            language: Some("javascript".into()),
+            content: Some("log \"HMI click\"".into()),
+            language: Some("proscada-actions".into()),
             collapsed: None,
         },
         ProjectNode {
@@ -989,16 +1367,16 @@ fn water_tank_form() -> FormDef {
     // Header Badges
     widgets.push(w(
         "status_badges",
-        "status_badge",
+        "data_status",
         24.0,
         16.0,
         300.0,
         40.0,
         z,
-        None,
+        Some("wt.sim_en"),
         None,
         json!({
-            "simEn": true, "frozen": false
+            "environment": "LIVE", "staleAfterMs": 2000
         }),
     ));
     z += 1;
@@ -1015,13 +1393,13 @@ fn water_tank_form() -> FormDef {
     })));
     z += 1;
 
-    widgets.push(w("m_p1", "bool_display", 510.0, 38.0, 150.0, 46.0, z, Some("wt.p1_run"), grp_m, json!({
-        "label": "PUMP 1", "trueLabel": "RUNNING", "falseLabel": "STOPPED", "trueColor": "#16A34A"
+    widgets.push(w("m_p1", "state_indicator", 510.0, 38.0, 150.0, 46.0, z, Some("wt.p1_run"), grp_m, json!({
+        "title": "PUMP 1", "variant": "word", "states": "0|STOPPED|#64748b|○\n1|RUNNING|#16a34a|●"
     })));
     z += 1;
 
-    widgets.push(w("m_p2", "bool_display", 670.0, 38.0, 150.0, 46.0, z, Some("wt.p2_run"), grp_m, json!({
-        "label": "PUMP 2", "trueLabel": "RUNNING", "falseLabel": "STOPPED", "trueColor": "#16A34A"
+    widgets.push(w("m_p2", "state_indicator", 670.0, 38.0, 150.0, 46.0, z, Some("wt.p2_run"), grp_m, json!({
+        "title": "PUMP 2", "variant": "word", "states": "0|STOPPED|#64748b|○\n1|RUNNING|#16a34a|●"
     })));
     z += 1;
 
@@ -1168,7 +1546,7 @@ fn water_tank_form() -> FormDef {
 
     widgets.push(w(
         "sp_apply_btn",
-        "write_button",
+        "command_button",
         740.0,
         276.0,
         270.0,
@@ -1177,7 +1555,8 @@ fn water_tank_form() -> FormDef {
         Some("wt.sp_stop"),
         grp_sp,
         json!({
-            "label": "Apply setpoints", "bgColor": "#1F2937", "textColor": "#FFFFFF"
+            "label": "Set SP_STOP to 600", "mode": "value", "writeValue": 600,
+            "confirm": true, "disabledWhenBad": true
         }),
     ));
     z += 1;
@@ -1291,7 +1670,7 @@ fn pump_faceplate_form() -> FormDef {
     // 3. Bool LED Indicator (Status)
     widgets.push(w(
         "pf_led",
-        "bool_display",
+        "state_indicator",
         110.0,
         48.0,
         118.0,
@@ -1300,11 +1679,9 @@ fn pump_faceplate_form() -> FormDef {
         Some("run"),
         None,
         json!({
-            "label": "STATUS",
-            "trueLabel": "RUNNING",
-            "falseLabel": "STOPPED",
-            "trueColor": "#16A34A",
-            "falseColor": "#9CA3AF"
+            "title": "STATUS",
+            "variant": "word",
+            "states": "0|STOPPED|#64748b|○\n1|RUNNING|#16a34a|●"
         }),
     ));
     z += 1;
@@ -1382,5 +1759,128 @@ mod tests {
         assert!(!p.tags.is_empty());
         assert!(!p.forms[0].widgets.is_empty());
         assert_eq!(p.devices[0].port, 5020);
+    }
+
+    #[test]
+    fn validation_rejects_runtime_configuration_that_is_not_implemented() {
+        let mut project = water_tank_project();
+        let mut second = project.devices[0].clone();
+        second.id = "second-plc".into();
+        project.devices.push(second);
+        assert!(project
+            .validate()
+            .expect_err("two active devices")
+            .contains("exactly one active device"));
+
+        let mut project = water_tank_project();
+        project.devices[0].queries.push(ModbusQueryConfig {
+            id: "fast".into(),
+            name: "Fast".into(),
+            table: ModbusTable::Holding,
+            start_address: 100,
+            count: 4,
+            poll_ms: Some(100),
+            enabled: true,
+        });
+        assert!(project
+            .validate()
+            .expect_err("query schedules")
+            .contains("does not support query schedules"));
+    }
+
+    #[test]
+    fn validation_rejects_out_of_range_memory_and_unknown_system_tags() {
+        let mut project = water_tank_project();
+        let mut memory = project.tags[0].clone();
+        memory.id = "memory.u16".into();
+        memory.device_id = "SYS_INTERNAL".into();
+        memory.binding.table = ModbusTable::Memory;
+        memory.binding.bit = None;
+        memory.data_type = TagDataType::U16;
+        memory.initial_value = Some("70000".into());
+        project.tags.push(memory);
+        assert!(project
+            .validate()
+            .expect_err("out of range memory")
+            .contains("out of range"));
+
+        let mut project = water_tank_project();
+        let mut system = project.tags[0].clone();
+        system.id = "system.arbitrary".into();
+        system.device_id = "SYS_INTERNAL".into();
+        system.binding.table = ModbusTable::System;
+        system.binding.writable = false;
+        system.binding.bit = None;
+        system.data_type = TagDataType::U16;
+        system.initial_value = None;
+        project.tags.push(system);
+        assert!(project
+            .validate()
+            .expect_err("unknown system tag")
+            .contains("Unknown System tag"));
+    }
+
+    #[test]
+    fn validation_rejects_hierarchy_cycles_and_executable_content() {
+        let mut project = water_tank_project();
+        project.alarm_groups.push(AlarmGroupDefinition {
+            id: "child".into(),
+            name: "Child".into(),
+            parent_id: Some("water_tank".into()),
+            object_id: None,
+            description: String::new(),
+        });
+        project.alarm_groups[0].parent_id = Some("child".into());
+        assert!(project
+            .validate()
+            .expect_err("alarm group cycle")
+            .contains("cycle"));
+
+        let mut project = water_tank_project();
+        project.component_templates.push(serde_json::json!({
+            "id": "unsafe",
+            "action": "javascript:alert(1)"
+        }));
+        assert!(project
+            .validate()
+            .expect_err("executable template")
+            .contains("executable or remote"));
+
+        let mut project = water_tank_project();
+        let script = project
+            .tree
+            .iter_mut()
+            .find(|node| node.kind == ProjectNodeKind::Script)
+            .expect("builtin action script");
+        script.language = Some("javascript".into());
+        script.content = Some("eval('unsafe')".into());
+        assert!(project
+            .validate()
+            .expect_err("arbitrary script")
+            .contains("proscada-actions"));
+    }
+
+    #[test]
+    fn public_water_tank_fixture_is_canonical_and_contains_no_account_realm() {
+        let project: ScadaProject = serde_json::from_str(include_str!(
+            "../../../public/projects/WaterTank.proscada.json"
+        ))
+        .expect("deserialize public fixture");
+        project.validate().expect("validate public fixture");
+        assert!(
+            project.verify_hash(),
+            "public fixture hash must be canonical"
+        );
+        assert!(
+            project.users.is_empty(),
+            "public fixture must not ship accounts"
+        );
+        assert!(
+            project
+                .devices
+                .iter()
+                .all(|device| device.queries.is_empty()),
+            "public fixture must not advertise an unsupported query scheduler"
+        );
     }
 }

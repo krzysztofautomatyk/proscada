@@ -22,16 +22,19 @@ Describe the outcome and affected source-of-truth files.
 
 ## Validation
 
+- [ ] `npm ci`
 - [ ] `npm run check`
 - [ ] `npm run validate:widgets`
 - [ ] `npm run validate:docs`
 - [ ] `npm run validate:ai`
 - [ ] `npm run validate:yaml`
-- [ ] `npm run test:pump-template`
+- [ ] `npm test`
 - [ ] `npm run build`
 - [ ] `cargo fmt --all --manifest-path src-tauri/Cargo.toml -- --check`
 - [ ] `cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings`
 - [ ] `cargo test --locked --manifest-path src-tauri/Cargo.toml`
 - [ ] `cargo build --locked --manifest-path src-tauri/Cargo.toml`
+- [ ] `npm audit --audit-level=high`
+- [ ] `cargo deny --manifest-path src-tauri/Cargo.toml check advisories licenses sources`
 
 List any intentionally omitted command and the reason.

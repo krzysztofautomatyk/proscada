@@ -3,15 +3,18 @@
   import { selectedFormId } from "$lib/stores/app";
   import { get } from "svelte/store";
   import { runScriptById } from "$lib/services/scriptRuntime";
+  import type { ProcessWrite } from "$lib/components/widgets/shared/types";
+  import { writeResultLabel } from "$lib/components/widgets/shared/config";
 
   interface Props {
     widget: WidgetDef;
     tag?: TagValue | null;
     design?: boolean;
-    onWrite?: (tagId: string, value: number) => void;
+    onWrite?: ProcessWrite;
   }
 
   let { widget, design = false, onWrite }: Props = $props();
+  let status = $state("");
 
   const cfg = $derived((widget.config ?? {}) as Record<string, unknown>);
   const str = (k: string, d = "") => String(cfg[k] ?? d);
@@ -48,7 +51,13 @@
       );
       if (!ok) return;
     }
-    onWrite(widget.tag_id, v);
+    status = "WRITE REQUESTED";
+    try {
+      const result = await onWrite(widget.tag_id, v);
+      status = writeResultLabel(result);
+    } catch (error) {
+      status = `WRITE REJECTED: ${error instanceof Error ? error.message : String(error)}`;
+    }
   }
 </script>
 
@@ -69,7 +78,8 @@
     if (!design) doWrite();
   }}
 >
-  {str("label", "WRITE")}
+  <span>{str("label", "WRITE")}</span>
+  {#if status}<small role="status">{status}</small>{/if}
 </button>
 
 <style>
@@ -81,8 +91,11 @@
     justify-content: center;
     box-sizing: border-box;
     transition: opacity 0.2s;
+    flex-direction: column;
+    gap: 2px;
   }
   .w-chrome:hover:not(:disabled) {
     opacity: 0.9;
   }
+  small { font-size: 8px; font-weight: 600; }
 </style>

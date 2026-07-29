@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { WidgetRendererProps } from "$lib/components/widgets/shared/types";
-  import { configOf, invokeWrite, readBoolean, readString, readStringList } from "$lib/components/widgets/shared/config";
+  import { configOf, invokeWrite, readBoolean, readString, readStringList, writeResultLabel } from "$lib/components/widgets/shared/config";
   import WidgetCard from "$lib/components/widgets/shared/WidgetCard.svelte";
 
   interface Option {
@@ -42,7 +42,7 @@
     if (!selected && options[0]) selected = options[0].value;
   });
 
-  function select(value: string) {
+  async function select(value: string) {
     if (disabled) return;
     selected = value;
     const option = options.find((item) => item.value === value);
@@ -54,20 +54,25 @@
       status = "requires numeric tag mapping";
       return;
     }
-    status = invokeWrite(widget, design, onWrite, option.numeric) ? "WRITE REQUESTED" : "TAG WRITE UNAVAILABLE";
+    status = "WRITE REQUESTED";
+    try {
+      status = writeResultLabel(await invokeWrite(widget, design, onWrite, option.numeric));
+    } catch (error) {
+      status = `WRITE REJECTED: ${error instanceof Error ? error.message : String(error)}`;
+    }
   }
 </script>
 
 <WidgetCard {title} {tag} accent="#b45309">
   <div class="control">
     {#if variant === "select"}
-      <select aria-label={title} value={selected} disabled={disabled} onchange={(event) => select(event.currentTarget.value)}>
+      <select aria-label={title} value={selected} disabled={disabled} onchange={(event) => void select(event.currentTarget.value)}>
         {#each options as option}<option value={option.value}>{option.label}</option>{/each}
       </select>
     {:else}
       <div class="chips" aria-label={title} role="group">
         {#each options as option}
-          <button type="button" class:selected={selected === option.value} aria-pressed={selected === option.value} disabled={disabled} onclick={() => select(option.value)}>{option.label}</button>
+          <button type="button" class:selected={selected === option.value} aria-pressed={selected === option.value} disabled={disabled} onclick={() => void select(option.value)}>{option.label}</button>
         {/each}
       </div>
     {/if}

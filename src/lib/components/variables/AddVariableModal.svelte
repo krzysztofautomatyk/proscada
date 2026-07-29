@@ -234,7 +234,7 @@
     animation: fade-in 0.15s ease-out;
   }
 
-  .modal-card {
+  .modal {
     background: var(--gh-canvas-overlay, #161b22);
     border: 1px solid var(--gh-border-default, #30363d);
     border-radius: 10px;

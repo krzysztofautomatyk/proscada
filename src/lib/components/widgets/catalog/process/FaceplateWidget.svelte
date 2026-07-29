@@ -1,13 +1,14 @@
 <script lang="ts">
   import type { TagValue, WidgetDef } from "$lib/types";
-  import { configOf, invokeWriteToTag, readBoolean, readNumber, readString } from "$lib/components/widgets/shared/config";
+  import { configOf, invokeWriteToTag, readBoolean, readNumber, readString, writeResultLabel } from "$lib/components/widgets/shared/config";
   import { parseAlarms, priorityRank } from "../alarms/alarmModel";
+  import type { ProcessWrite } from "$lib/components/widgets/shared/types";
 
   interface Props {
     widget: WidgetDef;
     tag?: TagValue | null;
     design?: boolean;
-    onWrite?: (tagId: string, value: number) => void;
+    onWrite?: ProcessWrite;
     tagMap?: Map<string, TagValue>;
   }
   let { widget, tag = null, design = false, onWrite }: Props = $props();
@@ -50,10 +51,14 @@
                   : "",
   );
 
-  function command(targetTagId: string, value: number) {
+  async function command(targetTagId: string, value: number) {
     if (baseWriteDisabled || !targetTagId) return;
-    if (invokeWriteToTag(targetTagId, design, onWrite, value)) {
-      transportNotice = "Transport intent sent — awaiting process feedback";
+    transportNotice = "COMMAND REQUESTED";
+    try {
+      const result = await invokeWriteToTag(targetTagId, design, onWrite, value);
+      transportNotice = writeResultLabel(result, "COMMAND");
+    } catch (error) {
+      transportNotice = `COMMAND REJECTED: ${error instanceof Error ? error.message : String(error)}`;
     }
   }
 </script>
@@ -69,7 +74,7 @@
   {#if variant !== "compact"}
     <div class="alarm-summary" class:alarm={activeAlarms.length > 0}>{#if alarms.error}▲ Alarm config error{:else if worstAlarm}▲ {activeAlarms.length} alarm(s) · {worstAlarm.priority.toUpperCase()} {worstAlarm.message}{:else}○ No configured active alarms{/if}</div>
   {/if}
-  <div class="commands"><button disabled={baseWriteDisabled || !startTagId} onclick={() => command(startTagId, startValue)}>▶ START</button><button class="stop" disabled={baseWriteDisabled || !stopTagId} onclick={() => command(stopTagId, stopValue)}>■ STOP</button></div>
+  <div class="commands"><button disabled={baseWriteDisabled || !startTagId} onclick={() => void command(startTagId, startValue)}>▶ START</button><button class="stop" disabled={baseWriteDisabled || !stopTagId} onclick={() => void command(stopTagId, stopValue)}>■ STOP</button></div>
   <p class="intent">{transportNotice || (disabledReason ? `Command inhibited: ${disabledReason}` : "Command sends transport intent; process result is not implied.")}</p>
 </section>
 

@@ -96,16 +96,22 @@ pub fn encode(data_type: TagDataType, order: WordOrder, value: f64) -> Result<Ve
             u64::from(narrowed.to_bits())
         }
         TagDataType::U64 => {
-            if !(0.0..=u64::MAX as f64).contains(&value) {
+            let rounded = value.round();
+            // `u64::MAX as f64` rounds up to 2^64. Treat that exclusive
+            // boundary explicitly so a value of 2^64 is rejected rather than
+            // saturating during the cast.
+            if !(0.0..18_446_744_073_709_551_616.0).contains(&rounded) {
                 return Err(format!("Value {value} is out of range for u64"));
             }
-            value.round() as u64
+            rounded as u64
         }
         TagDataType::I64 => {
-            if !(i64::MIN as f64..=i64::MAX as f64).contains(&value) {
+            let rounded = value.round();
+            // `i64::MAX as f64` is exactly 2^63, which is outside i64.
+            if !(-9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0).contains(&rounded) {
                 return Err(format!("Value {value} is out of range for i64"));
             }
-            (value.round() as i64) as u64
+            (rounded as i64) as u64
         }
         TagDataType::F64 => value.to_bits(),
         TagDataType::String => return Err("String tags cannot be written over Modbus".into()),
@@ -189,6 +195,18 @@ mod tests {
         assert!(encode(TagDataType::U16, WordOrder::HighWordFirst, 65_536.0).is_err());
         assert!(encode(TagDataType::I16, WordOrder::HighWordFirst, 40_000.0).is_err());
         assert!(encode(TagDataType::F32, WordOrder::HighWordFirst, f64::NAN).is_err());
+        assert!(encode(
+            TagDataType::U64,
+            WordOrder::HighWordFirst,
+            18_446_744_073_709_551_616.0
+        )
+        .is_err());
+        assert!(encode(
+            TagDataType::I64,
+            WordOrder::HighWordFirst,
+            9_223_372_036_854_775_808.0
+        )
+        .is_err());
     }
 
     #[test]

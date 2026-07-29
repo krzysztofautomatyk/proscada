@@ -1,21 +1,35 @@
 <script lang="ts">
   import type { WidgetDef, TagValue } from "$lib/types";
+  import type { ProcessWrite } from "$lib/components/widgets/shared/types";
+  import { writeResultLabel } from "$lib/components/widgets/shared/config";
 
   interface Props {
     widget: WidgetDef;
     tag?: TagValue | null;
     design?: boolean;
-    onWrite?: (tagId: string, value: number) => void;
+    onWrite?: ProcessWrite;
   }
 
   let { widget, tag = null, design = false, onWrite }: Props = $props();
 
   let frozen = $state(false);
+  let status = $state("");
+  const restoreValue = $derived(Number(widget.config?.restoreValue));
+  const disabled = $derived(
+    design || !onWrite || !widget.tag_id || tag?.quality !== "good" || !Number.isFinite(restoreValue),
+  );
 
-  function toggleFreeze() {
-    if (design || !onWrite) return;
-    frozen = !frozen;
-    onWrite("wt.fill_step", frozen ? 0 : 10);
+  async function toggleFreeze() {
+    if (disabled || !onWrite || !widget.tag_id) return;
+    const next = !frozen;
+    status = "COMMAND REQUESTED";
+    try {
+      const result = await onWrite(widget.tag_id, next ? 0 : restoreValue);
+      frozen = next;
+      status = writeResultLabel(result, "COMMAND");
+    } catch (error) {
+      status = `COMMAND REJECTED: ${error instanceof Error ? error.message : String(error)}`;
+    }
   }
 </script>
 
@@ -27,8 +41,8 @@
         <strong>Simulation SIM_EN</strong>
         <p class="hint">Modbus I0 Status</p>
       </div>
-      <span class="state" class:on={tag?.bool_value ?? true}>
-        {tag?.bool_value ?? true ? "ON" : "OFF"}
+      <span class="state" class:on={tag?.quality === "good" && tag.bool_value === true}>
+        {tag?.quality === "good" ? (tag.bool_value ? "ON" : "OFF") : "NO DATA"}
       </span>
     </div>
     <div class="row">
@@ -36,10 +50,11 @@
         <strong>Process Freeze</strong>
         <p class="hint">FILL_STEP → 0 / Restore</p>
       </div>
-      <button class="btn-freeze" class:frozen disabled={design} onclick={toggleFreeze}>
+      <button class="btn-freeze" class:frozen disabled={disabled} onclick={() => void toggleFreeze()}>
         {frozen ? "▶ Resume" : "⏸ Freeze"}
       </button>
     </div>
+    {#if status}<p class="write-state" role="status">{status}</p>{/if}
   </div>
 </div>
 
@@ -110,6 +125,7 @@
     color: #dc2626;
     background: #fef2f2;
   }
+  .write-state { margin: 0; color: #0369a1; font-size: 8px; font-weight: 800; text-align: center; }
   .btn-freeze:disabled {
     opacity: 0.5;
     cursor: default;

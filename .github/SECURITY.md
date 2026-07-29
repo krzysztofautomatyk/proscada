@@ -13,8 +13,10 @@ The current main branch receives security fixes. ProScada is a lab and integrati
 - Modbus write authorization and read-back;
 - Runtime/role/quality gates;
 - Tauri commands and capabilities;
-- project scripts using `new Function`;
+- deterministic project action language and its parser (arbitrary JavaScript,
+  `eval` and `new Function` are forbidden);
 - project and `.pscctrl` import;
+- CSP, local file scopes and active or remote content in imported data;
 - alarm acknowledgement and audit integrity.
 
 ## Research rules
@@ -24,4 +26,3 @@ Do not test against a production PLC, scan an OT network or use real credentials
 ## Disclosure contents
 
 Include affected version, path, impact, minimal reproduction using synthetic data and recommended mitigation. Remove secrets and customer information.
-

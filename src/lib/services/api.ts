@@ -9,6 +9,7 @@ import type {
   TagValue,
   UserAccountInput,
   UserSummary,
+  WriteReceipt,
 } from "$lib/types";
 import { computeSystemTagValues } from "./systemTagsService";
 
@@ -26,38 +27,13 @@ let mockProject: ScadaProject | null = null;
 let mockConnected = false;
 let mockPoll = 0;
 let mockRole: Role = "viewer";
-let mockMode = "designer";
+let mockMode = "runtime";
 let mockCurrentUser: UserSummary | null = null;
 let mockSecurityLevel = 0;
 let mockPasswordChangeRequired = false;
-const mockPasswords = new Map<string, string>([
-  ["admin", "admin123"],
-  ["operator", "operator123"],
-]);
-const mockPins = new Map<string, string>([
-  ["admin", "1234"],
-  ["operator", "1111"],
-]);
-let mockUsers: UserSummary[] = [
-  {
-    id: "usr_admin",
-    username: "admin",
-    display_name: "Administrator",
-    security_level: 1000,
-    enabled: true,
-    has_pin: true,
-    password_change_required: true,
-  },
-  {
-    id: "usr_operator",
-    username: "operator",
-    display_name: "Operator Zmianowy",
-    security_level: 100,
-    enabled: true,
-    has_pin: true,
-    password_change_required: true,
-  },
-];
+const mockPasswords = new Map<string, string>();
+const mockPins = new Map<string, string>();
+let mockUsers: UserSummary[] = [];
 
 const mockAudit: AuditEntry[] = [];
 
@@ -127,6 +103,14 @@ function mockSnap(): EngineSnapshot {
     mode: mockMode,
     alarms_suspended: !mockConnected,
     password_change_required: mockPasswordChangeRequired,
+    requires_bootstrap: mockUsers.length === 0,
+    audit_chain_ok: true,
+    audit_persisted: true,
+    audit_last_error: null,
+    alarm_state_persisted: true,
+    alarm_state_last_error: null,
+    user_realm_persisted: true,
+    user_realm_last_error: null,
   };
 }
 
@@ -166,12 +150,25 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
       }
       return mockProject as T;
     }
-    case "load_project":
-      mockProject = args?.project as ScadaProject;
+    case "load_project": {
+      if (mockSecurityLevel < 500) {
+        throw new Error("Engineer or Administrator role is required to import a project");
+      }
+      const incoming = structuredClone(args?.project as ScadaProject);
+      // The browser mock keeps its account realm separately, matching Rust:
+      // credentials embedded in imported process/design content are ignored.
+      incoming.users = [];
+      mockProject = incoming;
       mockResetSession();
       return undefined as T;
+    }
     case "get_project":
-      return mockProject as T;
+      return (mockProject ? { ...structuredClone(mockProject), users: [] } : null) as T;
+    case "save_project_file":
+      if (mockSecurityLevel < 500) {
+        throw new Error("Engineer or Administrator role is required to save a project file");
+      }
+      return undefined as T;
     case "save_project_in_memory":
       if (mockSecurityLevel < 500) {
         throw new Error("Engineer or Administrator role is required to edit the project");
@@ -179,7 +176,10 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
       if (mockPasswordChangeRequired) {
         throw new Error("Change the default password before editing the project");
       }
-      mockProject = args?.project as ScadaProject;
+      mockProject = {
+        ...structuredClone(args?.project as ScadaProject),
+        users: [],
+      };
       return mockProject as T;
     case "get_snapshot":
       if (mockConnected) mockPoll++;
@@ -202,13 +202,12 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
       return undefined as T;
     }
     case "login": {
-      const rawTerm = args?.usernameOrPin ?? args?.username_or_pin ?? "";
+      const rawTerm = args?.username ?? "";
       const term = String(rawTerm).trim();
-      const pwd = String(args?.password ?? "").trim();
+      const pwd = String(args?.password ?? "");
 
       const found = mockUsers.find((u) => {
         if (!u.enabled) return false;
-        if (mockPins.get(u.username) === term) return true;
         return (
           u.username.toLowerCase() === term.toLowerCase() &&
           pwd.length > 0 &&
@@ -223,7 +222,7 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
         mockPasswordChangeRequired = found.password_change_required === true;
         return found as T;
       }
-      throw new Error("Nieprawidłowa nazwa użytkownika, hasło lub PIN");
+      throw new Error("Nieprawidłowa nazwa użytkownika lub hasło");
     }
     case "logout": {
       mockResetSession();
@@ -246,10 +245,26 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
       );
       return mockCurrentUser as T;
     }
-    case "verify_pin": {
-      const pin = String(args?.pin ?? "");
-      if (!mockCurrentUser) return false as T;
-      return (mockPins.get(mockCurrentUser.username) === pin) as T;
+    case "bootstrap_admin": {
+      const password = String(args?.password ?? "");
+      if (mockUsers.length > 0) {
+        throw new Error("Administrator bootstrap is already closed for this project");
+      }
+      if (password.length < 12) {
+        throw new Error("Bootstrap password must be at least 12 characters long");
+      }
+      const user: UserSummary = {
+        id: `usr_${crypto.randomUUID()}`,
+        username: "admin",
+        display_name: "Administrator",
+        security_level: 1000,
+        enabled: true,
+        has_pin: false,
+        password_change_required: false,
+      };
+      mockUsers = [user];
+      mockPasswords.set("admin", password);
+      return user as T;
     }
     case "list_users": {
       return mockUsers as T;
@@ -319,6 +334,12 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
       if (mockPasswordChangeRequired) {
         throw new Error("Change the default password before writing to the process");
       }
+      if (mockProject?.session_config?.pin_challenge_on_write) {
+        const pin = String(args?.pin ?? "");
+        if (!mockCurrentUser || mockPins.get(mockCurrentUser.username) !== pin) {
+          throw new Error("A valid PIN must accompany this write");
+        }
+      }
       mockAudit.push({
         id: crypto.randomUUID(),
         ts: new Date().toISOString(),
@@ -329,12 +350,29 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
         prev_hash: "GENESIS",
         hash: "mock",
       });
-      return undefined as T;
+      const definition = mockProject?.tags.find((tag) => tag.id === String(args?.tagId ?? ""));
+      const requested = Number(args?.value);
+      const verifyReadback = definition?.binding.verify_readback !== false;
+      const observed = verifyReadback ? requested : 0;
+      return {
+        tag_id: String(args?.tagId ?? ""),
+        requested_value: requested,
+        observed_value: observed,
+        raw_readback: Math.max(0, Math.round(observed)),
+        protocol: "mock",
+        verify_readback: verifyReadback,
+        matches: Math.abs(requested - observed) <= 0.0001,
+      } as T;
     }
     case "ack_alarm":
       return undefined as T;
-    case "test_device":
+    case "test_device": {
+      const deviceId = String(args?.deviceId ?? "");
+      if (!mockProject?.devices.some((device) => device.id === deviceId)) {
+        throw new Error("Device not found in the accepted project");
+      }
       return { ok: false, message: "Browser mock — use tauri:dev" } as T;
+    }
     case "get_tag_values":
       return mockSnap().tags as T;
     case "get_alarms":
@@ -352,35 +390,33 @@ export const api = {
   loadProject: (project: ScadaProject) => call<void>("load_project", { project }),
   saveProject: (project: ScadaProject) =>
     call<ScadaProject>("save_project_in_memory", { project }),
+  saveProjectFile: (path: string) => call<void>("save_project_file", { path }),
   getSnapshot: () => call<EngineSnapshot>("get_snapshot"),
   startPolling: (deviceId?: string | null) =>
     call<void>("start_polling", { deviceId: deviceId ?? null }),
   stopPolling: () => call<void>("stop_polling"),
-  writeTag: (tagId: string, value: number) => call<void>("write_tag", { tagId, value }),
+  writeTag: (tagId: string, value: number, pin?: string) =>
+    call<WriteReceipt>("write_tag", { tagId, value, pin: pin ?? null }),
   ackAlarm: (defId: string) => call<void>("ack_alarm", { defId }),
   setMode: (mode: string) => call<void>("set_mode", { mode }),
-  login: (usernameOrPin: string, password?: string) =>
+  login: (username: string, password: string) =>
     call<UserSummary>("login", {
-      usernameOrPin,
-      password: password ?? null,
+      username,
+      password,
     }),
   logout: () => call<void>("logout"),
   changePassword: (currentPassword: string, newPassword: string) =>
     call<UserSummary>("change_password", { currentPassword, newPassword }),
-  verifyPin: (pin: string) => call<boolean>("verify_pin", { pin }),
+  bootstrapAdmin: (password: string) =>
+    call<UserSummary>("bootstrap_admin", { password }),
   listUsers: () => call<UserSummary[]>("list_users"),
   saveUser: (user: UserAccountInput) => call<UserSummary>("save_user", { user }),
   deleteUser: (userId: string) => call<void>("delete_user", { userId }),
   getAudit: (limit = 200) => call<AuditEntry[]>("get_audit", { limit }),
   verifyAudit: () => call<boolean>("verify_audit"),
   getAuditStatus: () => call<AuditStatus>("get_audit_status"),
-  testDevice: (host: string, port: number, unitId: number, timeoutMs: number) =>
-    call<{ ok: boolean; message: string }>("test_device", {
-      host,
-      port,
-      unitId,
-      timeoutMs,
-    }),
+  testDevice: (deviceId: string) =>
+    call<{ ok: boolean; message: string }>("test_device", { deviceId }),
   getTagValues: () => call<TagValue[]>("get_tag_values"),
   getAlarms: () => call<AlarmInstance[]>("get_alarms"),
 };

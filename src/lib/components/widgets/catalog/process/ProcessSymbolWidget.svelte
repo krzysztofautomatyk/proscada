@@ -8,15 +8,18 @@
     design?: boolean;
     onWrite?: (tagId: string, value: number) => void;
   }
-  let { widget, tag = null }: Props = $props();
+  let { widget, tag = null, design = false }: Props = $props();
   const config = $derived(configOf(widget));
   const variant = $derived(readString(config, "variant", "pump"));
   const label = $derived(readString(config, "label", widget.tag_id ?? "Equipment"));
-  const running = $derived(tag ? tag.bool_value || tag.value !== 0 : false);
-  const fault = $derived(readBoolean(config, "fault", false) || tag?.quality === "bad");
-  const local = $derived(readBoolean(config, "local", false));
   const quality = $derived(tag?.quality ?? "bad");
-  const stateText = $derived(fault ? "FAULT" : local ? "LOCAL" : running ? "RUNNING" : "STOPPED");
+  const known = $derived(design || quality === "good");
+  const running = $derived(known && !!tag && (tag.bool_value || tag.value !== 0));
+  const fault = $derived(known && readBoolean(config, "fault", false));
+  const local = $derived(readBoolean(config, "local", false));
+  const stateText = $derived(
+    known ? (fault ? "FAULT" : local ? "LOCAL" : running ? "RUNNING" : "STOPPED") : "NO DATA",
+  );
 </script>
 
 <section class="symbol-card" class:fault class:running aria-label={`${label}: ${stateText}`}>
@@ -36,7 +39,7 @@
       {/if}
     </svg>
   </div>
-  <footer><span class="badge {fault ? 'fault' : running ? 'run' : ''}">{fault ? "▲ FAULT" : running ? "● RUNNING" : "○ STOPPED"}</span>{#if local}<span class="badge local">◇ LOCAL</span>{/if}</footer>
+  <footer><span class="badge {fault ? 'fault' : running ? 'run' : ''}">{known ? (fault ? "▲ FAULT" : running ? "● RUNNING" : "○ STOPPED") : "▲ NO DATA"}</span>{#if local && known}<span class="badge local">◇ LOCAL</span>{/if}</footer>
 </section>
 
 <style>

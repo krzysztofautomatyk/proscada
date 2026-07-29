@@ -1,12 +1,19 @@
 //! Real-time tag engine, polling scheduler, alarm evaluation.
 
 use std::collections::HashMap;
+use std::fs::{File, OpenOptions};
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 use chrono::{DateTime, Utc};
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tokio::sync::{watch, Mutex as AsyncMutex};
 use tokio::task::JoinHandle;
 
@@ -16,6 +23,8 @@ use crate::project::{
     credentials, AlarmDefinition, AlarmPriority, BitWriteMode, DeviceConfig, ModbusTable, Role,
     ScadaProject, TagDataType, TagDefinition, UserAccount, UserSummary, LEGACY_SALT,
 };
+
+const STALE_AFTER_MS: u64 = 3_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserAccountInput {
@@ -59,6 +68,17 @@ pub struct TagValue {
     pub raw: u16,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WriteReceipt {
+    pub tag_id: String,
+    pub requested_value: f64,
+    pub observed_value: f64,
+    pub raw_readback: u16,
+    pub protocol: String,
+    pub verify_readback: bool,
+    pub matches: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AlarmState {
@@ -93,6 +113,58 @@ pub struct AlarmInstance {
     pending_clear_since: Option<DateTime<Utc>>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct PersistedAlarmState {
+    def_id: String,
+    state: AlarmState,
+    source_active: bool,
+    active_since: Option<DateTime<Utc>>,
+    last_change: DateTime<Utc>,
+    pending_active_since: Option<DateTime<Utc>>,
+    pending_clear_since: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AlarmStateJournal {
+    version: u32,
+    project_id: String,
+    definitions_hash: String,
+    alarms: Vec<PersistedAlarmState>,
+    content_hash: String,
+}
+
+#[derive(Default)]
+struct AlarmStateStoreInner {
+    path: Option<PathBuf>,
+    last_error: Option<String>,
+}
+
+#[derive(Default)]
+struct AlarmStateStore {
+    inner: Mutex<AlarmStateStoreInner>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct UserRealmJournal {
+    version: u32,
+    provisioning_closed: bool,
+    users: Vec<UserAccount>,
+    content_hash: String,
+}
+
+#[derive(Default)]
+struct UserRealmStoreInner {
+    path: Option<PathBuf>,
+    last_error: Option<String>,
+    restore_failed: bool,
+    provisioning_closed: bool,
+}
+
+#[derive(Default)]
+struct UserRealmStore {
+    inner: Mutex<UserRealmStoreInner>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EngineSnapshot {
     pub connected: bool,
@@ -113,6 +185,16 @@ pub struct EngineSnapshot {
     /// True when the signed-in account must change its password before it can
     /// write to the process or administer users.
     pub password_change_required: bool,
+    /// True when the loaded project has no accounts and the one-shot local
+    /// Administrator provisioning command is available.
+    pub requires_bootstrap: bool,
+    pub audit_chain_ok: bool,
+    pub audit_persisted: bool,
+    pub audit_last_error: Option<String>,
+    pub alarm_state_persisted: bool,
+    pub alarm_state_last_error: Option<String>,
+    pub user_realm_persisted: bool,
+    pub user_realm_last_error: Option<String>,
 }
 
 struct LiveTag {
@@ -122,6 +204,11 @@ struct LiveTag {
     quality: Quality,
     ts: DateTime<Utc>,
     raw: u16,
+}
+
+struct LoginThrottle {
+    failures: u32,
+    blocked_until: Option<DateTime<Utc>>,
 }
 
 struct EngineInner {
@@ -138,6 +225,13 @@ struct EngineInner {
     current_user: Option<UserSummary>,
     security_level: u32,
     last_activity_ts: DateTime<Utc>,
+    /// Incremented whenever identity, privilege or operating mode changes.
+    auth_epoch: u64,
+    /// Incremented whenever a project is installed.
+    project_epoch: u64,
+    /// Generation token preventing an aborted poller from publishing late data.
+    poll_epoch: u64,
+    login_throttle: HashMap<String, LoginThrottle>,
     mode: String, // designer | runtime
     poll_handle: Option<JoinHandle<()>>,
     stop_tx: Option<watch::Sender<bool>>,
@@ -146,6 +240,8 @@ struct EngineInner {
 pub struct Engine {
     inner: Arc<RwLock<EngineInner>>,
     audit: Arc<AuditLog>,
+    alarm_state_store: Arc<AlarmStateStore>,
+    user_realm_store: Arc<UserRealmStore>,
     write_locks: RegisterWriteLocks,
     /// One reusable, serialized write connection per device. Without this every
     /// operator command would open — and leak — a TCP session on the PLC.
@@ -157,6 +253,258 @@ pub struct Engine {
 
 type RegisterWriteLocks = Mutex<HashMap<(String, u16), Arc<AsyncMutex<()>>>>;
 type WriteSessions = Mutex<HashMap<String, Arc<AsyncMutex<Option<modbus::ModbusContext>>>>>;
+
+impl AlarmStateStore {
+    fn attach(&self, path: &Path, g: &mut EngineInner) -> Result<(), String> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("alarm-state directory: {error}"))?;
+        }
+        {
+            let mut store = self.inner.lock();
+            store.path = Some(path.to_path_buf());
+            store.last_error = None;
+        }
+        if path
+            .symlink_metadata()
+            .is_ok_and(|metadata| metadata.file_type().is_symlink())
+        {
+            let error = "Refusing symbolic-link alarm-state journal".to_string();
+            self.inner.lock().last_error = Some(error.clone());
+            return Err(error);
+        }
+        if !path.exists() {
+            return self.persist(g);
+        }
+
+        let result = (|| -> Result<(), String> {
+            let bytes = std::fs::read(path)
+                .map_err(|error| format!("read alarm-state journal: {error}"))?;
+            let journal: AlarmStateJournal = serde_json::from_slice(&bytes)
+                .map_err(|error| format!("alarm-state journal is corrupt: {error}"))?;
+            validate_alarm_journal(&journal, g)?;
+            for persisted in &journal.alarms {
+                let alarm = g
+                    .alarms
+                    .get_mut(&persisted.def_id)
+                    .ok_or_else(|| format!("Alarm {} no longer exists", persisted.def_id))?;
+                alarm.state = persisted.state.clone();
+                alarm.source_active = persisted.source_active;
+                alarm.active_since = persisted.active_since;
+                alarm.last_change = persisted.last_change;
+                alarm.pending_active_since = persisted.pending_active_since;
+                alarm.pending_clear_since = persisted.pending_clear_since;
+                // Quality starts Bad after restart, so the restored lifecycle
+                // is explicitly suspended until a fresh sample arrives.
+                alarm.evaluation_suspended = true;
+                alarm.suspended_reason = Some("Restored state awaiting live data".into());
+                alarm.suspended_since = Some(Utc::now());
+            }
+            Ok(())
+        })();
+        let mut store = self.inner.lock();
+        match result {
+            Ok(()) => {
+                store.last_error = None;
+                Ok(())
+            }
+            Err(error) => {
+                store.last_error = Some(error.clone());
+                Err(error)
+            }
+        }
+    }
+
+    fn persist(&self, g: &EngineInner) -> Result<(), String> {
+        self.persist_alarms(g, &g.alarms)
+    }
+
+    fn persist_if_attached(&self, g: &EngineInner) -> Result<(), String> {
+        if self.is_attached() {
+            self.persist(g)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn persist_alarms(
+        &self,
+        g: &EngineInner,
+        alarms: &HashMap<String, AlarmInstance>,
+    ) -> Result<(), String> {
+        let path = self
+            .inner
+            .lock()
+            .path
+            .clone()
+            .ok_or("Alarm-state journal is not attached")?;
+        let journal = build_alarm_journal(g, alarms)?;
+        let bytes = serde_json::to_vec_pretty(&journal)
+            .map_err(|error| format!("encode alarm-state journal: {error}"))?;
+        let result = atomic_write_protected_state(&path, &bytes, "alarm-state journal");
+        let mut store = self.inner.lock();
+        match result {
+            Ok(()) => {
+                store.last_error = None;
+                Ok(())
+            }
+            Err(error) => {
+                store.last_error = Some(error.clone());
+                Err(error)
+            }
+        }
+    }
+
+    fn status(&self) -> (bool, Option<String>) {
+        let store = self.inner.lock();
+        (
+            store.path.is_some() && store.last_error.is_none(),
+            store.last_error.clone(),
+        )
+    }
+
+    fn is_attached(&self) -> bool {
+        self.inner.lock().path.is_some()
+    }
+
+    fn owns_path(&self, path: &Path) -> bool {
+        self.inner
+            .lock()
+            .path
+            .as_deref()
+            .is_some_and(|owned| paths_refer_to_same_file(owned, path))
+    }
+}
+
+impl UserRealmStore {
+    fn attach(&self, path: &Path, g: &mut EngineInner) -> Result<(), String> {
+        let project = g.project.as_ref().ok_or("No project loaded")?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("user-realm directory: {error}"))?;
+        }
+        {
+            let mut store = self.inner.lock();
+            store.path = Some(path.to_path_buf());
+            store.last_error = None;
+            store.restore_failed = false;
+            // Fail closed while attachment/validation is still in progress.
+            store.provisioning_closed = true;
+        }
+
+        let fail_restore = |error: String| {
+            let mut store = self.inner.lock();
+            store.last_error = Some(error.clone());
+            store.restore_failed = true;
+            store.provisioning_closed = true;
+            Err(error)
+        };
+
+        if path
+            .symlink_metadata()
+            .is_ok_and(|metadata| metadata.file_type().is_symlink())
+        {
+            return fail_restore("Refusing symbolic-link user realm".into());
+        }
+
+        if !path.exists() {
+            if !project.users.is_empty() {
+                return fail_restore(
+                    "Refusing to seed a new user realm from project-embedded accounts".into(),
+                );
+            }
+            {
+                let mut store = self.inner.lock();
+                store.provisioning_closed = false;
+            }
+            return self.persist_users(&project.users, false);
+        }
+
+        let result = (|| -> Result<(Vec<UserAccount>, bool), String> {
+            let bytes = std::fs::read(path).map_err(|error| format!("read user realm: {error}"))?;
+            let journal: UserRealmJournal = serde_json::from_slice(&bytes)
+                .map_err(|error| format!("user realm is corrupt: {error}"))?;
+            validate_user_realm_journal(&journal, project)?;
+            restrict_secret_file_permissions(path)?;
+            Ok((journal.users, journal.provisioning_closed))
+        })();
+
+        match result {
+            Ok((users, provisioning_closed)) => {
+                let mut project = g.project.clone().ok_or("No project loaded")?;
+                project.users = users;
+                project.recompute_hash();
+                g.project = Some(project);
+                let mut store = self.inner.lock();
+                store.last_error = None;
+                store.restore_failed = false;
+                store.provisioning_closed = provisioning_closed;
+                Ok(())
+            }
+            Err(error) => fail_restore(error),
+        }
+    }
+
+    fn persist_users(
+        &self,
+        users: &[UserAccount],
+        provisioning_closed: bool,
+    ) -> Result<(), String> {
+        let path = {
+            let store = self.inner.lock();
+            if store.restore_failed {
+                return Err(
+                    "User realm restore failed; account mutation is blocked until recovery".into(),
+                );
+            }
+            store.path.clone().ok_or("User realm is not attached")?
+        };
+        if !provisioning_closed && !users.is_empty() {
+            return Err("An open user realm cannot contain accounts".into());
+        }
+        let journal = build_user_realm_journal(users, provisioning_closed)?;
+        let bytes = serde_json::to_vec_pretty(&journal)
+            .map_err(|error| format!("encode user realm: {error}"))?;
+        let result = atomic_write_protected_state(&path, &bytes, "user realm");
+        let mut store = self.inner.lock();
+        match result {
+            Ok(()) => {
+                store.last_error = None;
+                store.provisioning_closed = provisioning_closed;
+                Ok(())
+            }
+            Err(error) => {
+                store.last_error = Some(error.clone());
+                Err(error)
+            }
+        }
+    }
+
+    fn status(&self) -> (bool, Option<String>) {
+        let store = self.inner.lock();
+        (
+            store.path.is_some() && !store.restore_failed && store.last_error.is_none(),
+            store.last_error.clone(),
+        )
+    }
+
+    fn bootstrap_available(&self, users_are_empty: bool) -> bool {
+        let store = self.inner.lock();
+        store.path.is_some()
+            && !store.restore_failed
+            && store.last_error.is_none()
+            && !store.provisioning_closed
+            && users_are_empty
+    }
+
+    fn owns_path(&self, path: &Path) -> bool {
+        self.inner
+            .lock()
+            .path
+            .as_deref()
+            .is_some_and(|owned| paths_refer_to_same_file(owned, path))
+    }
+}
 
 impl Engine {
     pub fn new(audit: Arc<AuditLog>) -> Self {
@@ -183,11 +531,17 @@ impl Engine {
                 current_user: None,
                 security_level: 0,
                 last_activity_ts: Utc::now(),
-                mode: "designer".into(),
+                auth_epoch: 0,
+                project_epoch: 0,
+                poll_epoch: 0,
+                login_throttle: HashMap::new(),
+                mode: "runtime".into(),
                 poll_handle: None,
                 stop_tx: None,
             })),
             audit,
+            alarm_state_store: Arc::new(AlarmStateStore::default()),
+            user_realm_store: Arc::new(UserRealmStore::default()),
             write_locks: Mutex::new(HashMap::new()),
             write_sessions: Mutex::new(HashMap::new()),
             rt,
@@ -196,6 +550,16 @@ impl Engine {
 
     pub fn audit(&self) -> Arc<AuditLog> {
         self.audit.clone()
+    }
+
+    pub fn attach_alarm_state_store(&self, path: &Path) -> Result<(), String> {
+        let mut g = self.inner.write();
+        self.alarm_state_store.attach(path, &mut g)
+    }
+
+    pub fn attach_user_realm_store(&self, path: &Path) -> Result<(), String> {
+        let mut g = self.inner.write();
+        self.user_realm_store.attach(path, &mut g)
     }
 
     /// Handle to the dedicated Modbus/poll Tokio runtime.
@@ -208,28 +572,43 @@ impl Engine {
     /// `verify_integrity` is only false for the built-in template, which is
     /// constructed in memory and therefore has no stored hash to compare.
     fn install_project(&self, project: ScadaProject, verify_integrity: bool) -> Result<(), String> {
+        self.install_project_inner(project, verify_integrity, false)
+    }
+
+    fn install_project_inner(
+        &self,
+        project: ScadaProject,
+        verify_integrity: bool,
+        preserve_alarm_state: bool,
+    ) -> Result<(), String> {
         let mut proj = project;
         // Verify *before* mutating, otherwise the check compares the content
         // against a hash we just recomputed and can never fail.
+        if verify_integrity && proj.content_hash.trim().is_empty() {
+            return Err("External project is missing its content hash".into());
+        }
         if verify_integrity && !proj.verify_hash() {
             return Err("Project content hash verification failed".into());
         }
+        proj.harden_seeded_accounts();
         proj.validate()?;
-        proj.ensure_default_users();
         proj.recompute_hash();
 
-        self.stop_polling();
+        self.stop_polling_internal()?;
         self.close_write_sessions();
         let mut g = self.inner.write();
+        let previous_project = g.project.clone();
+        let previous_alarms = if preserve_alarm_state {
+            g.alarms.clone()
+        } else {
+            HashMap::new()
+        };
         let mut tags = HashMap::new();
         for def in &proj.tags {
             let is_internal = def.binding.table == ModbusTable::Memory
                 || def.binding.table == ModbusTable::System;
             let initial_value = if is_internal {
-                def.initial_value
-                    .as_deref()
-                    .and_then(|s| s.parse::<f64>().ok())
-                    .unwrap_or(0.0)
+                normalize_internal_initial(def).unwrap_or(0.0)
             } else {
                 0.0
             };
@@ -260,7 +639,23 @@ impl Engine {
         }
         let mut alarms = HashMap::new();
         for def in &proj.alarms {
-            alarms.insert(def.id.clone(), new_alarm_instance(def));
+            let preserved = previous_project
+                .as_ref()
+                .and_then(|old_project| {
+                    old_project
+                        .alarms
+                        .iter()
+                        .find(|old| alarm_logic_compatible(old, def))
+                })
+                .and_then(|_| previous_alarms.get(&def.id))
+                .cloned();
+            let mut instance = preserved.unwrap_or_else(|| new_alarm_instance(def));
+            instance.name = def.name.clone();
+            instance.message = def.message.clone();
+            instance.priority = def.priority.clone();
+            instance.group_id = def.group_id.clone();
+            instance.latched = def.latching;
+            alarms.insert(def.id.clone(), instance);
         }
         let name = proj.name.clone();
         g.project = Some(proj);
@@ -270,19 +665,42 @@ impl Engine {
         g.device_id = None;
         g.last_error = None;
         g.poll_count = 0;
+        g.project_epoch = g.project_epoch.wrapping_add(1);
+        let alarm_state_result = if self.alarm_state_store.is_attached() {
+            self.alarm_state_store.persist(&g)
+        } else {
+            Ok(())
+        };
         let actor = g.actor.clone();
         let role = g.role.clone();
         drop(g);
         self.audit
             .append(&actor, role_str(&role), "project.load", &name);
+        alarm_state_result?;
         Ok(())
     }
 
-    /// Load a project file. Loading always drops the current session, because
-    /// the project *is* the user database: adopting a new one must never carry
-    /// privileges granted by the previous one.
-    pub fn load_project(&self, project: ScadaProject) -> Result<(), String> {
-        self.install_project(project, true)?;
+    /// Import a project while preserving the current authentication realm.
+    ///
+    /// User records in an imported file are never adopted: otherwise an
+    /// Engineer could import a correctly hashed project containing their own
+    /// Administrator account and escalate privileges.
+    pub fn load_project(&self, mut project: ScadaProject) -> Result<(), String> {
+        if project.content_hash.trim().is_empty() {
+            return Err("External project is missing its content hash".into());
+        }
+        if !project.verify_hash() {
+            return Err("Project content hash verification failed".into());
+        }
+        project.users = self
+            .inner
+            .read()
+            .project
+            .as_ref()
+            .map(|current| current.users.clone())
+            .unwrap_or_default();
+        project.recompute_hash();
+        self.install_project(project, false)?;
         self.reset_session("project.load");
         Ok(())
     }
@@ -294,9 +712,26 @@ impl Engine {
         Ok(())
     }
 
+    /// User-triggered built-in load follows the same realm-preserving rule as
+    /// external import. Only process/design content is replaced.
+    pub fn load_builtin_preserving_users(&self, mut project: ScadaProject) -> Result<(), String> {
+        project.users = self
+            .inner
+            .read()
+            .project
+            .as_ref()
+            .map(|current| current.users.clone())
+            .unwrap_or_default();
+        project.recompute_hash();
+        self.install_project(project, false)?;
+        self.reset_session("project.load_builtin");
+        Ok(())
+    }
+
     fn reset_session(&self, reason: &str) {
         let mut g = self.inner.write();
         if g.current_user.is_none() && g.security_level == 0 {
+            g.mode = "runtime".into();
             return;
         }
         let prev = g.actor.clone();
@@ -305,13 +740,67 @@ impl Engine {
         g.role = Role::Viewer;
         g.actor = "guest".into();
         g.last_activity_ts = Utc::now();
+        g.auth_epoch = g.auth_epoch.wrapping_add(1);
+        g.mode = "runtime".into();
         drop(g);
         self.audit
             .append(&prev, "viewer", "auth.session_reset", reason);
     }
 
+    #[cfg(test)]
     pub fn get_project(&self) -> Option<ScadaProject> {
         self.inner.read().project.clone()
+    }
+
+    /// Viewer-safe project representation used by the command boundary.
+    /// Account records never leave the trusted Rust side.
+    pub fn get_project_redacted(&self) -> Option<ScadaProject> {
+        self.inner.read().project.clone().map(|mut project| {
+            project.users.clear();
+            project.recompute_hash();
+            project
+        })
+    }
+
+    /// Persist the canonical backend project with a durable same-directory
+    /// temporary file and one recoverable backup of the previous version.
+    /// This administrative export remains a complete backend project and
+    /// therefore includes credential hashes; viewer-facing `get_project`
+    /// continues to return a redacted copy.
+    pub fn save_project_file(&self, path: &str) -> Result<(), String> {
+        self.expire_idle_session();
+        let (project, actor, role) = {
+            let g = self.inner.read();
+            require_engineer(&g, "save a project file")?;
+            (
+                g.project.clone().ok_or("No project loaded")?,
+                g.actor.clone(),
+                g.role.clone(),
+            )
+        };
+        let target = validate_project_file_path(Path::new(path))?;
+        if self.alarm_state_store.owns_path(&target) {
+            return Err("Project save path collides with the alarm-state journal".into());
+        }
+        if self.user_realm_store.owns_path(&target) {
+            return Err("Project save path collides with the user realm".into());
+        }
+        let bytes = serde_json::to_vec_pretty(&project)
+            .map_err(|error| format!("Project serialization failed: {error}"))?;
+        self.audit.append_required(
+            &actor,
+            role_str(&role),
+            "project.save_file_requested",
+            &target.display().to_string(),
+        )?;
+        atomic_write_project(&target, &bytes)?;
+        self.audit.append(
+            &actor,
+            role_str(&role),
+            "project.save_file",
+            &target.display().to_string(),
+        );
+        Ok(())
     }
 
     /// Persist designer edits.
@@ -321,6 +810,7 @@ impl Engine {
     /// administrator level. Otherwise an Engineer could grant themselves
     /// administrator by editing the project payload.
     pub fn set_project_mut(&self, project: ScadaProject) -> Result<(), String> {
+        self.expire_idle_session();
         let existing_users = {
             let g = self.inner.read();
             if !g.role.can_edit_project() {
@@ -340,9 +830,8 @@ impl Engine {
         if let Some(users) = existing_users {
             p.users = users;
         }
-        p.ensure_default_users();
         p.recompute_hash();
-        self.install_project(p, false)
+        self.install_project_inner(p, false, true)
     }
 
     /// Switch between Designer and Runtime.
@@ -350,6 +839,7 @@ impl Engine {
     /// Entering Designer is an engineering action and requires the matching
     /// role; entering Runtime is always allowed so a viewer can observe.
     pub fn set_mode(&self, mode: String) -> Result<(), String> {
+        self.expire_idle_session();
         if mode != "designer" && mode != "runtime" {
             return Err(format!("Unknown mode: {mode}"));
         }
@@ -359,6 +849,7 @@ impl Engine {
         }
         g.mode = mode.clone();
         g.last_activity_ts = Utc::now();
+        g.auth_epoch = g.auth_epoch.wrapping_add(1);
         let actor = g.actor.clone();
         let role = g.role.clone();
         drop(g);
@@ -367,17 +858,67 @@ impl Engine {
         Ok(())
     }
 
-    /// Authenticate by username+password or by PIN alone.
+    /// Provision the first Administrator without any public factory secret.
+    ///
+    /// This is deliberately a one-shot operation: after the first account
+    /// exists, only an authenticated Administrator can manage users.
+    pub fn bootstrap_admin(&self, password: &str) -> Result<UserSummary, String> {
+        if password.chars().count() < 12 {
+            return Err("Bootstrap password must be at least 12 characters long".into());
+        }
+        let mut g = self.inner.write();
+        let mut project = g.project.clone().ok_or("No project loaded")?;
+        if !self
+            .user_realm_store
+            .bootstrap_available(project.users.is_empty())
+        {
+            return Err(
+                "Administrator bootstrap is unavailable because the user realm is closed, absent, or degraded"
+                    .into(),
+            );
+        }
+        let user = UserAccount {
+            id: format!("usr_{}", uuid::Uuid::new_v4().simple()),
+            username: "admin".into(),
+            display_name: "Administrator".into(),
+            password_hash: credentials::hash_secret(password)?,
+            salt: LEGACY_SALT.into(),
+            pin_hash: None,
+            security_level: 1000,
+            enabled: true,
+            password_change_required: false,
+        };
+        let summary = user.to_summary();
+        self.audit.append_required(
+            "local-bootstrap",
+            "unauthenticated",
+            "auth.bootstrap_admin_requested",
+            "Provision first Administrator",
+        )?;
+        project.users.push(user);
+        project.validate()?;
+        project.recompute_hash();
+        self.user_realm_store.persist_users(&project.users, true)?;
+        g.project = Some(project);
+        drop(g);
+        self.audit.append(
+            "local-bootstrap",
+            "unauthenticated",
+            "auth.bootstrap_admin",
+            "First Administrator provisioned; bootstrap permanently closed",
+        );
+        Ok(summary)
+    }
+
+    /// Authenticate by username and password. PINs never establish a session;
+    /// they are reserved for re-authenticating an already signed-in operator.
     ///
     /// Legacy SHA-256 records are accepted once and immediately re-hashed with
     /// Argon2id, so an old project upgrades itself on first successful login.
-    pub fn login(
-        &self,
-        username_or_pin: &str,
-        password: Option<&str>,
-    ) -> Result<UserSummary, String> {
+    pub fn login(&self, username: &str, password: Option<&str>) -> Result<UserSummary, String> {
         let mut g = self.inner.write();
-        let term = username_or_pin.trim();
+        let term = username.trim();
+        let throttle_key = term.to_ascii_lowercase();
         if term.is_empty() {
             drop(g);
             self.audit.append(
@@ -386,7 +927,18 @@ impl Engine {
                 "auth.login_failed",
                 "Empty credential",
             );
-            return Err("Invalid username, password or PIN".into());
+            return Err("Invalid username or password".into());
+        }
+        if login_is_throttled(&mut g, &throttle_key) {
+            let actor = term.to_string();
+            drop(g);
+            self.audit.append(
+                &actor,
+                "unauthenticated",
+                "auth.login_throttled",
+                "Too many failed login attempts",
+            );
+            return Err("Too many failed login attempts; try again later".into());
         }
 
         let project = g.project.as_ref().ok_or("No project loaded")?;
@@ -404,16 +956,10 @@ impl Engine {
                     }
                 }
             }
-            if let Some(pin_hash) = &user.pin_hash {
-                let outcome = credentials::verify_secret(term, pin_hash, &user.salt);
-                if outcome.is_accepted() {
-                    matched = Some((index, LoginKind::Pin, outcome));
-                    break;
-                }
-            }
         }
 
         let Some((index, kind, outcome)) = matched else {
+            record_login_failure(&mut g, &throttle_key);
             drop(g);
             self.audit.append(
                 term,
@@ -421,24 +967,40 @@ impl Engine {
                 "auth.login_failed",
                 "Invalid credentials",
             );
-            return Err("Invalid username, password or PIN".into());
+            return Err("Invalid username or password".into());
         };
+        g.login_throttle.remove(&throttle_key);
 
         let mut rehashed = false;
         if outcome == credentials::Verification::AcceptedNeedsRehash {
             let secret = match kind {
                 LoginKind::Password => password.map(str::to_string),
-                LoginKind::Pin => Some(term.to_string()),
             };
             if let Some(secret) = secret {
                 if let Ok(upgraded) = credentials::hash_secret(&secret) {
-                    if let Some(project) = g.project.as_mut() {
+                    if self
+                        .audit
+                        .append_required(
+                            term,
+                            "unauthenticated",
+                            "auth.credential_rehash_requested",
+                            "Upgrade legacy password hash to Argon2id",
+                        )
+                        .is_ok()
+                    {
+                        let mut project = g.project.clone().expect("project present");
                         match kind {
                             LoginKind::Password => project.users[index].password_hash = upgraded,
-                            LoginKind::Pin => project.users[index].pin_hash = Some(upgraded),
                         }
                         project.recompute_hash();
-                        rehashed = true;
+                        if self
+                            .user_realm_store
+                            .persist_users(&project.users, true)
+                            .is_ok()
+                        {
+                            g.project = Some(project);
+                            rehashed = true;
+                        }
                     }
                 }
             }
@@ -454,6 +1016,7 @@ impl Engine {
         g.role = security_level_to_role(level);
         g.actor = username.clone();
         g.last_activity_ts = Utc::now();
+        g.auth_epoch = g.auth_epoch.wrapping_add(1);
         drop(g);
 
         let role_desc = format!("L{level}");
@@ -476,6 +1039,7 @@ impl Engine {
         current_password: &str,
         new_password: &str,
     ) -> Result<UserSummary, String> {
+        self.expire_idle_session();
         if new_password.chars().count() < 12 {
             return Err("New password must be at least 12 characters long".into());
         }
@@ -489,7 +1053,9 @@ impl Engine {
             .as_ref()
             .map(|u| u.id.clone())
             .ok_or("No user is signed in")?;
-        let project = g.project.as_mut().ok_or("No project loaded")?;
+        let actor = g.actor.clone();
+        let level = g.security_level;
+        let mut project = g.project.clone().ok_or("No project loaded")?;
         let index = project
             .users
             .iter()
@@ -512,14 +1078,27 @@ impl Engine {
             return Err("Current password is incorrect".into());
         }
 
+        self.audit.append_required(
+            &actor,
+            &format!("L{level}"),
+            "auth.password_change_requested",
+            "Replace signed-in user's password",
+        )?;
+        let was_forced_change = project.users[index].password_change_required;
         project.users[index].password_hash = credentials::hash_secret(new_password)?;
         project.users[index].salt = LEGACY_SALT.into();
         project.users[index].password_change_required = false;
+        if was_forced_change {
+            // A PIN provisioned alongside a known/default password cannot be
+            // trusted as an independently established second secret.
+            project.users[index].pin_hash = None;
+        }
         let summary = project.users[index].to_summary();
         project.recompute_hash();
+        self.user_realm_store.persist_users(&project.users, true)?;
+        g.project = Some(project);
         g.current_user = Some(summary.clone());
-        let actor = g.actor.clone();
-        let level = g.security_level;
+        g.auth_epoch = g.auth_epoch.wrapping_add(1);
         drop(g);
 
         self.audit.append(
@@ -540,6 +1119,8 @@ impl Engine {
         g.role = Role::Viewer;
         g.actor = "guest".into();
         g.last_activity_ts = Utc::now();
+        g.auth_epoch = g.auth_epoch.wrapping_add(1);
+        g.mode = "runtime".into();
         drop(g);
         self.audit.append(
             &prev_actor,
@@ -550,56 +1131,23 @@ impl Engine {
         Ok(())
     }
 
-    /// Re-authenticate the *signed-in* operator by PIN.
-    ///
-    /// Accepting any sufficiently privileged account's PIN would let one
-    /// operator confirm another operator's action, so only the current user's
-    /// PIN is considered.
-    pub fn verify_pin(&self, pin: &str) -> Result<bool, String> {
-        let mut g = self.inner.write();
-        let project = g.project.as_ref().ok_or("No project loaded")?;
-        let Some(current) = g.current_user.as_ref() else {
-            return Ok(false);
-        };
-        let Some(user) = project
-            .users
-            .iter()
-            .find(|u| u.enabled && u.id == current.id)
-        else {
-            return Ok(false);
-        };
-        let Some(pin_hash) = &user.pin_hash else {
-            return Ok(false);
-        };
-        let accepted = credentials::verify_secret(pin, pin_hash, &user.salt).is_accepted();
-        if accepted {
-            g.last_activity_ts = Utc::now();
-        }
-        let actor = g.actor.clone();
-        let level = g.security_level;
-        drop(g);
-        if !accepted {
-            self.audit.append(
-                &actor,
-                &format!("L{level}"),
-                "auth.pin_rejected",
-                "PIN challenge failed",
-            );
-        }
-        Ok(accepted)
-    }
-
     pub fn list_users(&self) -> Result<Vec<UserSummary>, String> {
+        self.expire_idle_session();
         let g = self.inner.read();
+        require_administrator(&g)?;
         let project = g.project.as_ref().ok_or("No project loaded")?;
         Ok(project.users.iter().map(|u| u.to_summary()).collect())
     }
 
     pub fn save_user(&self, input: UserAccountInput) -> Result<UserSummary, String> {
+        self.expire_idle_session();
         let mut g = self.inner.write();
         require_administrator(&g)?;
         if input.username.trim().is_empty() {
             return Err("Username must not be empty".into());
+        }
+        if input.security_level > 1000 {
+            return Err("Security level must be 0..=1000".into());
         }
         if let Some(pwd) = input.password.as_deref().map(str::trim) {
             if !pwd.is_empty() && pwd.chars().count() < 12 {
@@ -608,40 +1156,70 @@ impl Engine {
         }
         if let Some(pin) = input.pin.as_deref().map(str::trim) {
             if !pin.is_empty()
-                && (pin.chars().count() < 4 || !pin.chars().all(|c| c.is_ascii_digit()))
+                && (pin.chars().count() < 6 || !pin.chars().all(|c| c.is_ascii_digit()))
             {
-                return Err("PIN must be at least 4 digits".into());
+                return Err("PIN must be at least 6 digits".into());
             }
         }
-        let project = g.project.as_mut().ok_or("No project loaded")?;
-
-        let user_idx = if let Some(id) = &input.id {
-            project.users.iter().position(|u| u.id == *id)
-        } else {
-            project
-                .users
-                .iter()
-                .position(|u| u.username.eq_ignore_ascii_case(&input.username))
+        let mut project = g.project.clone().ok_or("No project loaded")?;
+        let user_idx = match input.id.as_deref() {
+            Some(id) => Some(
+                project
+                    .users
+                    .iter()
+                    .position(|u| u.id == id)
+                    .ok_or("User not found")?,
+            ),
+            None => None,
         };
+        if project.users.iter().enumerate().any(|(idx, user)| {
+            Some(idx) != user_idx && user.username.eq_ignore_ascii_case(input.username.trim())
+        }) {
+            return Err("Username is already in use".into());
+        }
+        if g.current_user
+            .as_ref()
+            .is_some_and(|current| Some(current.id.as_str()) == input.id.as_deref())
+            && !input.enabled
+        {
+            return Err("You cannot disable the account you are signed in with".into());
+        }
+        if let Some(pin) = input
+            .pin
+            .as_deref()
+            .map(str::trim)
+            .filter(|pin| !pin.is_empty())
+        {
+            if project.users.iter().enumerate().any(|(idx, user)| {
+                Some(idx) != user_idx
+                    && user.pin_hash.as_ref().is_some_and(|hash| {
+                        credentials::verify_secret(pin, hash, &user.salt).is_accepted()
+                    })
+            }) {
+                return Err("PIN is already assigned to another account".into());
+            }
+        }
 
         let summary = if let Some(idx) = user_idx {
-            let u = &mut project.users[idx];
-            u.username = input.username.clone();
-            u.display_name = input.display_name.clone();
-            u.security_level = input.security_level;
-            u.enabled = input.enabled;
+            let user = &mut project.users[idx];
+            user.username = input.username.trim().to_string();
+            user.display_name = input.display_name.trim().to_string();
+            user.security_level = input.security_level;
+            user.enabled = input.enabled;
             if let Some(pwd) = input.password.as_deref().map(str::trim) {
                 if !pwd.is_empty() {
-                    u.password_hash = credentials::hash_secret(pwd)?;
-                    u.password_change_required = false;
+                    user.password_hash = credentials::hash_secret(pwd)?;
+                    user.password_change_required = false;
                 }
             }
             if let Some(pin) = input.pin.as_deref().map(str::trim) {
-                if !pin.is_empty() {
-                    u.pin_hash = Some(credentials::hash_secret(pin)?);
-                }
+                user.pin_hash = if pin.is_empty() {
+                    None
+                } else {
+                    Some(credentials::hash_secret(pin)?)
+                };
             }
-            u.to_summary()
+            user.to_summary()
         } else {
             let pwd = input
                 .password
@@ -659,11 +1237,9 @@ impl Engine {
                 None => None,
             };
             let new_user = UserAccount {
-                id: input
-                    .id
-                    .unwrap_or_else(|| format!("usr_{}", uuid::Uuid::new_v4().simple())),
-                username: input.username,
-                display_name: input.display_name,
+                id: format!("usr_{}", uuid::Uuid::new_v4().simple()),
+                username: input.username.trim().to_string(),
+                display_name: input.display_name.trim().to_string(),
                 password_hash: credentials::hash_secret(pwd)?,
                 salt: LEGACY_SALT.into(),
                 pin_hash,
@@ -676,7 +1252,29 @@ impl Engine {
             sum
         };
 
+        project.validate()?;
         project.recompute_hash();
+        self.audit.append_required(
+            &g.actor,
+            role_str(&g.role),
+            "user.save_requested",
+            &format!(
+                "User {} (Level {})",
+                summary.username, summary.security_level
+            ),
+        )?;
+        self.user_realm_store.persist_users(&project.users, true)?;
+        g.project = Some(project);
+        if g.current_user
+            .as_ref()
+            .is_some_and(|current| current.id == summary.id)
+        {
+            g.current_user = Some(summary.clone());
+            g.security_level = summary.security_level;
+            g.role = security_level_to_role(summary.security_level);
+            g.actor = summary.username.clone();
+            g.auth_epoch = g.auth_epoch.wrapping_add(1);
+        }
         let actor = g.actor.clone();
         let level = g.security_level;
         drop(g);
@@ -695,12 +1293,15 @@ impl Engine {
     }
 
     pub fn delete_user(&self, user_id: &str) -> Result<(), String> {
+        self.expire_idle_session();
         let mut g = self.inner.write();
         require_administrator(&g)?;
         if g.current_user.as_ref().is_some_and(|u| u.id == user_id) {
             return Err("You cannot delete the account you are signed in with".into());
         }
-        let project = g.project.as_mut().ok_or("No project loaded")?;
+        let actor = g.actor.clone();
+        let role = g.role.clone();
+        let mut project = g.project.clone().ok_or("No project loaded")?;
 
         let admin_count = project
             .users
@@ -717,8 +1318,17 @@ impl Engine {
             return Err("User not found".into());
         }
 
+        self.audit.append_required(
+            &actor,
+            role_str(&role),
+            "user.delete_requested",
+            &format!("User ID {user_id}"),
+        )?;
         project.users.retain(|u| u.id != user_id);
+        project.validate()?;
         project.recompute_hash();
+        self.user_realm_store.persist_users(&project.users, true)?;
+        g.project = Some(project);
 
         let actor = g.actor.clone();
         let level = g.security_level;
@@ -734,33 +1344,59 @@ impl Engine {
         Ok(())
     }
 
-    /// Expire an idle Runtime session.
-    ///
-    /// Kept separate from [`Engine::snapshot`] so that reading the engine state
-    /// is not a state-changing operation.
+    /// Expire an idle session at a command boundary in every operating mode.
     pub fn expire_idle_session(&self) {
-        let expired = {
-            let g = self.inner.read();
-            if g.mode != "runtime" || g.security_level == 0 {
-                false
+        let expired_identity = {
+            let mut g = self.inner.write();
+            let timeout_mins = g
+                .project
+                .as_ref()
+                .map(|p| p.session_config.auto_logout_minutes)
+                .unwrap_or(15);
+            let expired = g.security_level > 0
+                && timeout_mins > 0
+                && (Utc::now() - g.last_activity_ts).num_seconds() >= i64::from(timeout_mins) * 60;
+            if !expired {
+                None
             } else {
-                let timeout_mins = g
-                    .project
-                    .as_ref()
-                    .map(|p| p.session_config.auto_logout_minutes)
-                    .unwrap_or(15);
-                timeout_mins > 0
-                    && (Utc::now() - g.last_activity_ts).num_seconds()
-                        >= i64::from(timeout_mins) * 60
+                let identity = (g.actor.clone(), g.security_level);
+                g.current_user = None;
+                g.security_level = 0;
+                g.role = Role::Viewer;
+                g.actor = "guest".into();
+                g.last_activity_ts = Utc::now();
+                g.auth_epoch = g.auth_epoch.wrapping_add(1);
+                g.mode = "runtime".into();
+                Some(identity)
             }
         };
-        if expired {
-            let _ = self.logout();
+        if let Some((actor, level)) = expired_identity {
+            self.audit.append(
+                &actor,
+                &format!("L{level}"),
+                "auth.session_expired",
+                "Idle timeout reached",
+            );
         }
     }
 
     pub fn snapshot(&self) -> EngineSnapshot {
-        let g = self.inner.read();
+        let mut g = self.inner.write();
+        let mut alarm_changed = refresh_stale_quality(&mut g);
+        if refresh_system_tags(&mut g) {
+            let alarms = g
+                .project
+                .as_ref()
+                .map(|project| project.alarms.clone())
+                .unwrap_or_default();
+            alarm_changed |= evaluate_alarms(&mut g, &alarms);
+        }
+        if alarm_changed {
+            let _ = self.alarm_state_store.persist_if_attached(&g);
+        }
+        let audit_status = self.audit.status_redacted();
+        let (alarm_state_persisted, alarm_state_last_error) = self.alarm_state_store.status();
+        let (user_realm_persisted, user_realm_last_error) = self.user_realm_store.status();
         let now = Utc::now();
 
         let tags: Vec<TagValue> = g
@@ -768,17 +1404,11 @@ impl Engine {
             .values()
             .map(|t| {
                 let age = (now - t.ts).num_milliseconds().max(0) as u64;
-                let is_internal = t.def.binding.table == ModbusTable::Memory
-                    || t.def.binding.table == ModbusTable::System;
                 TagValue {
                     tag_id: t.def.id.clone(),
                     value: t.value,
                     bool_value: t.bool_value,
-                    quality: if !is_internal && age > 3000 && t.quality == Quality::Good {
-                        Quality::Uncertain
-                    } else {
-                        t.quality
-                    },
+                    quality: t.quality,
                     ts: t.ts,
                     age_ms: age,
                     raw: t.raw,
@@ -806,6 +1436,18 @@ impl Engine {
                 .current_user
                 .as_ref()
                 .is_some_and(|u| u.password_change_required),
+            requires_bootstrap: self.user_realm_store.bootstrap_available(
+                g.project
+                    .as_ref()
+                    .is_some_and(|project| project.users.is_empty()),
+            ),
+            audit_chain_ok: audit_status.chain_ok,
+            audit_persisted: audit_status.persisted,
+            audit_last_error: audit_status.last_error,
+            alarm_state_persisted,
+            alarm_state_last_error,
+            user_realm_persisted,
+            user_realm_last_error,
         }
     }
 
@@ -828,8 +1470,9 @@ impl Engine {
         });
     }
 
-    pub fn stop_polling(&self) {
+    fn stop_polling_internal(&self) -> Result<(), String> {
         let mut g = self.inner.write();
+        g.poll_epoch = g.poll_epoch.wrapping_add(1);
         if let Some(tx) = g.stop_tx.take() {
             let _ = tx.send(true);
         }
@@ -837,10 +1480,45 @@ impl Engine {
             h.abort();
         }
         g.connected = false;
+        g.device_id = None;
+        mark_all_bad(&mut g);
+        refresh_system_tags(&mut g);
+        let alarms = g
+            .project
+            .as_ref()
+            .map(|project| project.alarms.clone())
+            .unwrap_or_default();
+        let alarm_changed = evaluate_alarms(&mut g, &alarms);
+        if alarm_changed {
+            self.alarm_state_store.persist_if_attached(&g)?;
+        }
+        Ok(())
+    }
+
+    pub fn stop_polling(&self) -> Result<(), String> {
+        self.expire_idle_session();
+        {
+            let g = self.inner.read();
+            require_runtime_operator(&g, "stop polling")?;
+        }
+        self.stop_polling_internal()?;
+        let g = self.inner.read();
+        self.audit.append(
+            &g.actor,
+            role_str(&g.role),
+            "poll.stop",
+            "Polling stopped; PLC tag quality set to Bad",
+        );
+        Ok(())
     }
 
     pub fn start_polling(&self, device_id: Option<String>) -> Result<(), String> {
-        self.stop_polling();
+        self.expire_idle_session();
+        {
+            let g = self.inner.read();
+            require_runtime_operator(&g, "start polling")?;
+        }
+        self.stop_polling_internal()?;
         let (project, device) = {
             let g = self.inner.read();
             let project = g
@@ -852,8 +1530,6 @@ impl Engine {
                     .devices
                     .iter()
                     .find(|d| d.id == *id)
-                    .or_else(|| project.devices.iter().find(|d| d.enabled))
-                    .or_else(|| project.devices.first())
                     .cloned()
                     .ok_or_else(|| format!("Device not found: {id}"))?
             } else {
@@ -861,27 +1537,41 @@ impl Engine {
                     .devices
                     .iter()
                     .find(|d| d.enabled)
-                    .or_else(|| project.devices.first())
                     .cloned()
                     .ok_or_else(|| "No enabled device in project".to_string())?
             };
+            if !device.enabled {
+                return Err(format!("Device is disabled: {}", device.id));
+            }
             (project, device)
         };
 
         let (stop_tx, stop_rx) = watch::channel(false);
         let inner = self.inner.clone();
         let audit = self.audit.clone();
+        let alarm_state_store = self.alarm_state_store.clone();
         let dev_id = device.id.clone();
+        let poll_epoch;
 
         {
             let mut g = inner.write();
+            poll_epoch = g.poll_epoch;
             g.device_id = Some(dev_id.clone());
             g.stop_tx = Some(stop_tx);
             g.last_error = None;
         }
 
         let handle = self.rt.spawn(async move {
-            poll_loop(inner, audit, project, device, stop_rx).await;
+            poll_loop(
+                inner,
+                audit,
+                alarm_state_store,
+                project,
+                device,
+                stop_rx,
+                poll_epoch,
+            )
+            .await;
         });
 
         self.inner.write().poll_handle = Some(handle);
@@ -906,105 +1596,181 @@ impl Engine {
             .clone()
     }
 
-    pub async fn write_tag(&self, tag_id: &str, value: f64) -> Result<(), String> {
+    #[cfg(test)]
+    pub async fn write_tag(&self, tag_id: &str, value: f64) -> Result<WriteReceipt, String> {
+        self.write_tag_with_pin(tag_id, value, None).await
+    }
+
+    /// Authorize, optionally challenge, execute and observe one process write.
+    ///
+    /// The PIN is checked here, against the same signed-in identity and project
+    /// epoch used for the write. No separate PIN-verification oracle exists.
+    pub async fn write_tag_with_pin(
+        &self,
+        tag_id: &str,
+        value: f64,
+        pin: Option<&str>,
+    ) -> Result<WriteReceipt, String> {
+        self.expire_idle_session();
         if !value.is_finite() {
-            return Err("Write value must be finite".into());
+            let error = "Write value must be finite".to_string();
+            self.audit_write_denied(tag_id, value, &error);
+            return Err(error);
         }
-        let (role, actor, def) = {
-            let g = self.inner.read();
-            if !g.role.can_write() {
-                return Err("Role cannot write process values".into());
+
+        let authorization = {
+            let mut g = self.inner.write();
+            if refresh_stale_quality(&mut g) {
+                if let Err(error) = self.alarm_state_store.persist_if_attached(&g) {
+                    drop(g);
+                    self.audit_write_denied(tag_id, value, &error);
+                    return Err(error);
+                }
             }
-            if g.mode != "runtime" {
-                return Err("Process writes are blocked outside Runtime mode".into());
+            match authorize_write_locked(&g, tag_id, pin) {
+                Ok(authorization) => authorization,
+                Err(error) => {
+                    drop(g);
+                    self.audit_write_denied(tag_id, value, &error);
+                    return Err(error);
+                }
             }
-            if g.current_user
-                .as_ref()
-                .is_some_and(|u| u.password_change_required)
-            {
-                return Err("Change the default password before writing to the process".into());
-            }
-            let project = g.project.as_ref().ok_or("No project")?;
-            let tag = project
-                .tags
-                .iter()
-                .find(|t| t.id == tag_id)
-                .ok_or("Tag not found")?
-                .clone();
-            if !tag.binding.writable {
-                return Err("Tag is not writable".into());
-            }
-            if g.security_level < tag.binding.min_security_level {
-                return Err(format!(
-                    "Security level {} required to write this tag (current: {})",
-                    tag.binding.min_security_level, g.security_level
-                ));
-            }
-            let live = g.tags.get(tag_id).ok_or("Live tag not found")?;
-            if live.quality != Quality::Good {
-                return Err(format!(
-                    "Tag quality must be Good before write (current: {:?})",
-                    live.quality
-                ));
-            }
-            (g.role.clone(), g.actor.clone(), tag)
         };
 
-        if def.binding.table == ModbusTable::Memory {
-            let bool_val = value != 0.0;
-            {
-                let mut g = self.inner.write();
-                if let Some(live) = g.tags.get_mut(tag_id) {
-                    live.value = value;
-                    live.bool_value = bool_val;
-                    live.quality = Quality::Good;
-                    live.ts = Utc::now();
-                    live.raw = value as u16;
+        let addr = authorization.def.binding.address;
+        let lock = {
+            let mut locks = self.write_locks.lock();
+            locks
+                .entry((authorization.def.device_id.clone(), addr))
+                .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+                .clone()
+        };
+        let _write_guard = lock.lock().await;
+
+        // A queued command may have waited behind another write. Re-check all
+        // gates, including timeout, mode, project epoch, quality and PIN.
+        self.expire_idle_session();
+        {
+            let mut g = self.inner.write();
+            if refresh_stale_quality(&mut g) {
+                if let Err(error) = self.alarm_state_store.persist_if_attached(&g) {
+                    drop(g);
+                    self.audit_write_denied(tag_id, value, &error);
+                    return Err(error);
                 }
+            }
+            if let Err(error) = revalidate_write_locked(&g, &authorization, tag_id, pin) {
+                drop(g);
+                self.audit_write_denied(tag_id, value, &error);
+                return Err(error);
+            }
+        }
+        if let Err(error) = self.audit.append_required(
+            &authorization.actor,
+            role_str(&authorization.role),
+            "tag.write_requested",
+            &format!("{tag_id}={value}"),
+        ) {
+            let reason = format!("Durable audit unavailable; write blocked: {error}");
+            self.audit_write_denied(tag_id, value, &reason);
+            return Err(reason);
+        }
+        self.expire_idle_session();
+        {
+            let mut g = self.inner.write();
+            if refresh_stale_quality(&mut g) {
+                if let Err(error) = self.alarm_state_store.persist_if_attached(&g) {
+                    drop(g);
+                    self.audit_write_denied(tag_id, value, &error);
+                    return Err(error);
+                }
+            }
+            if let Err(error) = revalidate_write_locked(&g, &authorization, tag_id, pin) {
+                drop(g);
+                self.audit_write_denied(tag_id, value, &error);
+                return Err(error);
+            }
+        }
+
+        let def = authorization.def.clone();
+        if def.binding.table == ModbusTable::Memory {
+            let outcome = match normalize_internal_write(&def, value) {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    self.audit_write_denied(tag_id, value, &error);
+                    return Err(error);
+                }
+            };
+            let alarm_persist_result = {
+                let mut g = self.inner.write();
+                if let Err(error) = revalidate_write_locked(&g, &authorization, tag_id, pin) {
+                    drop(g);
+                    self.audit_write_denied(tag_id, value, &error);
+                    return Err(error);
+                }
+                let live = g.tags.get_mut(tag_id).ok_or("Live tag not found")?;
+                live.value = outcome.engineering_value;
+                live.bool_value = outcome.bool_value;
+                live.quality = Quality::Good;
+                live.ts = Utc::now();
+                live.raw = outcome.raw;
                 let project_alarms = g
                     .project
                     .as_ref()
                     .map(|p| p.alarms.clone())
                     .unwrap_or_default();
-                evaluate_alarms(&mut g, &project_alarms);
+                let alarm_changed = evaluate_alarms(&mut g, &project_alarms);
+                g.last_activity_ts = Utc::now();
+                if alarm_changed {
+                    self.alarm_state_store.persist_if_attached(&g)
+                } else {
+                    Ok(())
+                }
+            };
+            if let Err(error) = alarm_persist_result {
+                self.audit.append(
+                    &authorization.actor,
+                    role_str(&authorization.role),
+                    "alarm.state_persist_failed",
+                    &format!("{tag_id}: {error}"),
+                );
+                return Err(format!(
+                    "Memory write was observed as {}, but alarm state persistence failed: {error}",
+                    outcome.engineering_value
+                ));
             }
             self.audit.append(
-                &actor,
-                role_str(&role),
+                &authorization.actor,
+                role_str(&authorization.role),
                 "tag.write",
-                &format!("{tag_id}={value}"),
+                &format!(
+                    "{tag_id}={value} (observed={}, protocol=memory)",
+                    outcome.engineering_value
+                ),
             );
-            return Ok(());
+            let matches = values_match(&def, value, outcome.engineering_value);
+            if def.binding.verify_readback && !matches {
+                return Err("Internal write verification mismatch".into());
+            }
+            return Ok(WriteReceipt {
+                tag_id: tag_id.to_string(),
+                requested_value: value,
+                observed_value: outcome.engineering_value,
+                raw_readback: outcome.raw,
+                protocol: outcome.protocol.into(),
+                verify_readback: def.binding.verify_readback,
+                matches,
+            });
         }
 
-        let device = {
-            let g = self.inner.read();
-            let project = g.project.as_ref().ok_or("No project")?;
-            project
-                .devices
-                .iter()
-                .find(|d| d.id == def.device_id)
-                .ok_or("Device missing")?
-                .clone()
-        };
-
+        let device = authorization.device.clone().ok_or("Device missing")?;
         let cfg = ConnectionConfig {
             host: device.host,
             port: device.port,
             unit_id: device.unit_id,
             timeout_ms: device.timeout_ms,
         };
-        let addr = def.binding.address;
-        let lock = {
-            let mut locks = self.write_locks.lock();
-            locks
-                .entry((def.device_id.clone(), addr))
-                .or_insert_with(|| Arc::new(AsyncMutex::new(())))
-                .clone()
-        };
-        let _write_guard = lock.lock().await;
         let session = self.write_session(&def.device_id).await;
-
         let outcome = self
             .rt
             .spawn({
@@ -1037,8 +1803,8 @@ impl Engine {
             Ok(outcome) => outcome,
             Err(error) => {
                 self.audit.append(
-                    &actor,
-                    role_str(&role),
+                    &authorization.actor,
+                    role_str(&authorization.role),
                     "tag.write_failed",
                     &format!("{tag_id}={value}: {error}"),
                 );
@@ -1046,31 +1812,93 @@ impl Engine {
             }
         };
 
-        {
+        self.expire_idle_session();
+        let alarm_persist_result = {
             let mut g = self.inner.write();
-            if let Some(t) = g.tags.get_mut(tag_id) {
-                t.raw = raw;
-                t.value = engineering_value;
-                t.bool_value = bool_value;
-                t.quality = Quality::Good;
-                t.ts = Utc::now();
+            let mut alarm_changed = refresh_stale_quality(&mut g);
+            if let Err(error) = revalidate_write_locked(&g, &authorization, tag_id, pin) {
+                drop(g);
+                self.audit.append(
+                    &authorization.actor,
+                    role_str(&authorization.role),
+                    "tag.write_observed_after_auth_change",
+                    &format!(
+                        "{tag_id}={value} observed={engineering_value}, raw_readback={raw}: {error}"
+                    ),
+                );
+                return Err(format!(
+                    "PLC write was observed as {engineering_value}, but local authorization changed before commit: {error}"
+                ));
             }
+            let live = g.tags.get_mut(tag_id).ok_or("Live tag not found")?;
+            live.raw = raw;
+            live.value = engineering_value;
+            live.bool_value = bool_value;
+            live.quality = Quality::Good;
+            live.ts = Utc::now();
+            let project_alarms = g
+                .project
+                .as_ref()
+                .map(|project| project.alarms.clone())
+                .unwrap_or_default();
+            alarm_changed |= evaluate_alarms(&mut g, &project_alarms);
             g.last_activity_ts = Utc::now();
+            if alarm_changed {
+                self.alarm_state_store.persist_if_attached(&g)
+            } else {
+                Ok(())
+            }
+        };
+        if let Err(error) = alarm_persist_result {
+            self.audit.append(
+                &authorization.actor,
+                role_str(&authorization.role),
+                "alarm.state_persist_failed",
+                &format!("{tag_id}: {error}"),
+            );
+            return Err(format!(
+                "PLC write was observed as {engineering_value}, but alarm state persistence failed: {error}"
+            ));
         }
 
         self.audit.append(
-            &actor,
-            role_str(&role),
+            &authorization.actor,
+            role_str(&authorization.role),
             "tag.write",
             &format!(
                 "{tag_id}={value} (observed={engineering_value}, raw_readback={raw}, protocol={protocol}, bit={:?}, verify_readback={})",
                 def.binding.bit, def.binding.verify_readback
             ),
         );
-        Ok(())
+        let matches = values_match(&def, value, engineering_value);
+        if def.binding.verify_readback && !matches {
+            return Err(format!(
+                "Write read-back mismatch: requested {value}, observed {engineering_value}"
+            ));
+        }
+        Ok(WriteReceipt {
+            tag_id: tag_id.to_string(),
+            requested_value: value,
+            observed_value: engineering_value,
+            raw_readback: raw,
+            protocol: protocol.into(),
+            verify_readback: def.binding.verify_readback,
+            matches,
+        })
+    }
+
+    fn audit_write_denied(&self, tag_id: &str, value: f64, reason: &str) {
+        let g = self.inner.read();
+        self.audit.append(
+            &g.actor,
+            role_str(&g.role),
+            "tag.write_denied",
+            &format!("{tag_id}={value}: {reason}"),
+        );
     }
 
     pub fn ack_alarm(&self, def_id: &str) -> Result<(), String> {
+        self.expire_idle_session();
         let mut g = self.inner.write();
         if !g.role.can_write() {
             return Err("Role cannot acknowledge alarms".into());
@@ -1078,33 +1906,253 @@ impl Engine {
         // The operator interacted with the plant, so the session is alive even
         // when the acknowledgement itself turns out to be a no-op.
         g.last_activity_ts = Utc::now();
-        let inst = g.alarms.get_mut(def_id).ok_or("Alarm not found")?;
-        let reset =
-            matches!(inst.state, AlarmState::ActiveAcked) && inst.latched && !inst.source_active;
-        match inst.state {
-            AlarmState::ActiveUnacked => inst.state = AlarmState::ActiveAcked,
-            AlarmState::ClearedUnacked => inst.state = AlarmState::Inactive,
-            AlarmState::ActiveAcked if inst.latched && !inst.source_active => {
-                inst.state = AlarmState::Inactive
+        let actor = g.actor.clone();
+        let role = g.role.clone();
+        let mut candidate = g.alarms.get(def_id).cloned().ok_or("Alarm not found")?;
+        let reset = matches!(candidate.state, AlarmState::ActiveAcked)
+            && candidate.latched
+            && !candidate.source_active;
+        self.audit
+            .append_required(&actor, role_str(&role), "alarm.ack_requested", def_id)?;
+        match candidate.state {
+            AlarmState::ActiveUnacked => candidate.state = AlarmState::ActiveAcked,
+            AlarmState::ClearedUnacked => candidate.state = AlarmState::Inactive,
+            AlarmState::ActiveAcked if candidate.latched && !candidate.source_active => {
+                candidate.state = AlarmState::Inactive
             }
             _ => return Ok(()),
         };
-        inst.last_change = Utc::now();
-        let actor = g.actor.clone();
-        let role = g.role.clone();
+        candidate.last_change = Utc::now();
+        let mut persisted_alarms = g.alarms.clone();
+        persisted_alarms.insert(def_id.to_string(), candidate.clone());
+        self.alarm_state_store
+            .persist_alarms(&g, &persisted_alarms)?;
+        g.alarms.insert(def_id.to_string(), candidate);
         drop(g);
         let audit_action = if reset { "alarm.reset" } else { "alarm.ack" };
         self.audit
             .append(&actor, role_str(&role), audit_action, def_id);
         Ok(())
     }
+
+    pub fn authorize_project_load(&self) -> Result<(), String> {
+        self.expire_idle_session();
+        let g = self.inner.read();
+        require_engineer(&g, "load a project")
+    }
+
+    pub fn device_connection_config_for_test(
+        &self,
+        device_id: &str,
+    ) -> Result<ConnectionConfig, String> {
+        self.expire_idle_session();
+        let g = self.inner.read();
+        require_engineer(&g, "test a device connection")?;
+        let project = g.project.as_ref().ok_or("No project loaded")?;
+        let device = project
+            .devices
+            .iter()
+            .find(|device| device.id == device_id)
+            .ok_or_else(|| format!("Device not found: {device_id}"))?;
+        Ok(ConnectionConfig {
+            host: device.host.clone(),
+            port: device.port,
+            unit_id: device.unit_id,
+            timeout_ms: device.timeout_ms,
+        })
+    }
+
+    pub fn authorize_audit_read(&self) -> Result<(), String> {
+        self.expire_idle_session();
+        let g = self.inner.read();
+        require_engineer(&g, "read or verify the audit trail")
+    }
+
+    pub fn authorize_audit_status(&self) -> Result<(), String> {
+        self.expire_idle_session();
+        let g = self.inner.read();
+        if !g.role.can_write() {
+            return Err(
+                "Operator, Engineer or Administrator role is required for audit health".into(),
+            );
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+struct WriteAuthorization {
+    actor: String,
+    role: Role,
+    user_id: String,
+    auth_epoch: u64,
+    project_epoch: u64,
+    poll_epoch: u64,
+    def: TagDefinition,
+    device: Option<DeviceConfig>,
+}
+
+fn authorize_write_locked(
+    g: &EngineInner,
+    tag_id: &str,
+    pin: Option<&str>,
+) -> Result<WriteAuthorization, String> {
+    if !g.role.can_write() {
+        return Err("Role cannot write process values".into());
+    }
+    if g.mode != "runtime" {
+        return Err("Process writes are blocked outside Runtime mode".into());
+    }
+    let current = g.current_user.as_ref().ok_or("No user is signed in")?;
+    if current.password_change_required {
+        return Err("Change the default password before writing to the process".into());
+    }
+    let project = g.project.as_ref().ok_or("No project")?;
+    let tag = project
+        .tags
+        .iter()
+        .find(|tag| tag.id == tag_id)
+        .ok_or("Tag not found")?
+        .clone();
+    if !tag.binding.writable {
+        return Err("Tag is not writable".into());
+    }
+    if g.security_level < tag.binding.min_security_level {
+        return Err(format!(
+            "Security level {} required to write this tag (current: {})",
+            tag.binding.min_security_level, g.security_level
+        ));
+    }
+    let live = g.tags.get(tag_id).ok_or("Live tag not found")?;
+    if live.quality != Quality::Good {
+        return Err(format!(
+            "Tag quality must be Good before write (current: {:?})",
+            live.quality
+        ));
+    }
+    if project.session_config.pin_challenge_on_write {
+        let supplied = pin
+            .map(str::trim)
+            .filter(|pin| !pin.is_empty())
+            .ok_or("This project requires a PIN in the same write request")?;
+        let account = project
+            .users
+            .iter()
+            .find(|user| user.enabled && user.id == current.id)
+            .ok_or("Signed-in account is no longer active")?;
+        let pin_hash = account
+            .pin_hash
+            .as_ref()
+            .ok_or("The signed-in account has no PIN configured")?;
+        if !credentials::verify_secret(supplied, pin_hash, &account.salt).is_accepted() {
+            return Err("PIN challenge failed".into());
+        }
+    }
+    let device = if tag.binding.table == ModbusTable::Memory {
+        None
+    } else {
+        let device = project
+            .devices
+            .iter()
+            .find(|device| device.id == tag.device_id)
+            .ok_or("Device missing")?;
+        if !device.enabled {
+            return Err(format!("Device is disabled: {}", device.id));
+        }
+        Some(device.clone())
+    };
+    Ok(WriteAuthorization {
+        actor: g.actor.clone(),
+        role: g.role.clone(),
+        user_id: current.id.clone(),
+        auth_epoch: g.auth_epoch,
+        project_epoch: g.project_epoch,
+        poll_epoch: g.poll_epoch,
+        def: tag,
+        device,
+    })
+}
+
+fn revalidate_write_locked(
+    g: &EngineInner,
+    original: &WriteAuthorization,
+    tag_id: &str,
+    pin: Option<&str>,
+) -> Result<(), String> {
+    if g.auth_epoch != original.auth_epoch {
+        return Err("Session identity, privilege or mode changed".into());
+    }
+    if g.project_epoch != original.project_epoch {
+        return Err("Project changed".into());
+    }
+    if g.poll_epoch != original.poll_epoch {
+        return Err("Polling was stopped or switched".into());
+    }
+    let current = authorize_write_locked(g, tag_id, pin)?;
+    if current.user_id != original.user_id {
+        return Err("Signed-in user changed".into());
+    }
+    Ok(())
 }
 
 /// Which credential satisfied a login attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LoginKind {
     Password,
-    Pin,
+}
+
+fn login_is_throttled(g: &mut EngineInner, key: &str) -> bool {
+    let now = Utc::now();
+    g.login_throttle.retain(|_, state| {
+        state.blocked_until.is_some_and(|until| until > now) || state.failures > 0
+    });
+    g.login_throttle
+        .get(key)
+        .and_then(|state| state.blocked_until)
+        .is_some_and(|until| until > now)
+}
+
+fn record_login_failure(g: &mut EngineInner, key: &str) {
+    const MAX_TRACKED_IDENTITIES: usize = 1_024;
+    if !g.login_throttle.contains_key(key) && g.login_throttle.len() >= MAX_TRACKED_IDENTITIES {
+        let is_configured_user = g.project.as_ref().is_some_and(|project| {
+            project
+                .users
+                .iter()
+                .any(|user| user.username.eq_ignore_ascii_case(key))
+        });
+        if !is_configured_user {
+            // Unknown names are cheap to reject and must not evict throttles
+            // for real accounts from the bounded map.
+            return;
+        }
+        let unconfigured_victim = g.login_throttle.keys().find(|candidate| {
+            !g.project.as_ref().is_some_and(|project| {
+                project
+                    .users
+                    .iter()
+                    .any(|user| user.username.eq_ignore_ascii_case(candidate))
+            })
+        });
+        if let Some(victim) = unconfigured_victim.cloned() {
+            g.login_throttle.remove(&victim);
+        } else if let Some(victim) = g.login_throttle.keys().next().cloned() {
+            g.login_throttle.remove(&victim);
+        }
+    }
+    let state = g
+        .login_throttle
+        .entry(key.to_string())
+        .or_insert(LoginThrottle {
+            failures: 0,
+            blocked_until: None,
+        });
+    state.failures = state.failures.saturating_add(1);
+    if state.failures >= 5 {
+        let exponent = state.failures.saturating_sub(5).min(5);
+        let delay_seconds = 30_i64.saturating_mul(1_i64 << exponent);
+        state.blocked_until = Some(Utc::now() + chrono::Duration::seconds(delay_seconds));
+    }
 }
 
 fn require_administrator(g: &EngineInner) -> Result<(), String> {
@@ -1120,6 +2168,524 @@ fn require_administrator(g: &EngineInner) -> Result<(), String> {
         return Err("Change the default password before administering users".into());
     }
     Ok(())
+}
+
+fn require_engineer(g: &EngineInner, action: &str) -> Result<(), String> {
+    if !g.role.can_edit_project() {
+        return Err(format!(
+            "Engineer or Administrator role is required to {action}"
+        ));
+    }
+    if g.current_user
+        .as_ref()
+        .is_some_and(|user| user.password_change_required)
+    {
+        return Err("Change the default password before this action".into());
+    }
+    Ok(())
+}
+
+fn require_runtime_operator(g: &EngineInner, action: &str) -> Result<(), String> {
+    if !g.role.can_write() {
+        return Err(format!(
+            "Operator, Engineer or Administrator role is required to {action}"
+        ));
+    }
+    if g.mode != "runtime" {
+        return Err(format!("{action} is blocked outside Runtime mode"));
+    }
+    if g.current_user
+        .as_ref()
+        .is_some_and(|user| user.password_change_required)
+    {
+        return Err("Change the default password before controlling polling".into());
+    }
+    Ok(())
+}
+
+fn validate_project_file_path(path: &Path) -> Result<PathBuf, String> {
+    if !path.is_absolute() {
+        return Err("Project save path must be absolute".into());
+    }
+    let filename = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("Project save path has no valid filename")?;
+    let lower = filename.to_ascii_lowercase();
+    if !lower.ends_with(".proscada.json") && !lower.ends_with(".json") {
+        return Err("Project filename must end with .proscada.json or .json".into());
+    }
+    if path
+        .symlink_metadata()
+        .is_ok_and(|metadata| metadata.file_type().is_symlink())
+    {
+        return Err("Refusing to replace a symbolic-link project path".into());
+    }
+    let parent = path
+        .parent()
+        .ok_or("Project save path has no parent directory")?;
+    if !parent.is_dir() {
+        return Err(format!(
+            "Project save directory does not exist: {}",
+            parent.display()
+        ));
+    }
+    Ok(path.to_path_buf())
+}
+
+fn paths_refer_to_same_file(left: &Path, right: &Path) -> bool {
+    left == right
+        || left
+            .canonicalize()
+            .ok()
+            .zip(right.canonicalize().ok())
+            .is_some_and(|(left, right)| left == right)
+}
+
+fn persisted_alarm_states(alarms: &HashMap<String, AlarmInstance>) -> Vec<PersistedAlarmState> {
+    let mut states: Vec<_> = alarms
+        .values()
+        .map(|alarm| PersistedAlarmState {
+            def_id: alarm.def_id.clone(),
+            state: alarm.state.clone(),
+            source_active: alarm.source_active,
+            active_since: alarm.active_since,
+            last_change: alarm.last_change,
+            pending_active_since: alarm.pending_active_since,
+            pending_clear_since: alarm.pending_clear_since,
+        })
+        .collect();
+    states.sort_by(|left, right| left.def_id.cmp(&right.def_id));
+    states
+}
+
+fn alarm_definitions_hash(project: &ScadaProject) -> Result<String, String> {
+    let bytes = serde_json::to_vec(&project.alarms)
+        .map_err(|error| format!("encode alarm definitions: {error}"))?;
+    Ok(hex::encode(Sha256::digest(bytes)))
+}
+
+fn alarm_journal_hash(journal: &AlarmStateJournal) -> Result<String, String> {
+    let mut canonical = journal.clone();
+    canonical.content_hash.clear();
+    let bytes = serde_json::to_vec(&canonical)
+        .map_err(|error| format!("encode alarm-state journal: {error}"))?;
+    Ok(hex::encode(Sha256::digest(bytes)))
+}
+
+fn build_alarm_journal(
+    g: &EngineInner,
+    alarms: &HashMap<String, AlarmInstance>,
+) -> Result<AlarmStateJournal, String> {
+    let project = g.project.as_ref().ok_or("No project loaded")?;
+    let mut journal = AlarmStateJournal {
+        version: 1,
+        project_id: project.id.clone(),
+        definitions_hash: alarm_definitions_hash(project)?,
+        alarms: persisted_alarm_states(alarms),
+        content_hash: String::new(),
+    };
+    journal.content_hash = alarm_journal_hash(&journal)?;
+    Ok(journal)
+}
+
+fn validate_alarm_journal(journal: &AlarmStateJournal, g: &EngineInner) -> Result<(), String> {
+    if journal.version != 1 {
+        return Err(format!(
+            "Unsupported alarm-state journal version {}",
+            journal.version
+        ));
+    }
+    if journal.content_hash != alarm_journal_hash(journal)? {
+        return Err("Alarm-state journal hash verification failed".into());
+    }
+    let project = g.project.as_ref().ok_or("No project loaded")?;
+    if journal.project_id != project.id {
+        return Err(format!(
+            "Alarm-state journal belongs to project {}, current project is {}",
+            journal.project_id, project.id
+        ));
+    }
+    if journal.definitions_hash != alarm_definitions_hash(project)? {
+        return Err("Alarm-state journal does not match current alarm definitions".into());
+    }
+    if journal.alarms.len() != g.alarms.len() {
+        return Err("Alarm-state journal has a different alarm set".into());
+    }
+    let mut ids = std::collections::HashSet::new();
+    let latest_allowed = Utc::now() + chrono::Duration::minutes(5);
+    for alarm in &journal.alarms {
+        if !ids.insert(alarm.def_id.as_str()) || !g.alarms.contains_key(&alarm.def_id) {
+            return Err(format!(
+                "Alarm-state journal contains unknown or duplicate alarm {}",
+                alarm.def_id
+            ));
+        }
+        if alarm.last_change > latest_allowed
+            || alarm.active_since.is_some_and(|ts| ts > latest_allowed)
+            || alarm
+                .pending_active_since
+                .is_some_and(|ts| ts > latest_allowed)
+            || alarm
+                .pending_clear_since
+                .is_some_and(|ts| ts > latest_allowed)
+        {
+            return Err(format!(
+                "Alarm-state journal contains a future timestamp for {}",
+                alarm.def_id
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn user_realm_hash(journal: &UserRealmJournal) -> Result<String, String> {
+    let mut canonical = journal.clone();
+    canonical.content_hash.clear();
+    let bytes =
+        serde_json::to_vec(&canonical).map_err(|error| format!("encode user realm: {error}"))?;
+    Ok(hex::encode(Sha256::digest(bytes)))
+}
+
+fn build_user_realm_journal(
+    users: &[UserAccount],
+    provisioning_closed: bool,
+) -> Result<UserRealmJournal, String> {
+    let mut journal = UserRealmJournal {
+        version: 1,
+        provisioning_closed,
+        users: users.to_vec(),
+        content_hash: String::new(),
+    };
+    journal.content_hash = user_realm_hash(&journal)?;
+    Ok(journal)
+}
+
+fn validate_user_realm_journal(
+    journal: &UserRealmJournal,
+    project: &ScadaProject,
+) -> Result<(), String> {
+    if journal.version != 1 {
+        return Err(format!(
+            "Unsupported user-realm version {}",
+            journal.version
+        ));
+    }
+    if journal.content_hash != user_realm_hash(journal)? {
+        return Err("User-realm hash verification failed".into());
+    }
+    if !journal.provisioning_closed && !journal.users.is_empty() {
+        return Err("Open user realm unexpectedly contains accounts".into());
+    }
+    if journal.users.iter().any(|user| {
+        user.password_hash.trim().is_empty()
+            || user.salt.trim().is_empty()
+            || user
+                .pin_hash
+                .as_ref()
+                .is_some_and(|pin_hash| pin_hash.trim().is_empty())
+    }) {
+        return Err("User realm contains an empty credential record".into());
+    }
+    let mut candidate = project.clone();
+    candidate.users = journal.users.clone();
+    candidate.validate()?;
+    Ok(())
+}
+
+fn atomic_write_protected_state(target: &Path, bytes: &[u8], label: &str) -> Result<(), String> {
+    let parent = target
+        .parent()
+        .ok_or_else(|| format!("{label} path has no parent"))?;
+    let filename = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("{label} path has no filename"))?;
+    if target
+        .symlink_metadata()
+        .is_ok_and(|metadata| metadata.file_type().is_symlink())
+    {
+        return Err(format!("Refusing symbolic-link {label}"));
+    }
+    let temporary = parent.join(format!(".{filename}.{}.tmp", uuid::Uuid::new_v4().simple()));
+    let result = (|| -> Result<(), String> {
+        let mut options = OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let mut file = options
+            .open(&temporary)
+            .map_err(|error| format!("create {label} temporary file: {error}"))?;
+        file.write_all(bytes)
+            .map_err(|error| format!("write {label}: {error}"))?;
+        file.sync_all()
+            .map_err(|error| format!("synchronize {label}: {error}"))?;
+        drop(file);
+        if target
+            .symlink_metadata()
+            .is_ok_and(|metadata| metadata.file_type().is_symlink())
+        {
+            return Err(format!("Refusing symbolic-link {label}"));
+        }
+        replace_target(&temporary, target, target)?;
+        restrict_secret_file_permissions(target)?;
+        sync_directory(parent)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(temporary);
+    }
+    result
+}
+
+fn restrict_secret_file_permissions(path: &Path) -> Result<(), String> {
+    let metadata = path
+        .symlink_metadata()
+        .map_err(|error| format!("inspect protected state file: {error}"))?;
+    if metadata.file_type().is_symlink() {
+        return Err("Refusing symbolic-link protected state file".into());
+    }
+    if !metadata.is_file() {
+        return Err("Protected state path is not a regular file".into());
+    }
+    #[cfg(unix)]
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+        .map_err(|error| format!("restrict protected state permissions: {error}"))?;
+    Ok(())
+}
+
+fn atomic_write_project(target: &Path, bytes: &[u8]) -> Result<(), String> {
+    let parent = target.parent().ok_or("Project path has no parent")?;
+    let filename = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("Project path has no filename")?;
+    let nonce = uuid::Uuid::new_v4().simple();
+    let temporary = parent.join(format!(".{filename}.{nonce}.tmp"));
+    let backup = PathBuf::from(format!("{}.bak", target.display()));
+
+    let write_result = (|| -> Result<(), String> {
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temporary)
+            .map_err(|error| format!("Create temporary project file: {error}"))?;
+        file.write_all(bytes)
+            .map_err(|error| format!("Write temporary project file: {error}"))?;
+        file.sync_all()
+            .map_err(|error| format!("Synchronize temporary project file: {error}"))?;
+        drop(file);
+
+        if target.exists() {
+            let backup_temp = parent.join(format!(".{filename}.{nonce}.bak.tmp"));
+            let mut source =
+                File::open(target).map_err(|error| format!("Open previous project: {error}"))?;
+            let mut destination = OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&backup_temp)
+                .map_err(|error| format!("Create temporary project backup: {error}"))?;
+            std::io::copy(&mut source, &mut destination)
+                .map_err(|error| format!("Copy previous project to backup: {error}"))?;
+            destination
+                .sync_all()
+                .map_err(|error| format!("Synchronize project backup: {error}"))?;
+            drop(destination);
+            replace_backup(&backup_temp, &backup)?;
+        }
+
+        replace_target(&temporary, target, &backup)?;
+        sync_directory(parent)?;
+        Ok(())
+    })();
+
+    if write_result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    write_result
+}
+
+fn replace_backup(source: &Path, backup: &Path) -> Result<(), String> {
+    if !backup.exists() {
+        return std::fs::rename(source, backup)
+            .map_err(|error| format!("Install project backup: {error}"));
+    }
+    let displaced = backup.with_extension(format!(
+        "{}.old",
+        backup
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or("bak")
+    ));
+    if displaced.exists() {
+        std::fs::remove_file(&displaced)
+            .map_err(|error| format!("Remove stale backup staging file: {error}"))?;
+    }
+    std::fs::rename(backup, &displaced)
+        .map_err(|error| format!("Stage previous project backup: {error}"))?;
+    if let Err(error) = std::fs::rename(source, backup) {
+        let _ = std::fs::rename(&displaced, backup);
+        return Err(format!("Install project backup: {error}"));
+    }
+    let _ = std::fs::remove_file(displaced);
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_target(source: &Path, target: &Path, _backup: &Path) -> Result<(), String> {
+    std::fs::rename(source, target).map_err(|error| format!("Atomically replace file: {error}"))
+}
+
+#[cfg(windows)]
+fn replace_target(source: &Path, target: &Path, _backup: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVE_FILE_REPLACE_EXISTING, MOVE_FILE_WRITE_THROUGH,
+    };
+
+    let source_wide: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+    let target_wide: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
+    // MoveFileExW with REPLACE_EXISTING avoids the remove+rename data-loss
+    // window, while WRITE_THROUGH waits for the replacement to reach storage.
+    let replaced = unsafe {
+        MoveFileExW(
+            source_wide.as_ptr(),
+            target_wide.as_ptr(),
+            MOVE_FILE_REPLACE_EXISTING | MOVE_FILE_WRITE_THROUGH,
+        )
+    };
+    if replaced == 0 {
+        return Err(format!(
+            "Atomically replace file: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn sync_directory(path: &Path) -> Result<(), String> {
+    File::open(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| format!("Synchronize project directory: {error}"))
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_path: &Path) -> Result<(), String> {
+    Ok(())
+}
+
+fn refresh_stale_quality(g: &mut EngineInner) -> bool {
+    let now = Utc::now();
+    let mut changed = false;
+    for tag in g.tags.values_mut() {
+        let internal = matches!(
+            tag.def.binding.table,
+            ModbusTable::Memory | ModbusTable::System
+        );
+        let age_ms = (now - tag.ts).num_milliseconds().max(0) as u64;
+        if !internal && tag.quality == Quality::Good && age_ms > STALE_AFTER_MS {
+            tag.quality = Quality::Uncertain;
+            changed = true;
+        }
+    }
+    if changed {
+        let alarms = g
+            .project
+            .as_ref()
+            .map(|project| project.alarms.clone())
+            .unwrap_or_default();
+        evaluate_alarms(g, &alarms)
+    } else {
+        false
+    }
+}
+
+fn refresh_system_tags(g: &mut EngineInner) -> bool {
+    let now = Utc::now();
+    let connected = g.connected;
+    let poll_count = g.poll_count as f64;
+    let last_poll_ms = g.last_poll_ms as f64;
+    let security_level = f64::from(g.security_level);
+    let runtime_mode = g.mode == "runtime";
+    let mut changed = false;
+    for tag in g.tags.values_mut() {
+        let value = match tag.def.id.as_str() {
+            "system.connected" => f64::from(u8::from(connected)),
+            "system.poll_count" => poll_count,
+            "system.last_poll_ms" => last_poll_ms,
+            "system.security_level" => security_level,
+            "system.mode" => f64::from(u8::from(runtime_mode)),
+            _ => continue,
+        };
+        let bool_value = value != 0.0;
+        changed |=
+            tag.value != value || tag.bool_value != bool_value || tag.quality != Quality::Good;
+        tag.value = value;
+        tag.bool_value = bool_value;
+        tag.quality = Quality::Good;
+        tag.ts = now;
+        tag.raw = value as u16;
+    }
+    changed
+}
+
+fn normalize_internal_initial(def: &TagDefinition) -> Result<f64, String> {
+    let Some(initial) = def.initial_value.as_deref() else {
+        return Ok(0.0);
+    };
+    let value = if def.data_type == TagDataType::Bool {
+        match initial.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" => 1.0,
+            "false" | "0" => 0.0,
+            _ => return Err("Invalid bool initial value".into()),
+        }
+    } else {
+        initial
+            .trim()
+            .parse::<f64>()
+            .map_err(|_| "Invalid numeric initial value".to_string())?
+    };
+    Ok(normalize_internal_write(def, value)?.engineering_value)
+}
+
+fn normalize_internal_write(def: &TagDefinition, value: f64) -> Result<WriteOutcome, String> {
+    if def.scale == 0.0 {
+        return Err("Tag scale cannot be zero".into());
+    }
+    let scaled = (value - def.offset) / def.scale;
+    let words = codec::encode(def.data_type, def.binding.word_order, scaled)?;
+    let decoded = codec::decode(def.data_type, def.binding.word_order, &words)
+        .ok_or("Internal value cannot be decoded")?;
+    let engineering_value = decoded * def.scale + def.offset;
+    Ok(WriteOutcome {
+        raw: words.first().copied().unwrap_or(0),
+        bool_value: engineering_value != 0.0,
+        engineering_value,
+        protocol: "memory",
+    })
+}
+
+fn values_match(def: &TagDefinition, requested: f64, observed: f64) -> bool {
+    if def.data_type == TagDataType::Bool {
+        return (requested != 0.0) == (observed != 0.0);
+    }
+    let expected = normalize_internal_write(def, requested)
+        .map(|outcome| outcome.engineering_value)
+        .unwrap_or(requested);
+    let tolerance = expected.abs().max(observed.abs()).max(1.0) * f64::EPSILON * 8.0;
+    (expected - observed).abs() <= tolerance
+}
+
+fn alarm_logic_compatible(old: &AlarmDefinition, new: &AlarmDefinition) -> bool {
+    old.id == new.id
+        && old.tag_id == new.tag_id
+        && old.when_true == new.when_true
+        && old.hi_limit == new.hi_limit
+        && old.lo_limit == new.lo_limit
+        && old.deadband == new.deadband
+        && old.on_delay_ms == new.on_delay_ms
+        && old.off_delay_ms == new.off_delay_ms
+        && old.latching == new.latching
 }
 
 fn new_alarm_instance(def: &AlarmDefinition) -> AlarmInstance {
@@ -1355,9 +2921,11 @@ fn build_read_plan(project: &ScadaProject, device_id: &str) -> Vec<ReadBlock> {
 async fn poll_loop(
     inner: Arc<RwLock<EngineInner>>,
     _audit: Arc<AuditLog>,
+    alarm_state_store: Arc<AlarmStateStore>,
     project: ScadaProject,
     device: DeviceConfig,
     mut stop_rx: watch::Receiver<bool>,
+    poll_epoch: u64,
 ) {
     let cfg = ConnectionConfig {
         host: device.host.clone(),
@@ -1370,12 +2938,19 @@ async fn poll_loop(
     let read_plan = build_read_plan(&project, &device.id);
     let mut ctx = match modbus::connect(&cfg).await {
         Ok(c) => {
-            inner.write().connected = true;
-            inner.write().last_error = None;
+            let mut g = inner.write();
+            if g.poll_epoch != poll_epoch {
+                return;
+            }
+            g.connected = true;
+            g.last_error = None;
             Some(c)
         }
         Err(e) => {
             let mut g = inner.write();
+            if g.poll_epoch != poll_epoch {
+                return;
+            }
             g.connected = false;
             g.last_error = Some(e.to_string());
             mark_all_bad(&mut g);
@@ -1384,7 +2959,7 @@ async fn poll_loop(
     };
 
     loop {
-        if *stop_rx.borrow() {
+        if *stop_rx.borrow() || inner.read().poll_epoch != poll_epoch {
             break;
         }
 
@@ -1395,11 +2970,17 @@ async fn poll_loop(
                 Ok(c) => {
                     ctx = Some(c);
                     let mut g = inner.write();
+                    if g.poll_epoch != poll_epoch {
+                        break;
+                    }
                     g.connected = true;
                     g.last_error = None;
                 }
                 Err(e) => {
                     let mut g = inner.write();
+                    if g.poll_epoch != poll_epoch {
+                        break;
+                    }
                     g.connected = false;
                     g.last_error = Some(e.to_string());
                     mark_all_bad(&mut g);
@@ -1421,13 +3002,11 @@ async fn poll_loop(
                         .await
                         {
                             Ok(values) => {
-                                apply_register_values(
-                                    &mut inner.write(),
-                                    &project,
-                                    &device.id,
-                                    block,
-                                    &values,
-                                );
+                                let mut g = inner.write();
+                                if g.poll_epoch != poll_epoch {
+                                    return;
+                                }
+                                apply_register_values(&mut g, &project, &device.id, block, &values);
                                 Ok(())
                             }
                             Err(error) => Err(error),
@@ -1438,13 +3017,11 @@ async fn poll_loop(
                             .await
                         {
                             Ok(values) => {
-                                apply_register_values(
-                                    &mut inner.write(),
-                                    &project,
-                                    &device.id,
-                                    block,
-                                    &values,
-                                );
+                                let mut g = inner.write();
+                                if g.poll_epoch != poll_epoch {
+                                    return;
+                                }
+                                apply_register_values(&mut g, &project, &device.id, block, &values);
                                 Ok(())
                             }
                             Err(error) => Err(error),
@@ -1455,13 +3032,11 @@ async fn poll_loop(
                             .await
                         {
                             Ok(values) => {
-                                apply_bit_values(
-                                    &mut inner.write(),
-                                    &project,
-                                    &device.id,
-                                    block,
-                                    &values,
-                                );
+                                let mut g = inner.write();
+                                if g.poll_epoch != poll_epoch {
+                                    return;
+                                }
+                                apply_bit_values(&mut g, &project, &device.id, block, &values);
                                 Ok(())
                             }
                             Err(error) => Err(error),
@@ -1477,13 +3052,11 @@ async fn poll_loop(
                         .await
                         {
                             Ok(values) => {
-                                apply_bit_values(
-                                    &mut inner.write(),
-                                    &project,
-                                    &device.id,
-                                    block,
-                                    &values,
-                                );
+                                let mut g = inner.write();
+                                if g.poll_epoch != poll_epoch {
+                                    return;
+                                }
+                                apply_bit_values(&mut g, &project, &device.id, block, &values);
                                 Ok(())
                             }
                             Err(error) => Err(error),
@@ -1499,23 +3072,41 @@ async fn poll_loop(
             if let Some(error) = cycle_error {
                 ctx = None;
                 let mut g = inner.write();
+                if g.poll_epoch != poll_epoch {
+                    break;
+                }
                 g.connected = false;
                 g.last_error = Some(error.to_string());
                 mark_all_bad(&mut g);
+                refresh_system_tags(&mut g);
                 // Alarms are still evaluated so that every instance is flagged
                 // as suspended instead of silently freezing on its last state.
-                evaluate_alarms(&mut g, &project.alarms);
+                if evaluate_alarms(&mut g, &project.alarms) {
+                    let _ = alarm_state_store.persist_if_attached(&g);
+                }
             } else {
                 let mut g = inner.write();
+                if g.poll_epoch != poll_epoch {
+                    break;
+                }
                 g.connected = true;
                 g.last_error = None;
                 g.poll_count = g.poll_count.wrapping_add(1);
                 g.last_poll_ms = started.elapsed().as_millis() as u64;
-                evaluate_alarms(&mut g, &project.alarms);
+                refresh_system_tags(&mut g);
+                if evaluate_alarms(&mut g, &project.alarms) {
+                    let _ = alarm_state_store.persist_if_attached(&g);
+                }
             }
         } else {
             let mut g = inner.write();
-            evaluate_alarms(&mut g, &project.alarms);
+            if g.poll_epoch != poll_epoch {
+                break;
+            }
+            refresh_system_tags(&mut g);
+            if evaluate_alarms(&mut g, &project.alarms) {
+                let _ = alarm_state_store.persist_if_attached(&g);
+            }
         }
 
         tokio::select! {
@@ -1527,9 +3118,15 @@ async fn poll_loop(
     }
 
     let mut g = inner.write();
+    if g.poll_epoch != poll_epoch {
+        return;
+    }
     g.connected = false;
     mark_all_bad(&mut g);
-    evaluate_alarms(&mut g, &project.alarms);
+    refresh_system_tags(&mut g);
+    if evaluate_alarms(&mut g, &project.alarms) {
+        let _ = alarm_state_store.persist_if_attached(&g);
+    }
 }
 
 fn mark_all_bad(g: &mut EngineInner) {
@@ -1627,7 +3224,8 @@ fn apply_bit_values(
     }
 }
 
-fn evaluate_alarms(g: &mut EngineInner, defs: &[AlarmDefinition]) {
+fn evaluate_alarms(g: &mut EngineInner, defs: &[AlarmDefinition]) -> bool {
+    let before = persisted_alarm_states(&g.alarms);
     let now = Utc::now();
     for def in defs {
         // Resolve the source quality first: an alarm whose input is not `Good`
@@ -1744,6 +3342,7 @@ fn evaluate_alarms(g: &mut EngineInner, defs: &[AlarmDefinition]) {
             _ => {}
         }
     }
+    before != persisted_alarm_states(&g.alarms)
 }
 
 #[cfg(test)]
@@ -1777,6 +3376,10 @@ mod tests {
             current_user: None,
             security_level: 500,
             last_activity_ts: Utc::now(),
+            auth_epoch: 0,
+            project_epoch: 0,
+            poll_epoch: 0,
+            login_throttle: HashMap::new(),
             mode: "runtime".into(),
             poll_handle: None,
             stop_tx: None,
@@ -2059,17 +3662,59 @@ mod tests {
     // Authorization gates
     // ---------------------------------------------------------------------
 
+    const ADMIN_PASSWORD: &str = "test-admin-password";
+    const OPERATOR_PASSWORD: &str = "test-operator-password";
+    const OPERATOR_PIN: &str = "111111";
+
+    fn durable_test_audit() -> Arc<AuditLog> {
+        let audit = Arc::new(AuditLog::new());
+        let path = std::env::temp_dir()
+            .join(format!("proscada-engine-test-{}", uuid::Uuid::new_v4()))
+            .join("audit.jsonl");
+        audit.attach_sink(&path).expect("durable test audit");
+        audit
+    }
+
+    fn attach_new_test_user_realm(engine: &Engine) -> PathBuf {
+        let path = std::env::temp_dir()
+            .join(format!("proscada-user-realm-test-{}", uuid::Uuid::new_v4()))
+            .join("user-realm.json");
+        engine
+            .attach_user_realm_store(&path)
+            .expect("attach test user realm");
+        path
+    }
+
     fn engine_with_water_tank() -> Engine {
-        let engine = Engine::new(Arc::new(AuditLog::new()));
+        let engine = Engine::new(durable_test_audit());
         engine
             .load_builtin(water_tank_project())
             .expect("builtin project loads");
+        attach_new_test_user_realm(&engine);
+        engine
+            .bootstrap_admin(ADMIN_PASSWORD)
+            .expect("bootstrap admin");
+        engine
+            .login("admin", Some(ADMIN_PASSWORD))
+            .expect("bootstrap admin login");
+        engine
+            .save_user(UserAccountInput {
+                id: None,
+                username: "operator".into(),
+                display_name: "Operator".into(),
+                password: Some(OPERATOR_PASSWORD.into()),
+                pin: Some(OPERATOR_PIN.into()),
+                security_level: 100,
+                enabled: true,
+            })
+            .expect("seed test operator");
+        engine.logout().expect("test setup logout");
         engine
     }
 
     fn sign_in_admin(engine: &Engine) {
         engine
-            .login("admin", Some("admin123"))
+            .login("admin", Some(ADMIN_PASSWORD))
             .expect("admin login");
     }
 
@@ -2098,7 +3743,7 @@ mod tests {
     fn designer_mode_does_not_bypass_user_administration() {
         let engine = engine_with_water_tank();
         engine
-            .login("operator", Some("operator123"))
+            .login("operator", Some(OPERATOR_PASSWORD))
             .expect("operator login");
         // The operator cannot even enter designer any more, but force the mode
         // to prove the guard no longer depends on it.
@@ -2125,7 +3770,7 @@ mod tests {
         let engine = engine_with_water_tank();
         sign_in_admin(&engine);
         engine
-            .change_password("admin123", "a-much-longer-password")
+            .change_password(ADMIN_PASSWORD, "a-much-longer-password")
             .expect("password change");
 
         let mut project = engine.get_project().expect("project");
@@ -2166,6 +3811,49 @@ mod tests {
     }
 
     #[test]
+    fn engineer_import_cannot_replace_the_authentication_realm() {
+        let engine = engine_with_water_tank();
+        sign_in_admin(&engine);
+        engine
+            .save_user(UserAccountInput {
+                id: None,
+                username: "engineer".into(),
+                display_name: "Engineer".into(),
+                password: Some("test-engineer-password".into()),
+                pin: None,
+                security_level: 500,
+                enabled: true,
+            })
+            .expect("create engineer");
+        engine.logout().expect("logout");
+        engine
+            .login("engineer", Some("test-engineer-password"))
+            .expect("engineer login");
+
+        let mut crafted = water_tank_project();
+        crafted.users = vec![UserAccount {
+            id: "attacker".into(),
+            username: "mallory".into(),
+            display_name: "Mallory".into(),
+            password_hash: credentials::hash_secret("mallory-admin-password").expect("hash"),
+            salt: LEGACY_SALT.into(),
+            pin_hash: None,
+            security_level: 1000,
+            enabled: true,
+            password_change_required: false,
+        }];
+        crafted.recompute_hash();
+        engine
+            .load_project(crafted)
+            .expect("realm-preserving import");
+
+        assert!(engine
+            .login("mallory", Some("mallory-admin-password"))
+            .is_err());
+        assert!(engine.login("admin", Some(ADMIN_PASSWORD)).is_ok());
+    }
+
+    #[test]
     fn a_tampered_project_hash_is_rejected() {
         let engine = engine_with_water_tank();
         let mut project = water_tank_project();
@@ -2185,9 +3873,24 @@ mod tests {
     }
 
     #[test]
-    fn a_default_account_cannot_write_before_changing_its_password() {
+    fn a_forced_change_account_cannot_write_before_changing_its_password() {
         let engine = engine_with_water_tank();
         sign_in_admin(&engine);
+        {
+            let mut g = engine.inner.write();
+            g.current_user
+                .as_mut()
+                .expect("signed in")
+                .password_change_required = true;
+            g.project
+                .as_mut()
+                .expect("project")
+                .users
+                .iter_mut()
+                .find(|user| user.username == "admin")
+                .expect("admin")
+                .password_change_required = true;
+        }
         engine.set_mode("runtime".into()).expect("runtime");
         assert!(engine.snapshot().password_change_required);
 
@@ -2201,7 +3904,7 @@ mod tests {
         );
 
         engine
-            .change_password("admin123", "a-much-longer-password")
+            .change_password(ADMIN_PASSWORD, "a-much-longer-password")
             .expect("password change");
         assert!(!engine.snapshot().password_change_required);
     }
@@ -2210,14 +3913,14 @@ mod tests {
     fn change_password_enforces_length_and_the_current_secret() {
         let engine = engine_with_water_tank();
         sign_in_admin(&engine);
-        assert!(engine.change_password("admin123", "short").is_err());
+        assert!(engine.change_password(ADMIN_PASSWORD, "short").is_err());
         assert!(engine
             .change_password("wrong", "a-much-longer-password")
             .is_err());
         assert!(engine
-            .change_password("admin123", "a-much-longer-password")
+            .change_password(ADMIN_PASSWORD, "a-much-longer-password")
             .is_ok());
-        assert!(engine.login("admin", Some("admin123")).is_err());
+        assert!(engine.login("admin", Some(ADMIN_PASSWORD)).is_err());
         assert!(engine
             .login("admin", Some("a-much-longer-password"))
             .is_ok());
@@ -2234,10 +3937,10 @@ mod tests {
                 .iter_mut()
                 .find(|u| u.username == "admin")
                 .expect("admin");
-            user.password_hash = crate::project::hash_password("admin123", LEGACY_SALT);
+            user.password_hash = crate::project::hash_password(ADMIN_PASSWORD, LEGACY_SALT);
             user.salt = LEGACY_SALT.into();
         }
-        engine.login("admin", Some("admin123")).expect("login");
+        engine.login("admin", Some(ADMIN_PASSWORD)).expect("login");
         let stored = engine
             .get_project()
             .expect("project")
@@ -2254,18 +3957,10 @@ mod tests {
     }
 
     #[test]
-    fn pin_challenge_only_accepts_the_signed_in_operator() {
+    fn pin_never_establishes_a_login_session() {
         let engine = engine_with_water_tank();
-        assert!(!engine.verify_pin("1234").expect("no session"));
-
-        engine
-            .login("operator", Some("operator123"))
-            .expect("operator login");
-        assert!(engine.verify_pin("1111").expect("own pin"));
-        assert!(
-            !engine.verify_pin("1234").expect("admin pin"),
-            "another account's PIN must not confirm this operator's action"
-        );
+        assert!(engine.login(OPERATOR_PIN, None).is_err());
+        assert!(engine.snapshot().current_user.is_none());
     }
 
     #[test]
@@ -2280,8 +3975,9 @@ mod tests {
         assert!(error.contains("Role cannot write"), "unexpected: {error}");
 
         engine
-            .login("operator", Some("operator123"))
+            .login("operator", Some(OPERATOR_PASSWORD))
             .expect("operator login");
+        engine.inner.write().mode = "designer".into();
         let error = engine
             .rt
             .block_on(engine.write_tag("wt.sp_p1_on", 500.0))
@@ -2294,7 +3990,7 @@ mod tests {
         let engine = engine_with_water_tank();
         sign_in_admin(&engine);
         engine
-            .change_password("admin123", "a-much-longer-password")
+            .change_password(ADMIN_PASSWORD, "a-much-longer-password")
             .expect("password change");
         engine.set_mode("runtime".into()).expect("runtime");
 
@@ -2329,7 +4025,7 @@ mod tests {
             tag.binding.min_security_level = 500;
         }
         engine
-            .login("operator", Some("operator123"))
+            .login("operator", Some(OPERATOR_PASSWORD))
             .expect("operator login");
         engine.inner.write().mode = "runtime".into();
         engine
@@ -2351,7 +4047,7 @@ mod tests {
     fn user_administration_requires_administrator_level() {
         let engine = engine_with_water_tank();
         engine
-            .login("operator", Some("operator123"))
+            .login("operator", Some(OPERATOR_PASSWORD))
             .expect("operator login");
         assert!(engine
             .save_user(UserAccountInput {
@@ -2371,7 +4067,7 @@ mod tests {
         let engine = engine_with_water_tank();
         sign_in_admin(&engine);
         engine
-            .change_password("admin123", "a-much-longer-password")
+            .change_password(ADMIN_PASSWORD, "a-much-longer-password")
             .expect("password change");
 
         let missing_password = engine.save_user(UserAccountInput {
@@ -2422,7 +4118,7 @@ mod tests {
     fn an_idle_runtime_session_expires_but_activity_keeps_it_alive() {
         let engine = engine_with_water_tank();
         engine
-            .login("operator", Some("operator123"))
+            .login("operator", Some(OPERATOR_PASSWORD))
             .expect("operator login");
         engine.inner.write().mode = "runtime".into();
         assert_eq!(engine.snapshot().security_level, 100);
@@ -2442,10 +4138,10 @@ mod tests {
     }
 
     #[test]
-    fn acknowledging_an_alarm_counts_as_activity() {
+    fn expired_session_cannot_acknowledge_an_alarm() {
         let engine = engine_with_water_tank();
         engine
-            .login("operator", Some("operator123"))
+            .login("operator", Some(OPERATOR_PASSWORD))
             .expect("operator login");
         engine.inner.write().last_activity_ts = Utc::now() - chrono::Duration::minutes(60);
         let alarm_id = engine
@@ -2455,14 +4151,9 @@ mod tests {
             .map(|a| a.def_id.clone())
             .expect("water tank defines alarms");
 
-        engine.ack_alarm(&alarm_id).expect("ack");
-        engine.inner.write().mode = "runtime".into();
-        engine.expire_idle_session();
-        assert_eq!(
-            engine.snapshot().security_level,
-            100,
-            "an operator acting on the plant must not be logged out"
-        );
+        assert!(engine.ack_alarm(&alarm_id).is_err());
+        assert_eq!(engine.snapshot().security_level, 0);
+        assert_eq!(engine.snapshot().mode, "runtime");
     }
 
     #[test]
@@ -2519,11 +4210,12 @@ mod tests {
             "project validation should accept SYS_INTERNAL memory tag"
         );
 
-        let audit = Arc::new(crate::audit::AuditLog::new());
+        let audit = durable_test_audit();
         let engine = Engine::new(audit);
         engine
             .install_project(project, false)
             .expect("install project");
+        attach_new_test_user_realm(&engine);
 
         let snap = engine.snapshot();
         let live = snap
@@ -2535,17 +4227,18 @@ mod tests {
         assert_eq!(live.value, 4.5);
 
         engine
-            .login("operator", Some("operator123"))
-            .expect("login");
-        engine
-            .change_password("operator123", "a-much-longer-password")
-            .expect("change password");
+            .bootstrap_admin(ADMIN_PASSWORD)
+            .expect("bootstrap memory-project admin");
+        engine.login("admin", Some(ADMIN_PASSWORD)).expect("login");
         engine.inner.write().mode = "runtime".into();
 
-        tokio::runtime::Runtime::new()
+        let receipt = tokio::runtime::Runtime::new()
             .unwrap()
             .block_on(engine.write_tag("mem.sp_calc", 12.8))
             .expect("write memory tag");
+        assert!(receipt.matches);
+        assert_eq!(receipt.protocol, "memory");
+        assert!((receipt.observed_value - 12.8).abs() < 0.001);
 
         let snap_after = engine.snapshot();
         let live_after = snap_after
@@ -2553,7 +4246,7 @@ mod tests {
             .iter()
             .find(|t| t.tag_id == "mem.sp_calc")
             .expect("live tag after write");
-        assert_eq!(live_after.value, 12.8);
+        assert!((live_after.value - 12.8).abs() < 0.001);
         assert_eq!(live_after.quality, Quality::Good);
     }
 
@@ -2666,5 +4359,532 @@ mod tests {
             Quality::Good,
             "internal memory tags must maintain Quality::Good even after 3 seconds without poll"
         );
+    }
+
+    #[test]
+    fn external_project_without_a_hash_is_rejected() {
+        let engine = engine_with_water_tank();
+        let mut project = water_tank_project();
+        project.content_hash.clear();
+        assert!(engine
+            .load_project(project)
+            .expect_err("empty external hash")
+            .contains("missing its content hash"));
+    }
+
+    #[test]
+    fn bootstrap_is_one_shot_and_never_provisions_a_factory_pin() {
+        let audit = durable_test_audit();
+        let engine = Engine::new(audit);
+        engine
+            .load_builtin(water_tank_project())
+            .expect("load builtin");
+        let realm_path = attach_new_test_user_realm(&engine);
+        assert!(engine.snapshot().requires_bootstrap);
+        assert!(engine.bootstrap_admin("short").is_err());
+        let admin = engine
+            .bootstrap_admin(ADMIN_PASSWORD)
+            .expect("first bootstrap");
+        assert!(!admin.has_pin);
+        assert!(!engine.snapshot().requires_bootstrap);
+        assert!(engine.bootstrap_admin("another-long-password").is_err());
+        #[cfg(unix)]
+        assert_eq!(
+            std::fs::metadata(&realm_path)
+                .expect("realm metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+
+    #[test]
+    fn bootstrap_and_mutations_fail_closed_without_durable_audit() {
+        let engine = Engine::new(Arc::new(AuditLog::new()));
+        engine
+            .load_builtin(water_tank_project())
+            .expect("load builtin");
+        attach_new_test_user_realm(&engine);
+        let error = engine
+            .bootstrap_admin(ADMIN_PASSWORD)
+            .expect_err("no durable audit");
+        assert!(error.contains("audit sink"), "unexpected: {error}");
+        assert!(engine.snapshot().requires_bootstrap);
+        assert!(!engine.snapshot().audit_persisted);
+    }
+
+    #[test]
+    fn user_realm_survives_restart_is_project_independent_and_corruption_never_reopens_bootstrap() {
+        let dir =
+            std::env::temp_dir().join(format!("proscada-user-realm-{}", uuid::Uuid::new_v4()));
+        let path = dir.join("user-realm.json");
+
+        let first = Engine::new(durable_test_audit());
+        first
+            .load_builtin(water_tank_project())
+            .expect("load first project");
+        first
+            .attach_user_realm_store(&path)
+            .expect("initialize realm");
+        first
+            .bootstrap_admin(ADMIN_PASSWORD)
+            .expect("bootstrap first admin");
+        first
+            .login("admin", Some(ADMIN_PASSWORD))
+            .expect("login first admin");
+        first
+            .save_user(UserAccountInput {
+                id: None,
+                username: "operator".into(),
+                display_name: "Operator".into(),
+                password: Some(OPERATOR_PASSWORD.into()),
+                pin: Some(OPERATOR_PIN.into()),
+                security_level: 100,
+                enabled: true,
+            })
+            .expect("persist second account");
+
+        let second = Engine::new(durable_test_audit());
+        let mut renamed_project = water_tank_project();
+        renamed_project.id = "different-project-id".into();
+        second
+            .load_builtin(renamed_project)
+            .expect("load different project");
+        second
+            .attach_user_realm_store(&path)
+            .expect("restore installation realm");
+        let snapshot = second.snapshot();
+        assert!(snapshot.user_realm_persisted);
+        assert!(!snapshot.requires_bootstrap);
+        second
+            .login("admin", Some(ADMIN_PASSWORD))
+            .expect("restored admin login");
+        assert_eq!(second.list_users().expect("restored users").len(), 2);
+
+        let corrupt_path = dir.join("corrupt-user-realm.json");
+        std::fs::write(&corrupt_path, b"{ definitely not json").expect("write corrupt realm");
+        let corrupt = Engine::new(durable_test_audit());
+        corrupt
+            .load_builtin(water_tank_project())
+            .expect("load project for corrupt realm");
+        assert!(corrupt.attach_user_realm_store(&corrupt_path).is_err());
+        let corrupt_snapshot = corrupt.snapshot();
+        assert!(!corrupt_snapshot.user_realm_persisted);
+        assert!(corrupt_snapshot.user_realm_last_error.is_some());
+        assert!(
+            !corrupt_snapshot.requires_bootstrap,
+            "a corrupt existing realm must never reopen initial provisioning"
+        );
+        assert!(corrupt.bootstrap_admin(ADMIN_PASSWORD).is_err());
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn account_mutation_is_not_committed_in_memory_when_realm_persistence_fails() {
+        let engine = engine_with_water_tank();
+        sign_in_admin(&engine);
+        let before = engine.list_users().expect("users before failed save");
+        let realm_path = engine
+            .user_realm_store
+            .inner
+            .lock()
+            .path
+            .clone()
+            .expect("test realm path");
+        std::fs::remove_file(&realm_path).expect("remove realm to inject failure");
+        std::fs::create_dir(&realm_path).expect("replace realm file with directory");
+
+        let error = engine
+            .save_user(UserAccountInput {
+                id: None,
+                username: "must-not-commit".into(),
+                display_name: "Must Not Commit".into(),
+                password: Some("another-long-password".into()),
+                pin: None,
+                security_level: 100,
+                enabled: true,
+            })
+            .expect_err("realm persistence failure must reject mutation");
+        assert!(
+            error.contains("Atomically replace") || error.contains("protected state"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            engine.list_users().expect("users after failed save").len(),
+            before.len()
+        );
+        assert!(!engine.snapshot().user_realm_persisted);
+
+        let parent = realm_path.parent().expect("realm parent").to_path_buf();
+        let _ = std::fs::remove_dir_all(parent);
+    }
+
+    #[test]
+    fn stale_quality_mutates_authoritative_state_suspends_alarm_and_blocks_write() {
+        let engine = engine_with_water_tank();
+        sign_in_admin(&engine);
+        {
+            let mut g = engine.inner.write();
+            let live = g.tags.get_mut("wt.level_cm").expect("level tag");
+            live.quality = Quality::Good;
+            live.value = 900.0;
+            live.ts = Utc::now() - chrono::Duration::seconds(10);
+            let alarms = g.project.as_ref().expect("project").alarms.clone();
+            evaluate_alarms(&mut g, &alarms);
+        }
+
+        let snapshot = engine.snapshot();
+        assert_eq!(
+            snapshot
+                .tags
+                .iter()
+                .find(|tag| tag.tag_id == "wt.level_cm")
+                .expect("level")
+                .quality,
+            Quality::Uncertain
+        );
+        assert!(engine.inner.read().tags["wt.level_cm"].quality == Quality::Uncertain);
+        assert!(
+            snapshot
+                .alarms
+                .iter()
+                .find(|alarm| alarm.def_id == "alm_level_hi")
+                .expect("alarm")
+                .evaluation_suspended
+        );
+        let error = engine
+            .rt
+            .block_on(engine.write_tag("wt.level_cm", 500.0))
+            .expect_err("stale write");
+        assert!(error.contains("Uncertain"), "unexpected: {error}");
+        assert!(engine
+            .audit()
+            .list(20)
+            .iter()
+            .any(|entry| entry.action == "tag.write_denied"));
+    }
+
+    #[test]
+    fn stopping_polling_immediately_marks_plc_tags_bad_and_suspends_alarms() {
+        let engine = engine_with_water_tank();
+        sign_in_admin(&engine);
+        {
+            let mut g = engine.inner.write();
+            let live = g.tags.get_mut("wt.level_cm").expect("level");
+            live.quality = Quality::Good;
+            live.ts = Utc::now();
+            let alarms = g.project.as_ref().expect("project").alarms.clone();
+            evaluate_alarms(&mut g, &alarms);
+        }
+        engine.stop_polling().expect("authorized stop");
+        let snapshot = engine.snapshot();
+        assert_eq!(
+            snapshot
+                .tags
+                .iter()
+                .find(|tag| tag.tag_id == "wt.level_cm")
+                .expect("level")
+                .quality,
+            Quality::Bad
+        );
+        assert!(snapshot
+            .alarms
+            .iter()
+            .all(|alarm| alarm.evaluation_suspended));
+    }
+
+    #[test]
+    fn explicit_missing_device_never_falls_back_to_another_device() {
+        let engine = engine_with_water_tank();
+        sign_in_admin(&engine);
+        let error = engine
+            .start_polling(Some("missing-device".into()))
+            .expect_err("missing device");
+        assert_eq!(error, "Device not found: missing-device");
+        assert!(!engine.snapshot().connected);
+    }
+
+    #[test]
+    fn pin_challenge_is_bound_to_the_same_memory_write_request() {
+        let engine = engine_with_water_tank();
+        sign_in_admin(&engine);
+        let admin = engine.snapshot().current_user.expect("admin summary");
+        engine
+            .save_user(UserAccountInput {
+                id: Some(admin.id),
+                username: "admin".into(),
+                display_name: "Administrator".into(),
+                password: None,
+                pin: Some("654321".into()),
+                security_level: 1000,
+                enabled: true,
+            })
+            .expect("set admin pin");
+
+        let mut project = engine.get_project().expect("project");
+        project.session_config.pin_challenge_on_write = true;
+        let mut memory = project.tags[0].clone();
+        memory.id = "memory.pin-gated".into();
+        memory.name = "PIN gated memory".into();
+        memory.device_id = "SYS_INTERNAL".into();
+        memory.binding.table = ModbusTable::Memory;
+        memory.binding.bit = None;
+        memory.binding.writable = true;
+        memory.data_type = TagDataType::U16;
+        memory.initial_value = Some("1".into());
+        project.tags.push(memory);
+        engine.set_project_mut(project).expect("install memory tag");
+
+        assert!(engine
+            .rt
+            .block_on(engine.write_tag_with_pin("memory.pin-gated", 2.0, None))
+            .is_err());
+        assert!(engine
+            .rt
+            .block_on(engine.write_tag_with_pin("memory.pin-gated", 2.0, Some("000000")))
+            .is_err());
+        let receipt = engine
+            .rt
+            .block_on(engine.write_tag_with_pin("memory.pin-gated", 2.0, Some("654321")))
+            .expect("atomic pin write");
+        assert!(receipt.matches);
+        assert_eq!(receipt.observed_value, 2.0);
+    }
+
+    #[test]
+    fn last_admin_duplicate_username_and_duplicate_pin_are_rejected() {
+        let engine = engine_with_water_tank();
+        sign_in_admin(&engine);
+        let admin = engine.snapshot().current_user.expect("admin");
+        assert!(engine
+            .save_user(UserAccountInput {
+                id: Some(admin.id.clone()),
+                username: "admin".into(),
+                display_name: "Administrator".into(),
+                password: None,
+                pin: None,
+                security_level: 500,
+                enabled: true,
+            })
+            .expect_err("last admin demotion")
+            .contains("Administrator"));
+        assert!(engine
+            .save_user(UserAccountInput {
+                id: None,
+                username: "operator".into(),
+                display_name: "Duplicate".into(),
+                password: Some("duplicate-user-password".into()),
+                pin: None,
+                security_level: 100,
+                enabled: true,
+            })
+            .expect_err("duplicate username")
+            .contains("already in use"));
+        assert!(engine
+            .save_user(UserAccountInput {
+                id: Some(admin.id),
+                username: "admin".into(),
+                display_name: "Administrator".into(),
+                password: None,
+                pin: Some(OPERATOR_PIN.into()),
+                security_level: 1000,
+                enabled: true,
+            })
+            .expect_err("duplicate pin")
+            .contains("already assigned"));
+    }
+
+    #[test]
+    fn alarm_lifecycle_survives_unrelated_designer_save() {
+        let engine = engine_with_water_tank();
+        sign_in_admin(&engine);
+        let active_since = Utc::now() - chrono::Duration::minutes(1);
+        {
+            let mut g = engine.inner.write();
+            let alarm = g.alarms.get_mut("alm_level_hi").expect("alarm");
+            alarm.state = AlarmState::ActiveAcked;
+            alarm.source_active = true;
+            alarm.active_since = Some(active_since);
+        }
+        let mut project = engine.get_project().expect("project");
+        project.description.push_str(" edited");
+        engine.set_project_mut(project).expect("designer save");
+        let alarm = engine
+            .snapshot()
+            .alarms
+            .into_iter()
+            .find(|alarm| alarm.def_id == "alm_level_hi")
+            .expect("alarm");
+        assert_eq!(alarm.state, AlarmState::ActiveAcked);
+        assert_eq!(alarm.active_since, Some(active_since));
+    }
+
+    #[test]
+    fn canonical_project_file_save_is_atomic_and_keeps_one_backup() {
+        let engine = engine_with_water_tank();
+        let dir = std::env::temp_dir().join(format!("proscada-save-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let target = dir.join("plant.proscada.json");
+        std::fs::write(&target, b"previous-good-version").expect("old project");
+        assert!(engine
+            .save_project_file(target.to_str().expect("path"))
+            .is_err());
+
+        sign_in_admin(&engine);
+        engine
+            .save_project_file(target.to_str().expect("path"))
+            .expect("atomic save");
+        let saved: ScadaProject =
+            serde_json::from_slice(&std::fs::read(&target).expect("saved project"))
+                .expect("canonical JSON");
+        assert!(
+            !saved.users.is_empty(),
+            "canonical backend save retains the protected user database"
+        );
+        let backup = PathBuf::from(format!("{}.bak", target.display()));
+        assert_eq!(
+            std::fs::read(backup).expect("backup"),
+            b"previous-good-version"
+        );
+        assert!(engine
+            .save_project_file(dir.join("plant.txt").to_str().expect("path"))
+            .is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn system_tags_are_allowlisted_and_reflect_authoritative_engine_state() {
+        let engine = engine_with_water_tank();
+        sign_in_admin(&engine);
+        let mut project = engine.get_project().expect("project");
+        for (id, data_type) in [
+            ("system.connected", TagDataType::Bool),
+            ("system.security_level", TagDataType::U16),
+            ("system.mode", TagDataType::Bool),
+        ] {
+            let mut tag = project.tags[0].clone();
+            tag.id = id.into();
+            tag.name = id.into();
+            tag.device_id = "SYS_INTERNAL".into();
+            tag.binding.table = ModbusTable::System;
+            tag.binding.writable = false;
+            tag.binding.bit = None;
+            tag.data_type = data_type;
+            tag.initial_value = None;
+            tag.scale = 1.0;
+            tag.offset = 0.0;
+            project.tags.push(tag);
+        }
+        engine.set_project_mut(project).expect("system tags");
+        let snapshot = engine.snapshot();
+        assert_eq!(
+            snapshot
+                .tags
+                .iter()
+                .find(|tag| tag.tag_id == "system.connected")
+                .expect("connected")
+                .value,
+            0.0
+        );
+        assert_eq!(
+            snapshot
+                .tags
+                .iter()
+                .find(|tag| tag.tag_id == "system.security_level")
+                .expect("security")
+                .value,
+            1000.0
+        );
+        assert_eq!(
+            snapshot
+                .tags
+                .iter()
+                .find(|tag| tag.tag_id == "system.mode")
+                .expect("mode")
+                .value,
+            1.0
+        );
+    }
+
+    #[test]
+    fn repeated_login_failures_apply_bounded_backoff() {
+        let engine = engine_with_water_tank();
+        for _ in 0..5 {
+            assert!(engine.login("admin", Some("definitely-wrong")).is_err());
+        }
+        let error = engine
+            .login("admin", Some(ADMIN_PASSWORD))
+            .expect_err("correct credential remains throttled");
+        assert!(error.contains("Too many failed"), "unexpected: {error}");
+    }
+
+    #[test]
+    fn alarm_ack_lifecycle_restores_after_restart_and_rejects_bad_journals() {
+        let dir =
+            std::env::temp_dir().join(format!("proscada-alarm-state-{}", uuid::Uuid::new_v4()));
+        let path = dir.join("alarm-state.json");
+
+        let first = engine_with_water_tank();
+        first
+            .attach_alarm_state_store(&path)
+            .expect("attach first journal");
+        sign_in_admin(&first);
+        let active_since = Utc::now() - chrono::Duration::minutes(2);
+        {
+            let mut g = first.inner.write();
+            let alarm = g.alarms.get_mut("alm_fault").expect("latching alarm");
+            alarm.state = AlarmState::ActiveUnacked;
+            alarm.source_active = true;
+            alarm.active_since = Some(active_since);
+            alarm.evaluation_suspended = false;
+            first
+                .alarm_state_store
+                .persist(&g)
+                .expect("persist active alarm");
+        }
+        first.ack_alarm("alm_fault").expect("durable ACK");
+        assert_eq!(
+            first.inner.read().alarms["alm_fault"].state,
+            AlarmState::ActiveAcked
+        );
+
+        let second = Engine::new(durable_test_audit());
+        second
+            .load_builtin(water_tank_project())
+            .expect("load same project");
+        second
+            .attach_alarm_state_store(&path)
+            .expect("restore journal");
+        let restored = second.inner.read().alarms["alm_fault"].clone();
+        assert_eq!(restored.state, AlarmState::ActiveAcked);
+        assert_eq!(restored.active_since, Some(active_since));
+        assert!(restored.evaluation_suspended);
+
+        let wrong_project = Engine::new(durable_test_audit());
+        let mut other = water_tank_project();
+        other.id = "another-project".into();
+        wrong_project
+            .install_project(other, false)
+            .expect("install other project");
+        assert!(wrong_project.attach_alarm_state_store(&path).is_err());
+        assert_eq!(
+            wrong_project.inner.read().alarms["alm_fault"].state,
+            AlarmState::Inactive
+        );
+
+        let corrupt_path = dir.join("corrupt-alarm-state.json");
+        std::fs::write(&corrupt_path, b"{ definitely not json").expect("corrupt journal");
+        let corrupt = Engine::new(durable_test_audit());
+        corrupt
+            .load_builtin(water_tank_project())
+            .expect("load project");
+        assert!(corrupt.attach_alarm_state_store(&corrupt_path).is_err());
+        let snapshot = corrupt.snapshot();
+        assert!(!snapshot.alarm_state_persisted);
+        assert!(snapshot.alarm_state_last_error.is_some());
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

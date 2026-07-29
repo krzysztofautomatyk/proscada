@@ -10,7 +10,7 @@
     icon: string;
   }
 
-  let { widget, tag = null }: WidgetRendererProps = $props();
+  let { widget, tag = null, design = false }: WidgetRendererProps = $props();
 
   const config = $derived(configOf(widget));
   const variant = $derived(readString(config, "variant", "bit"));
@@ -20,6 +20,7 @@
   const effectiveValue = $derived(
     variant === "bit" ? ((Math.trunc(rawValue) >>> bitIndex) & 1) : rawValue,
   );
+  const known = $derived(design || tag?.quality === "good");
 
   function parseStates(raw: string): StateDefinition[] {
     const parsed = raw
@@ -53,7 +54,7 @@
       icon: "?",
     },
   );
-  const displayColor = $derived(tag?.quality === "bad" ? "#b91c1c" : state.color);
+  const displayColor = $derived(known ? state.color : "#b91c1c");
 </script>
 
 <div class="indicator" class:bad={tag?.quality === "bad"} style:--state-color={displayColor}>
@@ -61,7 +62,7 @@
     <span class="lamp" aria-hidden="true">{state.icon}</span>
     <div>
       <small>{title}</small>
-      <strong>{state.label}</strong>
+      <strong>{known ? state.label : "NO DATA"}</strong>
     </div>
   </div>
   <QualityBadge {tag} showAge />
@@ -113,4 +114,3 @@
     background: repeating-linear-gradient(135deg, #fff, #fff 6px, #fee2e2 6px, #fee2e2 12px);
   }
 </style>
-

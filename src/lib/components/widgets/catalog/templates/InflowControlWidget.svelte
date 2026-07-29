@@ -1,21 +1,43 @@
 <script lang="ts">
   import type { WidgetDef, TagValue } from "$lib/types";
+  import type { ProcessWrite } from "$lib/components/widgets/shared/types";
+  import { writeResultLabel } from "$lib/components/widgets/shared/config";
 
   interface Props {
     widget: WidgetDef;
     tag?: TagValue | null;
     design?: boolean;
-    onWrite?: (tagId: string, value: number) => void;
+    onWrite?: ProcessWrite;
   }
 
-  let { widget, design = false, onWrite }: Props = $props();
+  let { widget, tag = null, design = false, onWrite }: Props = $props();
 
-  let kVal = $state(150);
+  let draft = $state("");
+  let edited = $state(false);
+  let status = $state("");
+  const disabled = $derived(design || !onWrite || !widget.tag_id || tag?.quality !== "good");
 
-  function writeK(val: number) {
-    kVal = val;
-    if (design || !onWrite) return;
-    onWrite("wt.k_x100", val);
+  $effect(() => {
+    if (!edited) draft = tag?.quality === "good" ? String(tag.value) : "";
+  });
+
+  function adjust(delta: number) {
+    const current = Number(draft);
+    edited = true;
+    draft = String(Math.min(500, Math.max(1, (Number.isFinite(current) ? current : 1) + delta)));
+    status = "";
+  }
+
+  async function writeK(candidate: string) {
+    const value = Number(candidate);
+    if (disabled || !onWrite || !widget.tag_id || candidate.trim() === "" || !Number.isFinite(value)) return;
+    status = "WRITE REQUESTED";
+    try {
+      const result = await onWrite(widget.tag_id, value);
+      status = writeResultLabel(result);
+    } catch (error) {
+      status = `WRITE REJECTED: ${error instanceof Error ? error.message : String(error)}`;
+    }
   }
 </script>
 
@@ -23,16 +45,18 @@
   <div class="card-h">Inflow K Factor</div>
   <div class="body">
     <div class="step">
-      <button type="button" disabled={design} onclick={() => (kVal = Math.max(1, kVal - 10))}>−</button>
-      <input type="number" bind:value={kVal} disabled={design} />
-      <button type="button" disabled={design} onclick={() => (kVal = Math.min(500, kVal + 10))}>+</button>
+      <button type="button" disabled={design} onclick={() => adjust(-10)}>−</button>
+      <input aria-label="Inflow K factor" type="number" value={draft} disabled={design} oninput={(event) => { edited = true; draft = event.currentTarget.value; status = ""; }} />
+      <button type="button" disabled={design} onclick={() => adjust(10)}>+</button>
     </div>
     <div class="btn-presets">
-      <button class="btn-quick" disabled={design} onclick={() => writeK(50)}>0.5</button>
-      <button class="btn-quick" disabled={design} onclick={() => writeK(100)}>1.0</button>
-      <button class="btn-quick" disabled={design} onclick={() => writeK(150)}>1.5</button>
-      <button class="btn-write" disabled={design} onclick={() => writeK(kVal)}>Write K</button>
+      <button class="btn-quick" disabled={disabled} onclick={() => { edited = true; draft = "50"; void writeK(draft); }}>0.5</button>
+      <button class="btn-quick" disabled={disabled} onclick={() => { edited = true; draft = "100"; void writeK(draft); }}>1.0</button>
+      <button class="btn-quick" disabled={disabled} onclick={() => { edited = true; draft = "150"; void writeK(draft); }}>1.5</button>
+      <button class="btn-write" disabled={disabled || draft.trim() === "" || !Number.isFinite(Number(draft))} onclick={() => void writeK(draft)}>Write K</button>
     </div>
+    {#if disabled && !design}<p class="write-state error">WRITE INHIBITED: bind a GOOD-quality tag</p>
+    {:else if status}<p class="write-state" role="status">{status}</p>{/if}
   </div>
 </div>
 
@@ -88,6 +112,8 @@
     display: flex;
     gap: 4px;
   }
+  .write-state { margin: 0; color: #0369a1; font-size: 8px; font-weight: 800; text-align: center; }
+  .write-state.error { color: #b91c1c; }
   .btn-quick {
     flex: 1;
     border: 1px solid #e5e7eb;

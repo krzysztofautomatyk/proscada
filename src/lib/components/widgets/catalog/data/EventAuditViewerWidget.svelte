@@ -14,8 +14,9 @@
   interface AuditRow {
     time: string;
     actor: string;
+    role: string;
     action: string;
-    result: string;
+    detail: string;
     correlationId: string;
   }
 
@@ -30,21 +31,21 @@
     parsed.rows.map((row) => ({
       time: String(row["time"] ?? ""),
       actor: String(row["actor"] ?? ""),
+      role: String(row["role"] ?? ""),
       action: String(row["action"] ?? ""),
-      result: String(row["result"] ?? ""),
+      detail: String(row["detail"] ?? ""),
       correlationId: String(row["correlationId"] ?? ""),
     })),
   );
 
   let filter = $state("");
   let page = $state(0);
-  let exportNote = $state("");
 
   const filtered = $derived.by(() => {
     const q = filter.trim().toLowerCase();
     if (!q) return auditRows;
     return auditRows.filter((r) =>
-      `${r.time} ${r.actor} ${r.action} ${r.result} ${r.correlationId}`.toLowerCase().includes(q),
+      `${r.time} ${r.actor} ${r.role} ${r.action} ${r.detail} ${r.correlationId}`.toLowerCase().includes(q),
     );
   });
 
@@ -57,16 +58,6 @@
   }
   function next() {
     if (safePage < pageCount - 1) page = safePage + 1;
-  }
-  function onExport() {
-    exportNote = "Export is configured by the backend service.";
-  }
-
-  function resultClass(result: string): string {
-    const r = result.toLowerCase();
-    if (r.includes("fail") || r.includes("deny") || r.includes("error")) return "bad";
-    if (r.includes("warn") || r.includes("pending")) return "warn";
-    return "ok";
   }
 </script>
 
@@ -87,11 +78,13 @@
           bind:value={filter}
           aria-label="Filter audit entries"
         />
-        <button type="button" class="export" onclick={onExport}>Export configured by backend</button>
       </div>
-      {#if exportNote}<div class="export-note" role="status">{exportNote}</div>{/if}
       {#if auditRows.length === 0}
-        <EmptyState title="No audit entries" detail="Provide rows JSON array in configuration" icon="🗎" />
+        <EmptyState
+          title="No authorized audit entries"
+          detail="Sign in as Engineer or Administrator to read the backend trail"
+          icon="🗎"
+        />
       {:else if filtered.length === 0}
         <EmptyState title="No matches" detail="Adjust the text filter" icon="🔍" />
       {:else}
@@ -99,7 +92,7 @@
           <table>
             <thead>
               <tr>
-                <th>Time</th><th>Actor</th><th>Action</th><th>Result</th><th>Correlation</th>
+                <th>Time</th><th>Actor</th><th>Role</th><th>Action</th><th>Detail</th><th>ID</th>
               </tr>
             </thead>
             <tbody>
@@ -107,8 +100,9 @@
                 <tr>
                   <td class="mono">{r.time}</td>
                   <td>{r.actor}</td>
+                  <td>{r.role}</td>
                   <td>{r.action}</td>
-                  <td><span class="res {resultClass(r.result)}">{r.result}</span></td>
+                  <td>{r.detail}</td>
                   <td class="mono corr">{r.correlationId}</td>
                 </tr>
               {/each}
@@ -156,24 +150,6 @@
     padding: 3px 7px;
     font-size: 10px;
   }
-  .export {
-    border: 1px solid #99f6e4;
-    background: #f0fdfa;
-    color: #0f766e;
-    border-radius: 5px;
-    padding: 3px 8px;
-    font-size: 9px;
-    font-weight: 700;
-    cursor: pointer;
-    white-space: nowrap;
-  }
-  .export-note {
-    padding: 3px 8px;
-    font-size: 9px;
-    color: #0f766e;
-    background: #f0fdfa;
-    border-bottom: 1px solid #ccfbf1;
-  }
   .scroll {
     flex: 1;
     min-height: 0;
@@ -208,25 +184,6 @@
   }
   .corr {
     color: #94a3b8;
-  }
-  .res {
-    font-size: 8px;
-    font-weight: 800;
-    text-transform: uppercase;
-    padding: 0 4px;
-    border-radius: 3px;
-  }
-  .res.ok {
-    background: #dcfce7;
-    color: #166534;
-  }
-  .res.warn {
-    background: #fef3c7;
-    color: #b45309;
-  }
-  .res.bad {
-    background: #fee2e2;
-    color: #b91c1c;
   }
   .pager {
     display: flex;

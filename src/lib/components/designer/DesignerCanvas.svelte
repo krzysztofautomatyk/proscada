@@ -24,12 +24,14 @@
     groupLabel,
     widgetIntersectsRect,
   } from "$lib/stores/selection";
+  import type { ProcessWrite } from "$lib/components/widgets/shared/types";
+  import { activate } from "$lib/utils/a11y";
 
   interface Props {
     form: FormDef;
     tagMap: Map<string, TagValue>;
     design?: boolean;
-    onWrite?: (tagId: string, value: number) => void;
+    onWrite?: ProcessWrite;
   }
 
   let { form, tagMap, design = true, onWrite }: Props = $props();
@@ -117,6 +119,52 @@
     ctxX = e.clientX;
     ctxY = e.clientY;
     ctxOpen = true;
+  }
+
+  function selectWidgetFromKeyboard(w: WidgetDef) {
+    if (!design) return;
+    if (w.group_id) {
+      const members = form.widgets
+        .filter((item) => item.group_id === w.group_id)
+        .map((item) => item.id);
+      setSelection(members, w.id);
+    } else {
+      setSelection([w.id], w.id);
+    }
+  }
+
+  function resizeWidgetFromKeyboard(event: KeyboardEvent, widget: WidgetDef, dir: Dir) {
+    if (!design || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) {
+      return;
+    }
+    event.preventDefault();
+    const step = event.shiftKey ? 10 : 1;
+    const patch: Partial<WidgetDef> & { id: string } = { id: widget.id };
+    if ((dir.includes("e") || dir.includes("w")) && event.key === "ArrowRight") {
+      if (dir.includes("w")) {
+        patch.x = widget.x + step;
+        patch.w = Math.max(16, widget.w - step);
+      } else patch.w = widget.w + step;
+    }
+    if ((dir.includes("e") || dir.includes("w")) && event.key === "ArrowLeft") {
+      if (dir.includes("w")) {
+        patch.x = widget.x - step;
+        patch.w = widget.w + step;
+      } else patch.w = Math.max(16, widget.w - step);
+    }
+    if ((dir.includes("n") || dir.includes("s")) && event.key === "ArrowDown") {
+      if (dir.includes("n")) {
+        patch.y = widget.y + step;
+        patch.h = Math.max(16, widget.h - step);
+      } else patch.h = widget.h + step;
+    }
+    if ((dir.includes("n") || dir.includes("s")) && event.key === "ArrowUp") {
+      if (dir.includes("n")) {
+        patch.y = widget.y - step;
+        patch.h = widget.h + step;
+      } else patch.h = Math.max(16, widget.h - step);
+    }
+    if (Object.keys(patch).length > 1) updateWidget(patch);
   }
 
   function onSurfacePointerDown(e: PointerEvent) {
@@ -356,10 +404,12 @@
       {@const showGroupChrome = design && !!w.group_id}
       {@const gLabel = w.group_id ? groupLabel(w.group_id, allGroupIds) : ""}
       {@const gColor = w.group_id ? groupColor(w.group_id) : ""}
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex (role is conditional: focusable button in Designer, passive in Runtime) -->
       <div
         class="widget"
-        role="button"
-        tabindex="0"
+        role={design ? "button" : undefined}
+        tabindex={design ? 0 : undefined}
+        aria-label={design ? `Wybierz kontrolkę ${w.id}` : undefined}
         class:design-mode={design}
         class:selected
         class:multi-selected={multiSelected}
@@ -380,6 +430,7 @@
           : undefined}
         onpointerdown={(e) => startMove(e, w)}
         oncontextmenu={(e) => openContextMenu(e, w)}
+        onkeydown={design ? activate(() => selectWidgetFromKeyboard(w)) : undefined}
       >
         {#if showGroupChrome}
           <div class="group-tag" style:background={gColor}>{gLabel}</div>
@@ -395,15 +446,14 @@
         />
         {#if selected && !w.locked && $selectedWidgetIds.length <= 1}
           {#each HANDLES as h}
-            <div
+            <button
+              type="button"
               class="handle"
               style="{h.style};cursor:{h.cursor}"
-              role="slider"
-              aria-label={`Zmień rozmiar: ${h.dir}`}
-              aria-valuenow={Math.round(w.w)}
-              tabindex="0"
+              aria-label={`Zmień rozmiar ${h.dir}; aktualnie ${Math.round(w.w)} na ${Math.round(w.h)} pikseli; użyj strzałek`}
               onpointerdown={(e) => startResize(e, w, h.dir)}
-            ></div>
+              onkeydown={(event) => resizeWidgetFromKeyboard(event, w, h.dir)}
+            ></button>
           {/each}
         {/if}
       </div>

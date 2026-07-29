@@ -11,15 +11,20 @@ description: Run and interpret the ProScada validation gate — svelte-check, wi
 
 ## Full gate (run the subset relevant to your change)
 ```powershell
+npm ci                     # exact install from package-lock.json
 npm run check              # svelte-check (types)
 npm run validate:widgets   # 35/35 controls, renderers, 33 migrations
 npm run validate:docs      # modular docs, per-control docs, links
 npm run validate:ai        # instructions, agents, skills and workflows
 npm run validate:yaml      # parse GitHub YAML deterministically
-npm run test:pump-template # execute pump rollout contract tests
+npm test                   # execute every src/**/*.test.ts file
 npm run build              # Vite production build
-cargo test --manifest-path src-tauri/Cargo.toml
-cargo build --manifest-path src-tauri/Cargo.toml
+cargo fmt --all --manifest-path src-tauri/Cargo.toml -- --check
+cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+cargo test --locked --manifest-path src-tauri/Cargo.toml
+cargo build --locked --manifest-path src-tauri/Cargo.toml
+npm audit --audit-level=high
+cargo deny --manifest-path src-tauri/Cargo.toml check advisories licenses sources
 ```
 Scripts live in `package.json` and `scripts/validate-*.mjs`; AI/instruction validators added by the repo (e.g. under `.github/`) run the same way — invoke whatever `validate:*` scripts exist.
 
@@ -42,3 +47,8 @@ Use a path inside the repo; remove the env var afterwards for normal builds.
 - Prefer an isolated target dir over force-terminating a locked process.
 - Run the targeted validator first; escalate to the full gate only when the change is cross-cutting.
 - Treat any non-zero exit as a blocker; read the printed error and fix the root cause.
+- `npm run check` rejects every Svelte warning; do not introduce warning
+  allowlists that hide debt.
+- CI owns the cross-platform `tauri build --no-bundle` smoke matrix. Tagged
+  release candidates are unsigned until an organization-specific signing job
+  is explicitly configured.

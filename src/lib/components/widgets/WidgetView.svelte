@@ -51,13 +51,14 @@
   import InflowControlWidget from "./catalog/templates/InflowControlWidget.svelte";
   import ProcessControlWidget from "./catalog/templates/ProcessControlWidget.svelte";
   import QRCodeWidget from "./catalog/utilities/QRCodeWidget.svelte";
-  import { snapshot, tagMap } from "$lib/stores/app";
+  import { audit, snapshot, tagMap } from "$lib/stores/app";
+  import type { ProcessWrite } from "./shared/types";
 
   interface Props {
     widget: WidgetDef;
     tag?: TagValue | null;
     design?: boolean;
-    onWrite?: (tagId: string, value: number) => void;
+    onWrite?: ProcessWrite;
     ancestorFormIds?: Set<string>;
   }
 
@@ -81,6 +82,29 @@
         message: alarm.message,
         group: alarm.group_id || "Ungrouped",
         shelved: false,
+        evaluationSuspended: alarm.evaluation_suspended === true,
+        suspendedReason: alarm.suspended_reason ?? "",
+        suspendedSince: alarm.suspended_since ?? "",
+      })),
+      alarmsSuspended:
+        $snapshot?.alarms_suspended === true ||
+        ($snapshot?.alarms ?? []).some((alarm) => alarm.evaluation_suspended === true),
+    },
+  });
+
+  // Project JSON must not fabricate rows in a control labelled immutable.
+  // Runtime rows come only from the authorized backend audit command.
+  const auditWidget = $derived({
+    ...widget,
+    config: {
+      ...(widget.config ?? {}),
+      rows: $audit.map((entry) => ({
+        time: entry.ts,
+        actor: entry.actor,
+        role: entry.role,
+        action: entry.action,
+        detail: entry.detail,
+        correlationId: entry.id,
       })),
     },
   });
@@ -183,7 +207,7 @@
   {:else if widget.widget_type === "event_timeline"}
     <EventTimelineWidget {widget} {tag} {design} {onWrite} />
   {:else if widget.widget_type === "event_audit_viewer"}
-    <EventAuditViewerWidget {widget} {tag} {design} {onWrite} />
+    <EventAuditViewerWidget widget={auditWidget} {tag} {design} {onWrite} />
   {:else if widget.widget_type === "navigation_link"}
     <NavigationLinkWidget {widget} {tag} {design} {onWrite} />
   {:else if widget.widget_type === "tab_set"}

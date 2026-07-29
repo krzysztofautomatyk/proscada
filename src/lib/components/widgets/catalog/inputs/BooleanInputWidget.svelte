@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { WidgetRendererProps } from "$lib/components/widgets/shared/types";
-  import { configOf, invokeWrite, readBoolean, readString } from "$lib/components/widgets/shared/config";
+  import { configOf, invokeWrite, readBoolean, readString, writeResultLabel } from "$lib/components/widgets/shared/config";
   import WidgetCard from "$lib/components/widgets/shared/WidgetCard.svelte";
 
   let { widget, tag = null, design = false, onWrite }: WidgetRendererProps = $props();
@@ -19,11 +19,16 @@
   const disabled = $derived(design || !widget.tag_id || !onWrite || qualityLocked || Boolean(configError));
   let status = $state("");
 
-  function change() {
+  async function change() {
     if (disabled) return;
     const next = indeterminate ? true : !current;
     if (readBoolean(config, "confirm", false) && !window.confirm(readString(config, "confirmText", `Set ${title} ${next ? trueLabel : falseLabel}?`))) return;
-    if (invokeWrite(widget, design, onWrite, next ? 1 : 0)) status = "WRITE REQUESTED";
+    status = "WRITE REQUESTED";
+    try {
+      status = writeResultLabel(await invokeWrite(widget, design, onWrite, next ? 1 : 0));
+    } catch (error) {
+      status = `WRITE REJECTED: ${error instanceof Error ? error.message : String(error)}`;
+    }
   }
 </script>
 
@@ -37,7 +42,7 @@
       aria-checked={indeterminate ? "mixed" : current}
       role="checkbox"
       {disabled}
-      onclick={change}
+      onclick={() => void change()}
     >
       {#if variant === "checkbox"}<span class="box" aria-hidden="true">{indeterminate ? "−" : current ? "✓" : ""}</span>{:else}<span class="track" aria-hidden="true"><span></span></span>{/if}
       <span>{indeterminate ? indeterminateLabel : current ? trueLabel : falseLabel}</span>

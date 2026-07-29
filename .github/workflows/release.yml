@@ -1,0 +1,195 @@
+name: Desktop Release Candidates
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Release gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Linux desktop dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential \
+            file \
+            libayatana-appindicator3-dev \
+            libfuse2 \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            patchelf
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: ".node-version"
+          cache: npm
+
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --component rustfmt,clippy
+          rustup default 1.88.0
+
+      - name: Install JavaScript dependencies
+        run: npm ci
+
+      - name: Run frontend and repository gate
+        run: |
+          npm run check
+          npm run validate:widgets
+          npm run validate:docs
+          npm run validate:ai
+          npm run validate:yaml
+          npm test
+          npm run build
+
+      - name: Run Rust gate
+        run: |
+          cargo fmt --all --manifest-path src-tauri/Cargo.toml -- --check
+          cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+          cargo test --locked --manifest-path src-tauri/Cargo.toml
+          cargo build --locked --manifest-path src-tauri/Cargo.toml
+
+      - name: Audit npm dependency graph
+        run: npm audit --audit-level=high
+
+      - name: Audit Rust advisories, licenses, and sources
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          rust-version: "1.88.0"
+          manifest-path: src-tauri/Cargo.toml
+          command: check
+          command-arguments: advisories licenses sources
+
+  sbom:
+    name: Repository SBOM
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Generate SPDX JSON SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          path: .
+          format: spdx-json
+          output-file: proscada.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: proscada-sbom
+          path: proscada.spdx.json
+          if-no-files-found: error
+          retention-days: 30
+
+  desktop:
+    name: Bundle (${{ matrix.artifact }})
+    needs: validate
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            artifact: linux
+          - os: windows-latest
+            artifact: windows
+          - os: macos-latest
+            artifact: macos
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential \
+            file \
+            libayatana-appindicator3-dev \
+            libfuse2 \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            patchelf
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: ".node-version"
+          cache: npm
+
+      - name: Install pinned Rust toolchain
+        shell: bash
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal
+          rustup default 1.88.0
+
+      - name: Install JavaScript dependencies
+        run: npm ci
+
+      - name: Build unsigned desktop bundles
+        run: npm run tauri:build -- --ci --no-sign
+
+      - name: Generate SHA-256 checksums
+        shell: pwsh
+        run: |
+          $bundleRoot = (Resolve-Path "src-tauri/target/release/bundle").Path
+          $files = Get-ChildItem $bundleRoot -Recurse -File
+          if (-not $files) { throw "Tauri did not produce any bundle files" }
+          $lines = foreach ($file in $files) {
+            $relative = [IO.Path]::GetRelativePath($bundleRoot, $file.FullName).Replace('\', '/')
+            $hash = (Get-FileHash -Algorithm SHA256 $file.FullName).Hash.ToLowerInvariant()
+            "$hash  $relative"
+          }
+          $lines | Set-Content -Encoding ascii "SHA256SUMS-${{ matrix.artifact }}.txt"
+
+      - name: Attest bundle provenance
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        with:
+          subject-path: src-tauri/target/release/bundle/**/*
+
+      - name: Upload unsigned bundle and checksums
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: proscada-${{ matrix.artifact }}-unsigned
+          path: |
+            src-tauri/target/release/bundle/**/*
+            SHA256SUMS-${{ matrix.artifact }}.txt
+          if-no-files-found: error
+          retention-days: 30
