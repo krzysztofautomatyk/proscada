@@ -28,6 +28,7 @@ const expectedAgents = [
   "ot-safety-reviewer.agent.md",
   "documentation-maintainer.agent.md",
   "ci-validator.agent.md",
+  "expert-panel.agent.md",
 ];
 const requiredFiles = [
   "AGENTS.md",
@@ -249,7 +250,9 @@ for (const token of [
   "npm run validate:docs",
   "npm run validate:ai",
   "npm run validate:yaml",
-  "npm run test:pump-template",
+  // The whole suite must run, not a single hand-picked test file: a red test
+  // outside the gate is a test nobody sees.
+  "npm test",
   "npm run build",
   "cargo fmt",
   "cargo clippy",

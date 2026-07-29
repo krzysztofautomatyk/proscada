@@ -29,7 +29,7 @@
     form: FormDef;
     tagMap: Map<string, TagValue>;
     design?: boolean;
-    onWrite?: (tagId: string, value: number | string) => void;
+    onWrite?: (tagId: string, value: number) => void;
   }
 
   let { form, tagMap, design = true, onWrite }: Props = $props();
@@ -356,9 +356,10 @@
       {@const showGroupChrome = design && !!w.group_id}
       {@const gLabel = w.group_id ? groupLabel(w.group_id, allGroupIds) : ""}
       {@const gColor = w.group_id ? groupColor(w.group_id) : ""}
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
         class="widget"
+        role="button"
+        tabindex="0"
         class:design-mode={design}
         class:selected
         class:multi-selected={multiSelected}
@@ -394,10 +395,13 @@
         />
         {#if selected && !w.locked && $selectedWidgetIds.length <= 1}
           {#each HANDLES as h}
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div
               class="handle"
               style="{h.style};cursor:{h.cursor}"
+              role="slider"
+              aria-label={`Zmień rozmiar: ${h.dir}`}
+              aria-valuenow={Math.round(w.w)}
+              tabindex="0"
               onpointerdown={(e) => startResize(e, w, h.dir)}
             ></div>
           {/each}

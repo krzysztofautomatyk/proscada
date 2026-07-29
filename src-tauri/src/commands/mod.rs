@@ -5,10 +5,10 @@ use std::sync::Arc;
 use serde::Serialize;
 use tauri::State;
 
-use crate::audit::AuditEntry;
+use crate::audit::{AuditEntry, AuditStatus};
 use crate::engine::{AlarmInstance, Engine, EngineSnapshot, TagValue, UserAccountInput};
 use crate::modbus::{self, ConnectionConfig};
-use crate::project::{water_tank_project, Role, ScadaProject, UserSummary};
+use crate::project::{water_tank_project, ScadaProject, UserSummary};
 
 pub struct AppState {
     pub engine: Arc<Engine>,
@@ -33,7 +33,7 @@ pub fn load_project(state: State<'_, AppState>, project: ScadaProject) -> Result
 #[tauri::command]
 pub fn load_builtin_water_tank(state: State<'_, AppState>) -> Result<ScadaProject, String> {
     let p = water_tank_project();
-    state.engine.load_project(p.clone())?;
+    state.engine.load_builtin(p.clone())?;
     Ok(p)
 }
 
@@ -56,6 +56,9 @@ pub fn save_project_in_memory(
 
 #[tauri::command]
 pub fn get_snapshot(state: State<'_, AppState>) -> EngineSnapshot {
+    // Session expiry is evaluated explicitly here; reading the snapshot itself
+    // must not be a state-changing operation.
+    state.engine.expire_idle_session();
     state.engine.snapshot()
 }
 
@@ -84,13 +87,8 @@ pub fn ack_alarm(state: State<'_, AppState>, def_id: String) -> Result<(), Strin
 }
 
 #[tauri::command]
-pub fn set_role(state: State<'_, AppState>, role: Role, actor: String) {
-    state.engine.set_role(role, actor);
-}
-
-#[tauri::command]
-pub fn set_mode(state: State<'_, AppState>, mode: String) {
-    state.engine.set_mode(mode);
+pub fn set_mode(state: State<'_, AppState>, mode: String) -> Result<(), String> {
+    state.engine.set_mode(mode)
 }
 
 #[tauri::command]
@@ -105,6 +103,17 @@ pub fn login(
 #[tauri::command]
 pub fn logout(state: State<'_, AppState>) -> Result<(), String> {
     state.engine.logout()
+}
+
+#[tauri::command]
+pub fn change_password(
+    state: State<'_, AppState>,
+    current_password: String,
+    new_password: String,
+) -> Result<UserSummary, String> {
+    state
+        .engine
+        .change_password(&current_password, &new_password)
 }
 
 #[tauri::command]
@@ -138,6 +147,11 @@ pub fn get_audit(state: State<'_, AppState>, limit: Option<usize>) -> Vec<AuditE
 #[tauri::command]
 pub fn verify_audit(state: State<'_, AppState>) -> bool {
     state.engine.audit().verify_chain()
+}
+
+#[tauri::command]
+pub fn get_audit_status(state: State<'_, AppState>) -> AuditStatus {
+    state.engine.audit().status()
 }
 
 #[tauri::command]

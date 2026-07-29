@@ -47,19 +47,11 @@
   }
 </script>
 
+<svelte:window onkeydown={(event) => open && onKey(event)} />
+
 {#if open}
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="ctx-backdrop" onpointerdown={onClose}></div>
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div
-    class="ctx-menu"
-    style:left="{x}px"
-    style:top="{y}px"
-    role="menu"
-    tabindex="-1"
-    onkeydown={onKey}
-    onpointerdown={(e) => e.stopPropagation()}
-  >
+  <button type="button" class="ctx-backdrop" aria-label="Zamknij menu kontekstowe" onclick={onClose}></button>
+  <div class="ctx-menu" style:left="{x}px" style:top="{y}px" role="menu">
     <button type="button" role="menuitem" disabled={!hasSel} onclick={() => run(cutSelectedWidgets)}>
       <span>Cut</span><kbd>Ctrl+X</kbd>
     </button>
@@ -159,6 +151,14 @@
 
 <style>
   .ctx-backdrop {
+    /* Rendered as a <button> so the dismissal affordance is keyboard-reachable. */
+    appearance: none;
+    border: 0;
+    padding: 0;
+    margin: 0;
+    font: inherit;
+    color: inherit;
+    cursor: default;
     position: fixed;
     inset: 0;
     z-index: 9998;

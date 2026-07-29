@@ -322,11 +322,11 @@ export function validateRegisterTag(
     }
   }
 
-  if (tag.data_type === "bool" && (tag.binding?.table === "holding" || tag.binding?.table === "memory")) {
+  if (tag.data_type === "bool" && tag.binding?.table === "holding") {
     const bit = tag.binding.bit;
     if (bit === undefined || bit === null || bit < 0 || bit > 15) {
       errors.push("Dla zmiennej bitowej Bit Index musi wynosić 0..15 (LSB=0).");
-    } else if (tag.binding?.table === "holding") {
+    } else {
       const sameBitTag = existingTags.find(
         (t) =>
           t.device_id === tag.device_id &&

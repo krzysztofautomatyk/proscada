@@ -120,9 +120,11 @@
 
   {#if node.kind === "script"}
     <div class="hint">
-      Bind from widget Properties → <strong>On Click Script</strong>. API:
-      <code>writeTag</code>, <code>getTag</code>, <code>getTagValue</code>, <code>log</code>,
-      <code>navigate</code>, <code>ackAlarm</code>. Entry: <code>async function onEvent(event)</code>.
+      Bind from widget Properties → <strong>On Click Script</strong>. Deterministic action
+      language, one statement per line:
+      <code>writeTag "tag.id" 1</code>, <code>ackAlarm "alarm.id"</code>,
+      <code>navigate "form.id"</code>, <code>log "text"</code>, and
+      <code>if "tag.id" &gt;= 100 then …</code>. JavaScript is not executed.
     </div>
   {/if}
 

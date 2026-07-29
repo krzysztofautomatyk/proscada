@@ -9,13 +9,14 @@ Najpierw przeczytaj `AGENTS.md` i dobierz skill z `.github/skills/README.md`.
 - Nie wykonuj zapisu procesu z UI bez backendowego `write_tag`.
 - Zachowaj jakość danych, timestamp i jawne stany błędu.
 - Nie omijaj centralnego Alarm Managera.
+- Rola pochodzi tylko z `login`; nie przywracaj komendy `set_role`.
 - Każda kontrolka ma osobny plik, Registry, Factory i dokumentację.
-- Używaj helperów z `widgets/shared`; nie duplikuj config parsing.
+- Używaj helperów z `widgets/shared`; nie duplikuj config parsing ani obsługi jakości.
 - Nie dodawaj `any`, arbitralnych skryptów ani niebezpiecznych URL.
 - Nie modyfikuj wygenerowanych schemas ręcznie.
 - Nie uruchamiaj Tauri dev/build ani połączeń z PLC w cloud agent lub CI.
 - Zmiana Tauri command wymaga parytetu w handlerze, `api.ts`, mocku i typach.
-- `scriptRuntime.ts` używa `new Function` i nie jest granicą bezpieczeństwa.
+- `scriptRuntime.ts` parsuje własny język akcji; `eval`/`new Function` są zakazane.
 
 ## Wymagane sprawdzenia
 
@@ -27,8 +28,10 @@ npm run validate:widgets
 npm run validate:docs
 npm run validate:ai
 npm run validate:yaml
-npm run test:pump-template
+npm test
 npm run build
+cargo fmt --all --manifest-path src-tauri/Cargo.toml -- --check
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 

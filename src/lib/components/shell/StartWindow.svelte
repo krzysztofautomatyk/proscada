@@ -4,18 +4,21 @@
     togglePinRecentProject,
     removeRecentProject,
     clearRecentProjects,
-    openRecentProjectItem,
     type RecentProjectItem,
   } from "$lib/stores/recentProjects";
   import {
     project,
     newBlankProject,
+    openRecentProjectItem,
+    applyLoadedProject,
     importProjectFile,
     importProjectFromJson,
     startWindowOpen,
     log,
   } from "$lib/stores/app";
   import { api } from "$lib/services/api";
+  import { activate } from "$lib/utils/a11y";
+  import { createAndSaveNewProject } from "$lib/stores/projectStorage";
   import { ensureProjectTree } from "$lib/utils/projectTree";
   import { appSettings, updateAppSettings } from "$lib/stores/settings";
 
@@ -117,8 +120,6 @@
     if (!newProjectName.trim()) return;
     try {
       if (selectedTemplate === "water_tank") {
-        const { createAndSaveNewProject } = await import("$lib/stores/projectStorage");
-        const { applyLoadedProject } = await import("$lib/stores/app");
         const p = await api.loadBuiltinWaterTank();
         const customP = { ...ensureProjectTree(p), name: newProjectName.trim(), description: newProjectDesc.trim() };
         const result = await createAndSaveNewProject(newProjectName.trim(), newProjectDesc.trim(), customP);
@@ -214,7 +215,6 @@
 <svelte:window onkeydown={onKeyDown} />
 
 {#if $startWindowOpen}
-  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <div
     class="vs-start-overlay"
     class:drag-active={isDraggingOver}
@@ -297,8 +297,6 @@
               </div>
             {:else}
               {#each filteredProjects as p, index (p.id)}
-                <!-- svelte-ignore a11y_click_events_have_key_events -->
-                <!-- svelte-ignore a11y_no_static_element_interactions -->
                 <div
                   class="vs-recent-card"
                   class:selected={index === selectedIndex}
@@ -306,6 +304,7 @@
                   aria-selected={index === selectedIndex}
                   tabindex="0"
                   onclick={() => handleSelectRecent(p)}
+                  onkeydown={activate(() => handleSelectRecent(p))}
                   onmouseenter={() => (selectedIndex = index)}
                 >
                   <div class="vs-recent-icon" class:pinned={p.pinned}>
@@ -363,9 +362,7 @@
 
           <div class="vs-action-cards">
             <!-- Action 1: Create New Project -->
-            <!-- svelte-ignore a11y_click_events_have_key_events -->
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div class="vs-action-card primary" onclick={() => (createModalOpen = true)}>
+            <button type="button" class="vs-action-card primary" onclick={() => (createModalOpen = true)}>
               <div class="vs-card-icon">➕</div>
               <div class="vs-card-content">
                 <div class="vs-card-title">Stwórz nowy projekt</div>
@@ -374,12 +371,10 @@
                 </div>
               </div>
               <div class="vs-card-arrow">➔</div>
-            </div>
+            </button>
 
             <!-- Action 2: Open Existing Project -->
-            <!-- svelte-ignore a11y_click_events_have_key_events -->
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div class="vs-action-card" onclick={handleOpenProject}>
+            <button type="button" class="vs-action-card" onclick={handleOpenProject}>
               <div class="vs-card-icon">📂</div>
               <div class="vs-card-content">
                 <div class="vs-card-title">Otwórz plik projektu</div>
@@ -388,12 +383,10 @@
                 </div>
               </div>
               <div class="vs-card-arrow">➔</div>
-            </div>
+            </button>
 
             <!-- Action 3: Import Project Package -->
-            <!-- svelte-ignore a11y_click_events_have_key_events -->
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div class="vs-action-card" onclick={handleImportProject}>
+            <button type="button" class="vs-action-card" onclick={handleImportProject}>
               <div class="vs-card-icon">📦</div>
               <div class="vs-card-content">
                 <div class="vs-card-title">Importuj projekt</div>
@@ -402,12 +395,10 @@
                 </div>
               </div>
               <div class="vs-card-arrow">➔</div>
-            </div>
+            </button>
 
             <!-- Action 4: Load Built-in Demo -->
-            <!-- svelte-ignore a11y_click_events_have_key_events -->
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div class="vs-action-card accent" onclick={handleLoadWaterTankDemo}>
+            <button type="button" class="vs-action-card accent" onclick={handleLoadWaterTankDemo}>
               <div class="vs-card-icon">🏭</div>
               <div class="vs-card-content">
                 <div class="vs-card-title">Stacja Pomp Wodnych (Demo)</div>
@@ -416,7 +407,7 @@
                 </div>
               </div>
               <div class="vs-card-arrow">➔</div>
-            </div>
+            </button>
           </div>
         </div>
       </div>
@@ -475,12 +466,14 @@
         <div class="vs-field">
           <span class="vs-field-label">Wybór szablonu początkowego</span>
           <div class="vs-template-options">
-            <!-- svelte-ignore a11y_click_events_have_key_events -->
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div
               class="vs-template-card"
               class:selected={selectedTemplate === "blank"}
+              role="radio"
+              aria-checked={selectedTemplate === "blank"}
+              tabindex="0"
               onclick={() => (selectedTemplate = "blank")}
+              onkeydown={activate(() => (selectedTemplate = "blank"))}
             >
               <div class="vs-tmpl-radio">{selectedTemplate === "blank" ? "●" : "○"}</div>
               <div class="vs-tmpl-details">
@@ -489,12 +482,14 @@
               </div>
             </div>
 
-            <!-- svelte-ignore a11y_click_events_have_key_events -->
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div
               class="vs-template-card"
               class:selected={selectedTemplate === "water_tank"}
+              role="radio"
+              aria-checked={selectedTemplate === "water_tank"}
+              tabindex="0"
               onclick={() => (selectedTemplate = "water_tank")}
+              onkeydown={activate(() => (selectedTemplate = "water_tank"))}
             >
               <div class="vs-tmpl-radio">{selectedTemplate === "water_tank" ? "●" : "○"}</div>
               <div class="vs-tmpl-details">

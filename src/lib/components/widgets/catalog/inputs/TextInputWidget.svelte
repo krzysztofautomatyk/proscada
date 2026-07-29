@@ -60,8 +60,15 @@
       message = error;
       return;
     }
-    const writeValue: number | string = mode === "number" ? Number(draft) : draft;
-    message = invokeWrite(widget, design, onWrite, writeValue) ? "WRITE REQUESTED" : "TAG WRITE UNAVAILABLE";
+    // The backend write gate accepts a numeric process value only; text mode
+    // has no Modbus representation, so it is refused instead of coerced.
+    if (mode !== "number") {
+      message = "TEXT WRITE NOT SUPPORTED BY THE PROCESS GATEWAY";
+      return;
+    }
+    message = invokeWrite(widget, design, onWrite, Number(draft))
+      ? "WRITE REQUESTED"
+      : "TAG WRITE UNAVAILABLE";
   }
 
   function cancel() {

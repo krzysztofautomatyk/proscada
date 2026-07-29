@@ -1,5 +1,6 @@
 import type { ScadaProject } from "$lib/types";
 import { WIDGET_CATALOG } from "$lib/components/widgets/registry";
+import { parseScript } from "$lib/services/scriptRuntime";
 
 export interface ValidationIssue {
   severity: "error" | "warning";
@@ -230,8 +231,9 @@ export function validateProject(project: ScadaProject | null | undefined): Valid
   (project.tree ?? []).forEach((node) => {
     if (node.kind === "script" && node.content) {
       try {
-        // Test JS syntax parse
-        new Function("event", node.content);
+        // Parsed by the same restricted grammar the runtime executes, so the
+        // Designer cannot report a script as valid that the runtime rejects.
+        parseScript(node.content);
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         errors.push({

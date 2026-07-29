@@ -42,7 +42,9 @@ jobs:
           npm run validate:docs
           npm run validate:ai
           npm run validate:yaml
-          npm run test:pump-template
+
+      - name: Run frontend tests
+        run: npm test
 
       - name: Build frontend
         run: npm run build

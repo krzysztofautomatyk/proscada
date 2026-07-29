@@ -15,11 +15,11 @@
 
 ## Ręczne review
 
-- `scriptRuntime.ts` i `new Function`;
-- `set_role`, `set_mode` i nowe Tauri commands;
+- `scriptRuntime.ts` i gramatyka języka akcji;
+- `set_mode`, `login`, `change_password` i nowe Tauri commands;
 - `src-tauri/capabilities/default.json`;
 - zapis Modbus i plan pollingu;
-- łańcuch audytu;
+- łańcuch audytu i jego trwałość;
 - import `.pscctrl`.
 
 Testy używają fixture, mocka lub lokalnego symulatora, nigdy produkcyjnego urządzenia.

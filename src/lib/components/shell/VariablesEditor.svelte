@@ -2,6 +2,7 @@
   import type { ScadaProject, TagDefinition } from "$lib/types";
   import { project, snapshot, dirty, log, addVariableModalOpen } from "$lib/stores/app";
   import { SYSTEM_TAG_DEFINITIONS } from "$lib/services/systemTagsService";
+  import SingleVariableForm from "../variables/SingleVariableForm.svelte";
 
   interface Props {
     scada: ScadaProject;
@@ -12,6 +13,20 @@
 
   let filter = $state("");
   let categoryTab = $state<"all" | "plc" | "memory" | "system">("all");
+  let editingTag = $state<TagDefinition | null>(null);
+
+  function handleSaveEditedTag(updatedTag: TagDefinition) {
+    project.update((p) => {
+      if (!p) return p;
+      dirty.set(true);
+      return {
+        ...p,
+        tags: p.tags.map((t) => (t.id === updatedTag.id ? updatedTag : t)),
+      };
+    });
+    log(`Edytowano zmienną: ${updatedTag.id}`, "ok");
+    editingTag = null;
+  }
 
   const tagValueMap = $derived.by(() => {
     const map = new Map<string, { value: number; boolValue: boolean; stringValue?: string; quality: string }>();
@@ -188,7 +203,7 @@
           <th style:width="70px">Dostęp</th>
           <th style:width="80px">Jednostka</th>
           <th>Opis Zmiennej</th>
-          {#if design}<th style:width="70px">Akcje</th>{/if}
+          {#if design}<th style:width="90px">Akcje</th>{/if}
         </tr>
       </thead>
       <tbody>
@@ -296,14 +311,24 @@
             {#if design}
               <td>
                 {#if !isSys}
-                  <button
-                    type="button"
-                    class="btn-del"
-                    title="Usuń zmienną"
-                    onclick={() => removeTag(t.id)}
-                  >
-                    🗑️
-                  </button>
+                  <div class="actions-cell">
+                    <button
+                      type="button"
+                      class="btn-edit"
+                      title="Edytuj pełną konfigurację zmiennej..."
+                      onclick={() => (editingTag = t)}
+                    >
+                      ✏️
+                    </button>
+                    <button
+                      type="button"
+                      class="btn-del"
+                      title="Usuń zmienną"
+                      onclick={() => removeTag(t.id)}
+                    >
+                      🗑️
+                    </button>
+                  </div>
                 {/if}
               </td>
             {/if}
@@ -319,6 +344,27 @@
     </table>
   </div>
 </div>
+
+{#if editingTag}
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <div class="modal-backdrop" onclick={() => (editingTag = null)} role="presentation">
+    <div class="modal-card" onclick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" tabindex="-1">
+      <div class="modal-header">
+        <h3>✏️ Edycja Pełnej Konfiguracji Zmiennej: {editingTag.name} ({editingTag.id})</h3>
+        <button type="button" class="btn-close" onclick={() => (editingTag = null)}>✕</button>
+      </div>
+      <div class="modal-body">
+        <SingleVariableForm
+          devices={scada.devices ?? []}
+          existingTags={scada.tags ?? []}
+          editingTag={editingTag}
+          onSave={handleSaveEditedTag}
+          onCancel={() => (editingTag = null)}
+        />
+      </div>
+    </div>
+  </div>
+{/if}
 
 <style>
   .vars-manager {
@@ -554,20 +600,99 @@
     border-radius: 3px;
   }
 
+  .actions-cell {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+  }
+
+  .btn-edit,
   .btn-del {
     background: transparent;
     border: none;
     cursor: pointer;
     font-size: 13px;
-    opacity: 0.7;
-    transition: opacity 0.1s;
+    opacity: 0.75;
+    padding: 2px 4px;
+    border-radius: 3px;
+    transition: opacity 0.1s, background-color 0.1s;
   }
 
-  .btn-del:hover { opacity: 1; }
+  .btn-edit:hover,
+  .btn-del:hover {
+    opacity: 1;
+    background: rgba(255, 255, 255, 0.1);
+  }
 
   .empty-cell {
     text-align: center;
     padding: 24px;
     color: var(--vs-text-dim, #9d9d9d);
+  }
+
+  .modal-backdrop {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.7);
+    backdrop-filter: blur(4px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 9999;
+    padding: 20px;
+  }
+
+  .modal-card {
+    background: var(--vs-bg-2, #252526);
+    border: 1px solid var(--vs-border, #3e3e42);
+    border-radius: 6px;
+    width: 96vw;
+    height: 92vh;
+    max-width: 1400px;
+    max-height: 94vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6);
+    overflow: hidden;
+  }
+
+  .modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    background: var(--vs-bg-3, #2d2d30);
+    border-bottom: 1px solid var(--vs-border, #3e3e42);
+  }
+
+  .modal-header h3 {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--vs-text-bright, #f3f3f3);
+  }
+
+  .btn-close {
+    background: transparent;
+    border: none;
+    color: var(--vs-text-dim, #9d9d9d);
+    font-size: 16px;
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 3px;
+  }
+
+  .btn-close:hover {
+    color: #fff;
+    background: rgba(255, 255, 255, 0.1);
+  }
+
+  .modal-body {
+    padding: 16px;
+    overflow-y: auto;
   }
 </style>

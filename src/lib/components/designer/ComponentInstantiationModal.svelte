@@ -199,15 +199,8 @@
 </script>
 
 {#if open && template}
-  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <div
-    class="backdrop"
-    role="dialog"
-    aria-modal="true"
-    tabindex="-1"
-    onclick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-  >
+  <div class="backdrop" role="dialog" aria-modal="true">
+    <button type="button" class="backdrop-dismiss" aria-label="Zamknij okno" onclick={onClose}></button>
     <form class="panel" onsubmit={handleSubmit}>
 
       <!-- ── HEADER ── -->
@@ -312,7 +305,6 @@
 
                   <div class="picker-list">
                     {#each pickerTags as tag (tag.id)}
-                      <!-- svelte-ignore a11y_no_static_element_interactions -->
                       <div
                         class="picker-row"
                         class:picker-selected={tagMapping[slot.id] === tag.id || tagMapping[slot.slotKey] === tag.id}
@@ -361,6 +353,20 @@
 
 <style>
   /* ── BACKDROP ── */
+  .backdrop-dismiss {
+    position: absolute;
+    inset: 0;
+    appearance: none;
+    border: 0;
+    padding: 0;
+    margin: 0;
+    background: transparent;
+    cursor: default;
+  }
+  .panel {
+    position: relative;
+    z-index: 1;
+  }
   .backdrop {
     position: fixed; inset: 0; z-index: 9000;
     background: rgba(0,0,0,.65);

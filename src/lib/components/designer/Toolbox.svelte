@@ -157,8 +157,9 @@
   }
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="panel" style:height="100%;border:none" onpointermove={onPointerMove}>
+<svelte:window onpointermove={onPointerMove} />
+
+<div class="panel" style:height="100%;border:none">
   <div class="panel-header">
     <span>Toolbox (Click + or Drag)</span>
     <div class="header-actions">
@@ -184,8 +185,6 @@
         <div class="empty-favorites">Star widgets to pin them here</div>
       {:else}
         {#each favoriteItems as item}
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <!-- svelte-ignore a11y_click_events_have_key_events -->
           <div
             class="toolbox-item"
             onpointerdown={(e) => onPointerDown(e, item.type)}
@@ -267,8 +266,6 @@
       </button>
       {#if !isCollapsed(cat)}
         {#each WIDGET_CATALOG.filter((w) => w.category === cat) as item}
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <!-- svelte-ignore a11y_click_events_have_key_events -->
           <div
             class="toolbox-item"
             onpointerdown={(e) => onPointerDown(e, item.type)}

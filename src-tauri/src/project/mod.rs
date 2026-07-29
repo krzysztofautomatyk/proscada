@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+pub mod credentials;
+
 pub const SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -82,6 +84,38 @@ pub enum TagDataType {
     String,
 }
 
+impl TagDataType {
+    /// Number of 16-bit Modbus registers occupied by one value of this type.
+    /// `String` has no fixed width and is rejected on Modbus tables by
+    /// [`ScadaProject::validate`].
+    pub fn register_count(&self) -> Option<u16> {
+        match self {
+            TagDataType::Bool | TagDataType::U16 | TagDataType::I16 => Some(1),
+            TagDataType::U32 | TagDataType::I32 | TagDataType::F32 => Some(2),
+            TagDataType::U64 | TagDataType::I64 | TagDataType::F64 => Some(4),
+            TagDataType::String => None,
+        }
+    }
+}
+
+/// Register order for values wider than one holding/input register.
+/// `HighWordFirst` matches the Modbus convention used by most PLC vendors.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WordOrder {
+    #[default]
+    HighWordFirst,
+    LowWordFirst,
+}
+
+fn is_default_word_order(order: &WordOrder) -> bool {
+    matches!(order, WordOrder::HighWordFirst)
+}
+
+fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
+}
+
 fn default_query_enabled() -> bool {
     true
 }
@@ -129,6 +163,12 @@ pub struct TagBinding {
     pub single_writer: bool,
     #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub verify_readback: bool,
+    /// Register order for multi-register data types.
+    #[serde(default, skip_serializing_if = "is_default_word_order")]
+    pub word_order: WordOrder,
+    /// Backend-enforced minimum security level required to write this tag.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub min_security_level: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -308,6 +348,10 @@ pub struct UserAccount {
     pub security_level: u32,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Set on seeded/default accounts. While true the backend refuses process
+    /// writes and user administration for this account.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub password_change_required: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -318,6 +362,8 @@ pub struct UserSummary {
     pub security_level: u32,
     pub enabled: bool,
     pub has_pin: bool,
+    #[serde(default)]
+    pub password_change_required: bool,
 }
 
 impl UserAccount {
@@ -329,6 +375,7 @@ impl UserAccount {
             security_level: self.security_level,
             enabled: self.enabled,
             has_pin: self.pin_hash.is_some(),
+            password_change_required: self.password_change_required,
         }
     }
 }
@@ -361,6 +408,9 @@ pub fn hash_password(password: &str, salt: &str) -> String {
     hex::encode(hasher.finalize())
 }
 
+/// Legacy salt used by projects created before Argon2id was introduced.
+pub const LEGACY_SALT: &str = "proscada_salt";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScadaProject {
     pub schema_version: u32,
@@ -391,28 +441,135 @@ pub struct ScadaProject {
 impl ScadaProject {
     pub fn ensure_default_users(&mut self) {
         if self.users.is_empty() {
-            let salt = "proscada_salt";
+            let salt = LEGACY_SALT;
             self.users.push(UserAccount {
                 id: "usr_admin".into(),
                 username: "admin".into(),
                 display_name: "Administrator".into(),
-                password_hash: hash_password("admin123", salt),
+                password_hash: credentials::hash_secret("admin123")
+                    .unwrap_or_else(|_| hash_password("admin123", salt)),
                 salt: salt.into(),
-                pin_hash: Some(hash_password("1234", salt)),
+                pin_hash: Some(
+                    credentials::hash_secret("1234")
+                        .unwrap_or_else(|_| hash_password("1234", salt)),
+                ),
                 security_level: 1000,
                 enabled: true,
+                password_change_required: true,
             });
             self.users.push(UserAccount {
                 id: "usr_operator".into(),
                 username: "operator".into(),
                 display_name: "Operator Zmianowy".into(),
-                password_hash: hash_password("operator123", salt),
+                password_hash: credentials::hash_secret("operator123")
+                    .unwrap_or_else(|_| hash_password("operator123", salt)),
                 salt: salt.into(),
-                pin_hash: Some(hash_password("1111", salt)),
+                pin_hash: Some(
+                    credentials::hash_secret("1111")
+                        .unwrap_or_else(|_| hash_password("1111", salt)),
+                ),
                 security_level: 100,
                 enabled: true,
+                password_change_required: true,
             });
         }
+    }
+
+    /// Reject project content the engine cannot represent faithfully.
+    ///
+    /// Every rule here exists because the alternative would be a silently wrong
+    /// process value or an unenforceable write gate.
+    pub fn validate(&self) -> Result<(), String> {
+        let device_ids: std::collections::HashSet<&str> =
+            self.devices.iter().map(|d| d.id.as_str()).collect();
+        let mut seen_tag_ids = std::collections::HashSet::new();
+
+        for tag in &self.tags {
+            if !seen_tag_ids.insert(tag.id.as_str()) {
+                return Err(format!("Duplicate tag id: {}", tag.id));
+            }
+            if tag.binding.table != ModbusTable::Memory
+                && tag.binding.table != ModbusTable::System
+                && tag.device_id != "SYS_INTERNAL"
+                && !device_ids.contains(tag.device_id.as_str())
+            {
+                return Err(format!(
+                    "Tag {} references unknown device {}",
+                    tag.id, tag.device_id
+                ));
+            }
+            if tag.scale == 0.0 || !tag.scale.is_finite() {
+                return Err(format!("Tag {} has a zero or non-finite scale", tag.id));
+            }
+            if !tag.offset.is_finite() {
+                return Err(format!("Tag {} has a non-finite offset", tag.id));
+            }
+
+            let binding = &tag.binding;
+            match binding.table {
+                ModbusTable::Memory | ModbusTable::System => continue,
+                ModbusTable::Coil | ModbusTable::Discrete => {
+                    if binding.bit.is_some() {
+                        return Err(format!(
+                            "Tag {} binds a bit index to a coil/discrete address",
+                            tag.id
+                        ));
+                    }
+                    if tag.data_type != TagDataType::Bool {
+                        return Err(format!("Tag {} on a bit table must be bool", tag.id));
+                    }
+                }
+                ModbusTable::Holding | ModbusTable::Input => {
+                    if let Some(bit) = binding.bit {
+                        if bit > 15 {
+                            return Err(format!(
+                                "Tag {} uses register bit {bit}; only 0..15 exist",
+                                tag.id
+                            ));
+                        }
+                        if tag.data_type != TagDataType::Bool {
+                            return Err(format!(
+                                "Tag {} binds a register bit but is not bool",
+                                tag.id
+                            ));
+                        }
+                    }
+                    let Some(count) = tag.data_type.register_count() else {
+                        return Err(format!(
+                            "Tag {} uses data type {:?}, which has no fixed Modbus width",
+                            tag.id, tag.data_type
+                        ));
+                    };
+                    if binding.address.checked_add(count - 1).is_none() {
+                        return Err(format!(
+                            "Tag {} spans past the end of the register space",
+                            tag.id
+                        ));
+                    }
+                }
+            }
+
+            if binding.writable
+                && matches!(binding.table, ModbusTable::Input | ModbusTable::Discrete)
+            {
+                return Err(format!(
+                    "Tag {} is marked writable but input registers and discrete inputs are read-only",
+                    tag.id
+                ));
+            }
+        }
+
+        let tag_ids: std::collections::HashSet<&str> =
+            self.tags.iter().map(|t| t.id.as_str()).collect();
+        for alarm in &self.alarms {
+            if !tag_ids.contains(alarm.tag_id.as_str()) {
+                return Err(format!(
+                    "Alarm {} references unknown tag {}",
+                    alarm.id, alarm.tag_id
+                ));
+            }
+        }
+        Ok(())
     }
 
     pub fn recompute_hash(&mut self) {
@@ -539,6 +696,8 @@ pub fn water_tank_project() -> ScadaProject {
                 bit_write_mode: BitWriteMode::MaskWrite,
                 single_writer: false,
                 verify_readback: true,
+                word_order: WordOrder::HighWordFirst,
+                min_security_level: if *writable { 100 } else { 0 },
             },
             unit: (*unit).into(),
             description: (*desc).into(),
@@ -589,6 +748,8 @@ pub fn water_tank_project() -> ScadaProject {
                 bit_write_mode: BitWriteMode::MaskWrite,
                 single_writer: false,
                 verify_readback: true,
+                word_order: WordOrder::HighWordFirst,
+                min_security_level: 0,
             },
             unit: String::new(),
             description: (*desc).into(),

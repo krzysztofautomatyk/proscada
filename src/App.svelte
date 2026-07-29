@@ -65,13 +65,14 @@
   import { ensureProjectTree, isDocKind, iconFor } from "$lib/utils/projectTree";
   import { appSettings } from "$lib/stores/settings";
   import { validateProject } from "$lib/utils/validation";
+  import { activate, resizeOnKey } from "$lib/utils/a11y";
   import { getCurrentWindow } from "@tauri-apps/api/window";
 
   import LoginModal from "$lib/components/auth/LoginModal.svelte";
   import PinChallengeModal from "$lib/components/auth/PinChallengeModal.svelte";
   import UserManagementModal from "$lib/components/auth/UserManagementModal.svelte";
+  import ChangePasswordModal from "$lib/components/auth/ChangePasswordModal.svelte";
 
-  let role = $state<Role>("engineer");
   let leftTab = $state<LeftPanelTab>("solution");
   let settingsOpen = $state(false);
   let loginModalOpen = $state(false);
@@ -84,14 +85,18 @@
   let workspaceEl = $state<HTMLDivElement | null>(null);
 
   const currentUser = $derived($snapshot?.current_user);
-  const securityLevel = $derived($snapshot?.security_level ?? 1000);
-  const isSuperAdmin = $derived(securityLevel >= 1000 || $mode === "designer");
+  // Fail-closed: an unknown snapshot means no privileges, not full privileges.
+  const securityLevel = $derived($snapshot?.security_level ?? 0);
+  const isSuperAdmin = $derived(securityLevel >= 1000);
+  // The backend blocks writes and user administration until a seeded account
+  // replaces its default password, so the dialog is not dismissible.
+  const mustChangePassword = $derived($snapshot?.password_change_required === true);
 
   async function handleLogout() {
     try {
       await api.logout();
       log("Wylogowano użytkownika", "info");
-    } catch (e: any) {
+    } catch (e) {
       log(`Błąd wylogowania: ${e}`, "err");
     }
   }
@@ -169,6 +174,14 @@
     if (which === "left") paneLeft = PANE_DEFAULTS.left;
     else if (which === "right") paneRight = PANE_DEFAULTS.right;
     else paneBottom = PANE_DEFAULTS.bottom;
+    persistPaneSizes();
+  }
+
+  /** Keyboard resizing so the panes are not mouse-only. */
+  function nudgeSplit(which: "left" | "right" | "bottom", delta: number) {
+    if (which === "left") paneLeft = clamp(paneLeft + delta, PANE_MIN.left, 560);
+    else if (which === "right") paneRight = clamp(paneRight - delta, PANE_MIN.right, 560);
+    else paneBottom = clamp(paneBottom - delta, PANE_MIN.bottom, 520);
     persistPaneSizes();
   }
 
@@ -329,13 +342,7 @@
     };
   });
 
-  async function onRoleChange(r: Role) {
-    role = r;
-    await api.setRole(r, r === "administrator" ? "admin" : r);
-    log(`Role set to ${r}`, "info");
-  }
-
-  async function onWrite(tagId: string, value: number | string) {
+  async function onWrite(tagId: string, value: number) {
     if ($project?.session_config?.pin_challenge_on_write) {
       pinChallengeAction = `Zapis wartości ${tagId} = ${value}`;
       pendingWriteFn = async () => {
@@ -467,6 +474,13 @@
 <UserManagementModal
   open={userMgmtModalOpen}
   onclose={() => (userMgmtModalOpen = false)}
+/>
+
+<ChangePasswordModal
+  open={mustChangePassword}
+  mandatory={true}
+  username={currentUser?.username ?? ""}
+  onsuccess={() => log("Hasło zostało zmienione", "ok")}
 />
 
 <div class="shell">
@@ -621,23 +635,24 @@
         </div>
       {/if}
 
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div
+      <button
+        type="button"
         class="splitter splitter-v split-v-left"
         class:active={activeSplit === "left"}
-        title="Drag to resize · double-click to reset"
+        aria-label="Szerokość panelu lewego"
+        title="Drag to resize · double-click to reset · arrows to nudge"
         onpointerdown={(e) => startSplit("left", e)}
         onpointermove={onSplitMove}
         onpointerup={endSplit}
         onpointercancel={endSplit}
         ondblclick={() => resetSplit("left")}
-      ></div>
+        onkeydown={resizeOnKey("vertical", (delta) => nudgeSplit("left", delta))}
+      ></button>
 
       <div class="center">
         <!-- Interactive Unified Multi-Tabstrip (Screens + Active Document/Variables) -->
         <div class="tabstrip" style:display="flex" style:align-items="center">
           {#each $project.forms as f}
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div
               class="tab"
               class:active={!centerDoc && $selectedFormId === f.id}
@@ -648,52 +663,46 @@
                 selectedFormId.set(f.id);
                 selectedWidgetId.set(null);
               }}
-              onkeydown={(e) => {
-                if (e.key === "Enter") {
-                  selectSolutionNode(null);
-                  selectedFormId.set(f.id);
-                }
-              }}
+              onkeydown={activate(() => {
+                selectSolutionNode(null);
+                selectedFormId.set(f.id);
+                selectedWidgetId.set(null);
+              })}
             >
               <span>{f.name}.form</span>
               {#if $mode === "designer" && $project.forms.length > 1 && !isMainScreen(f)}
-                <!-- svelte-ignore a11y_click_events_have_key_events -->
-                <!-- svelte-ignore a11y_no_static_element_interactions -->
-                <span
+                <button
+                  type="button"
                   class="tab-close"
                   title="Usuń ekran {f.name}"
+                  aria-label="Usuń ekran {f.name}"
                   onclick={(e) => {
                     e.stopPropagation();
                     deleteForm(f.id);
                   }}
                 >
                   ✕
-                </span>
+                </button>
               {/if}
             </div>
           {/each}
 
           {#if centerDoc}
             <!-- Active Document Tab (Variables / Script / Note) -->
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div
-              class="tab active"
-              role="button"
-              tabindex="0"
-            >
+            <div class="tab active">
               <span>{iconFor(centerDoc.kind)} {centerDoc.name}</span>
-              <!-- svelte-ignore a11y_click_events_have_key_events -->
-              <!-- svelte-ignore a11y_no_static_element_interactions -->
-              <span
+              <button
+                type="button"
                 class="tab-close"
                 title="Zamknij zakładkę {centerDoc.name}"
+                aria-label="Zamknij zakładkę {centerDoc.name}"
                 onclick={(e) => {
                   e.stopPropagation();
                   selectSolutionNode(null);
                 }}
               >
                 ✕
-              </span>
+              </button>
             </div>
           {/if}
 
@@ -739,17 +748,19 @@
       </div>
 
       {#if $mode === "designer"}
-        <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div
+        <button
+          type="button"
           class="splitter splitter-v split-v-right"
           class:active={activeSplit === "right"}
-          title="Drag to resize · double-click to reset"
+          aria-label="Szerokość panelu właściwości"
+          title="Drag to resize · double-click to reset · arrows to nudge"
           onpointerdown={(e) => startSplit("right", e)}
           onpointermove={onSplitMove}
           onpointerup={endSplit}
           onpointercancel={endSplit}
           ondblclick={() => resetSplit("right")}
-        ></div>
+          onkeydown={resizeOnKey("vertical", (delta) => nudgeSplit("right", delta))}
+        ></button>
         <div class="properties" bind:this={propertiesEl}>
           <Properties
             widget={$selectedWidget}
@@ -759,17 +770,19 @@
         </div>
       {/if}
 
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div
+      <button
+        type="button"
         class="splitter splitter-h split-h-bottom"
         class:active={activeSplit === "bottom"}
-        title="Drag to resize Output / Alarms · double-click to reset"
+        aria-label="Wysokość panelu wyjściowego"
+        title="Drag to resize Output / Alarms · double-click to reset · arrows to nudge"
         onpointerdown={(e) => startSplit("bottom", e)}
         onpointermove={onSplitMove}
         onpointerup={endSplit}
         onpointercancel={endSplit}
         ondblclick={() => resetSplit("bottom")}
-      ></div>
+        onkeydown={resizeOnKey("horizontal", (delta) => nudgeSplit("bottom", delta))}
+      ></button>
 
       <div class="output">
         <OutputPanel snapshot={$snapshot} audit={$audit} />
@@ -784,7 +797,7 @@
     <span class="item">
       {$snapshot?.connected ? "● Modbus master connected" : "○ Disconnected"}
     </span>
-    <span class="item">Role: {$snapshot?.role ?? role}</span>
+    <span class="item">Role: {$snapshot?.role ?? "viewer"}</span>
     {#if $mode === "designer" && $selectedWidgetIds.length >= 2}
       <span class="item align-item">
         <span class="sb-align-lbl">Align ({$selectedWidgetIds.length}):</span>
@@ -797,9 +810,8 @@
       </span>
     {/if}
     <span class="item">Mode: {$mode}</span>
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <span
+    <button
+      type="button"
       class="item sb-autosave-item"
       title="AutoSave Status · Click to open Application Settings"
       onclick={() => (settingsOpen = true)}
@@ -813,7 +825,7 @@
       {:else}
         <span class="sb-badge ok">💾 AutoSave: ON ({$appSettings.autosaveIntervalMinutes}m)</span>
       {/if}
-    </span>
+    </button>
     <span class="item" style:margin-left="auto">
       IEC 62443 / ISA-18.2 practices · Lab use only · Not certified
     </span>
@@ -823,6 +835,15 @@
 <style>
   .sb-autosave-item {
     cursor: pointer;
+    background: none;
+    border: none;
+    color: inherit;
+    font: inherit;
+    padding: 0;
+  }
+  .sb-autosave-item:focus-visible {
+    outline: 2px solid #1f6feb;
+    outline-offset: 1px;
   }
   .sb-badge {
     padding: 1px 6px;

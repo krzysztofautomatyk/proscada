@@ -1,5 +1,11 @@
 <script lang="ts">
   import type { WidgetDef, TagValue } from "$lib/types";
+  import { tagMap } from "$lib/stores/app";
+  import {
+    formatTrustedValue,
+    NO_VALUE_PLACEHOLDER,
+    resolveTagQuality,
+  } from "../../shared/quality";
 
   interface Props {
     widget: WidgetDef;
@@ -8,15 +14,36 @@
     onWrite?: (tagId: string, value: number) => void;
   }
 
-  let { widget, tag = null }: Props = $props();
+  let { widget, tag = null, design = false }: Props = $props();
 
   const cfg = $derived((widget.config ?? {}) as Record<string, unknown>);
   const str = (k: string, d = "") => String(cfg[k] ?? d);
   const num = (k: string, d = 0) => Number(cfg[k] ?? d);
 
-  const levelCm = $derived(tag?.value ?? 420);
-  const p1Run = $derived(true);
-  const p2Run = $derived(false);
+  const quality = $derived(resolveTagQuality(widget, tag, design));
+  const levelCm = $derived(quality.degraded ? null : (tag?.value ?? null));
+  const levelLabel = $derived(formatTrustedValue(quality, levelCm, 0));
+  const spanLabel = $derived(
+    levelCm === null ? NO_VALUE_PLACEHOLDER : (levelCm / 10).toFixed(1),
+  );
+
+  // Pump states come from configured tags; without them the panel says so
+  // instead of inventing a running pump.
+  const p1TagId = $derived(str("pump1TagId"));
+  const p2TagId = $derived(str("pump2TagId"));
+  const p1 = $derived(p1TagId ? ($tagMap.get(p1TagId) ?? null) : null);
+  const p2 = $derived(p2TagId ? ($tagMap.get(p2TagId) ?? null) : null);
+  const p1Known = $derived(!design && !!p1 && p1.quality === "good");
+  const p2Known = $derived(!design && !!p2 && p2.quality === "good");
+  const p1Run = $derived(p1Known && p1!.bool_value);
+  const p2Run = $derived(p2Known && p2!.bool_value);
+  const inflowTagId = $derived(str("inflowTagId"));
+  const inflow = $derived(inflowTagId ? ($tagMap.get(inflowTagId) ?? null) : null);
+  const inflowLabel = $derived(
+    !design && inflow && inflow.quality === "good"
+      ? inflow.value.toFixed(2)
+      : NO_VALUE_PLACEHOLDER,
+  );
   const borderRadius = $derived(num("borderRadius", 10));
 </script>
 
@@ -26,8 +53,8 @@
     <!-- Analog Readout: Level -->
     <div class="metric-card">
       <span class="m-label">TANK LEVEL (ANALOG)</span>
-      <div class="m-val blue">{levelCm.toFixed(0)} <span class="u">cm</span></div>
-      <div class="m-sub">{(levelCm / 10).toFixed(1)} % Span</div>
+      <div class="m-val blue">{levelLabel} <span class="u">cm</span></div>
+      <div class="m-sub">{spanLabel} % Span</div>
     </div>
 
     <!-- Bool Indicator: Pump 1 -->
@@ -36,7 +63,9 @@
         <span class="bool-dot" class:on={p1Run}></span>
         <span class="m-label">PUMP 1 (BOOL)</span>
       </div>
-      <div class="m-val" class:green={p1Run}>{p1Run ? "RUNNING" : "STOPPED"}</div>
+      <div class="m-val" class:green={p1Run}>
+        {p1Known ? (p1Run ? "RUNNING" : "STOPPED") : NO_VALUE_PLACEHOLDER}
+      </div>
       <div class="m-sub">Lead Pump</div>
     </div>
 
@@ -46,14 +75,16 @@
         <span class="bool-dot" class:on={p2Run}></span>
         <span class="m-label">PUMP 2 (BOOL)</span>
       </div>
-      <div class="m-val" class:green={p2Run}>{p2Run ? "RUNNING" : "STOPPED"}</div>
+      <div class="m-val" class:green={p2Run}>
+        {p2Known ? (p2Run ? "RUNNING" : "STOPPED") : NO_VALUE_PLACEHOLDER}
+      </div>
       <div class="m-sub">Lag Pump</div>
     </div>
 
     <!-- Analog Readout: Inflow Factor -->
     <div class="metric-card">
       <span class="m-label">INFLOW K (ANALOG)</span>
-      <div class="m-val">1.50 <span class="u">×100</span></div>
+      <div class="m-val">{inflowLabel} <span class="u">×100</span></div>
       <div class="m-sub">Multiplier</div>
     </div>
   </div>

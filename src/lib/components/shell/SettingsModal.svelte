@@ -36,8 +36,7 @@
 </script>
 
 {#if open}
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="backdrop" onpointerdown={onClose}></div>
+  <button type="button" class="backdrop" aria-label="Zamknij okno ustawień" onclick={onClose}></button>
   <div class="modal" role="dialog" aria-labelledby="settings-title" aria-modal="true">
     <div class="modal-header">
       <h3 id="settings-title">⚙️ Application Settings / Ustawienia Aplikacji</h3>
@@ -133,11 +132,15 @@
               <h5>Błędy ({validationResult.errors.length}):</h5>
               <ul>
                 {#each validationResult.errors as err}
-                  <!-- svelte-ignore a11y_click_events_have_key_events -->
-                  <!-- svelte-ignore a11y_no_static_element_interactions -->
-                  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-                  <li class="err-item clickable" onclick={() => handleNavigate(err)} title="Kliknij, aby przejść do obiektu">
-                    <span class="err-path">[{err.path}]</span> {err.message} ➜
+                  <li class="err-item">
+                    <button
+                      type="button"
+                      class="clickable"
+                      onclick={() => handleNavigate(err)}
+                      title="Kliknij, aby przejść do obiektu"
+                    >
+                      <span class="err-path">[{err.path}]</span> {err.message} ➜
+                    </button>
                   </li>
                 {/each}
               </ul>
@@ -149,11 +152,15 @@
               <h5>Ostrzeżenia ({validationResult.warnings.length}):</h5>
               <ul>
                 {#each validationResult.warnings as warn}
-                  <!-- svelte-ignore a11y_click_events_have_key_events -->
-                  <!-- svelte-ignore a11y_no_static_element_interactions -->
-                  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-                  <li class="warn-item clickable" onclick={() => handleNavigate(warn)} title="Kliknij, aby przejść do obiektu">
-                    <span class="warn-path">[{warn.path}]</span> {warn.message} ➜
+                  <li class="warn-item">
+                    <button
+                      type="button"
+                      class="clickable"
+                      onclick={() => handleNavigate(warn)}
+                      title="Kliknij, aby przejść do obiektu"
+                    >
+                      <span class="warn-path">[{warn.path}]</span> {warn.message} ➜
+                    </button>
                   </li>
                 {/each}
               </ul>
@@ -171,6 +178,14 @@
 
 <style>
   .backdrop {
+    /* Rendered as a <button> so the dismissal affordance is keyboard-reachable. */
+    appearance: none;
+    border: 0;
+    padding: 0;
+    margin: 0;
+    font: inherit;
+    color: inherit;
+    cursor: default;
     position: fixed;
     inset: 0;
     z-index: 9998;
@@ -365,6 +380,21 @@
   ul {
     margin: 0;
     padding-left: 16px;
+  }
+  li > .clickable {
+    display: block;
+    width: 100%;
+    text-align: left;
+    appearance: none;
+    background: none;
+    border: 0;
+    padding: 0;
+    font: inherit;
+    color: inherit;
+  }
+  li > .clickable:focus-visible {
+    outline: 2px solid var(--vs-accent, #007acc);
+    outline-offset: 1px;
   }
   .clickable {
     cursor: pointer;

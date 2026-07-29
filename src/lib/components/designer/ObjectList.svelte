@@ -158,7 +158,6 @@
       {#each sorted as w (w.id)}
         {@const gLabel = w.group_id ? groupLabel(w.group_id, allGroupIds) : ""}
         {@const gColor = w.group_id ? groupColor(w.group_id) : ""}
-        <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
           class="row"
           class:selected={$selectedWidgetId === w.id || $selectedWidgetIds.includes(w.id)}

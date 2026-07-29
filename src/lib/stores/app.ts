@@ -45,7 +45,7 @@ import {
 } from "$lib/stores/history";
 import { appSettings, updateAppSettings } from "$lib/stores/settings";
 import { validateProject } from "$lib/utils/validation";
-import { recordRecentProject } from "$lib/stores/recentProjects";
+import { recordRecentProject, type RecentProjectItem } from "$lib/stores/recentProjects";
 import {
   activeProjectPath,
   setActiveProjectPath,
@@ -54,6 +54,8 @@ import {
   openProjectFromDisk,
 } from "$lib/stores/projectStorage";
 import { canDeleteForm, isMainScreen } from "$lib/utils/screenProtection";
+import { errorMessage } from "$lib/utils/errors";
+import { openTextFile, readDirectTextFile, saveTextFile } from "$lib/services/fileIo";
 
 export { canUndo, canRedo, undoLabel, redoLabel, activeProjectPath, isMainScreen, canDeleteForm };
 
@@ -323,8 +325,15 @@ export async function switchMode(m: AppMode) {
     }
     if (wasConnected) await connectDevice();
   }
+  // The backend owns the decision: entering Designer requires an engineering
+  // role. The local store is only updated once the backend accepted the switch.
+  try {
+    await api.setMode(m);
+  } catch (error) {
+    log(`Mode change refused: ${errorMessage(error, "unknown reason")}`, "err");
+    return;
+  }
   mode.set(m);
-  await api.setMode(m);
   const form = get(activeForm);
   const screen = form?.name ?? "(no screen)";
   if (m === "runtime") {
@@ -1232,7 +1241,6 @@ export async function exportComponentTemplate(templateId: string) {
     },
     template,
   };
-  const { saveTextFile } = await import("$lib/services/fileIo");
   const safeName = template.name.replace(/[^a-z0-9_-]+/gi, "_");
   const path = await saveTextFile(
     `${safeName}-${template.version}.pscctrl`,
@@ -1243,7 +1251,6 @@ export async function exportComponentTemplate(templateId: string) {
 }
 
 export async function importComponentTemplateFile() {
-  const { openTextFile } = await import("$lib/services/fileIo");
   const picked = await openTextFile([
     { name: "ProSCADA Component", extensions: ["pscctrl", "json"] },
   ]);
@@ -2179,7 +2186,7 @@ export function addProjectDocument(
       name: docName,
       order: nextOrder(tree, parentId),
       content: defaultContent(kind, docName),
-      language: kind === "script" ? "javascript" : undefined,
+      language: kind === "script" ? "proscada-actions" : undefined,
     });
     dirty.set(true);
     return { ...normalized, tree };
@@ -2451,6 +2458,45 @@ export async function importProjectFile() {
   }
 }
 
+/**
+ * Open an entry from the recent-projects list.
+ *
+ * This lives next to the other project-loading routines rather than in the
+ * `recentProjects` store: the store only owns the list, and keeping the two
+ * apart removes the import cycle that previously forced dynamic imports.
+ */
+export async function openRecentProjectItem(item: RecentProjectItem): Promise<boolean> {
+  if (item.id === "water_tank_dual_pump" || item.name.includes("Water Tank")) {
+    const p = await api.loadBuiltinWaterTank();
+    project.set(ensureProjectTree(p));
+    log("Załadowano wbudowany projekt Water Tank", "ok");
+    return true;
+  }
+
+  const runningInTauri =
+    typeof window !== "undefined" &&
+    ("__TAURI_INTERNALS__" in window || "__TAURI__" in window);
+
+  if (runningInTauri && item.path) {
+    try {
+      const content = await readDirectTextFile(item.path);
+      if (content) {
+        await importProjectFromJson(content, item.path);
+        log(`Załadowano projekt ze ścieżki: ${item.path}`, "ok");
+        return true;
+      }
+    } catch {
+      log(
+        `Plik ${item.path} nie istnieje lub został przeniesiony. Wybierz plik z dysku.`,
+        "warn",
+      );
+    }
+  }
+
+  await importProjectFile();
+  return true;
+}
+
 export const selectedSolutionNode = derived([project, selectedNodeId], ([$p, $id]) => {
   if (!$p?.tree || !$id) return null;
   return findNode($p.tree, $id) ?? null;
@@ -2475,8 +2521,7 @@ export async function exportProjectJson() {
     return;
   }
   try {
-    const { saveTextFile } = await import("$lib/services/fileIo");
-    const json = JSON.stringify(p, null, 2);
+      const json = JSON.stringify(p, null, 2);
     const defaultName = `${p.id || "project"}.proscada.json`;
     const path = await saveTextFile(defaultName, json);
     if (!path) {

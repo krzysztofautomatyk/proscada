@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { activate } from "$lib/utils/a11y";
   import type { AlarmDefinition, AlarmGroupDefinition, AlarmPriority, TagDefinition } from "$lib/types";
   import { project, addAlarmToProject, addAlarmsToProject } from "$lib/stores/app";
   import { uid } from "$lib/utils/projectTree";
@@ -233,9 +234,7 @@
 </script>
 
 {#if open}
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="backdrop" onpointerdown={onClose}></div>
-  <!-- svelte-ignore a11y_interactive_supports_focus -->
+  <button type="button" class="backdrop" aria-label="Zamknij okno alarmu" onclick={onClose}></button>
   <div class="modal" role="dialog" aria-labelledby="add-alarm-title" aria-modal="true" tabindex="-1" onkeydown={handleKeyDown}>
     <div class="modal-header">
       <div class="title-wrap">
@@ -446,9 +445,15 @@
                 <div class="empty-hint">Brak zmiennych pasujących do filtra.</div>
               {:else}
                 {#each filteredBatchTags as t (t.id)}
-                  <!-- svelte-ignore a11y_click_events_have_key_events -->
-                  <!-- svelte-ignore a11y_no_static_element_interactions -->
-                  <div class="tag-row" class:selected={selectedTagIds.includes(t.id)} onclick={() => toggleTagSelect(t.id)}>
+                  <div
+                    class="tag-row"
+                    class:selected={selectedTagIds.includes(t.id)}
+                    role="checkbox"
+                    aria-checked={selectedTagIds.includes(t.id)}
+                    tabindex="0"
+                    onclick={() => toggleTagSelect(t.id)}
+                    onkeydown={activate(() => toggleTagSelect(t.id))}
+                  >
                     <input type="checkbox" checked={selectedTagIds.includes(t.id)} onclick={(e) => e.stopPropagation()} onchange={() => toggleTagSelect(t.id)} />
                     <span class="tag-name">{t.name}</span>
                     <span class="tag-id">[{t.id}]</span>
@@ -480,6 +485,14 @@
 
 <style>
   .backdrop {
+    /* Rendered as a <button> so the dismissal affordance is keyboard-reachable. */
+    appearance: none;
+    border: 0;
+    padding: 0;
+    margin: 0;
+    font: inherit;
+    color: inherit;
+    cursor: default;
     position: fixed;
     inset: 0;
     background: rgba(0, 0, 0, 0.65);

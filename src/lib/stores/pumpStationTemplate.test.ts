@@ -11,6 +11,7 @@ import {
   selectedFormId,
   switchMode,
 } from "$lib/stores/app";
+import { api } from "$lib/services/api";
 
 function baseProject(tags: TagDefinition[] = []): ScadaProject {
   return {
@@ -142,6 +143,12 @@ test("pump template rejects missing mapping, unknown devices and address collisi
 });
 
 test("entering Runtime persists a dirty generated project", async () => {
+  // The backend refuses project edits to an unauthenticated session and to a
+  // seeded account that still uses its default password, so the flow that a
+  // real engineer follows is reproduced here.
+  await api.login("admin", "admin123");
+  await api.changePassword("admin123", "a-much-longer-password");
+
   const templateId = installPumpStationTemplate();
   bulkInstantiateComponentTemplate(templateId, csv());
   assert.equal(get(dirty), true);

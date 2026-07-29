@@ -1,5 +1,6 @@
 <script lang="ts">
   import { api } from "$lib/services/api";
+  import { errorMessage } from "$lib/utils/errors";
   import type { UserSummary } from "$lib/types";
 
   let {
@@ -61,8 +62,8 @@
       password = "";
       onsuccess(user);
       onclose();
-    } catch (e: any) {
-      errorMsg = e?.message || e || "Błąd uwierzytelniania";
+    } catch (e) {
+      errorMsg = errorMessage(e, "Błąd uwierzytelniania");
     } finally {
       loading = false;
     }
@@ -85,10 +86,14 @@
 <svelte:window onkeydown={handleKeydown} />
 
 {#if open}
-  <div class="modal-backdrop" onclick={onclose} role="presentation">
-    <!-- svelte-ignore a11y_interactive_supports_focus -->
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <div class="modal-card" onclick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" tabindex="-1">
+  <div class="modal-backdrop">
+    <button
+      type="button"
+      class="backdrop-dismiss"
+      aria-label="Zamknij okno logowania"
+      onclick={onclose}
+    ></button>
+    <div class="modal-card" role="dialog" aria-modal="true">
       <header class="modal-header">
         <div class="title-group">
           <div class="shield-icon">
@@ -215,7 +220,21 @@
     animation: fadeIn 0.2s ease-out;
   }
 
+  /* Full-size, transparent dismissal target behind the dialog. */
+  .backdrop-dismiss {
+    position: absolute;
+    inset: 0;
+    appearance: none;
+    border: 0;
+    padding: 0;
+    margin: 0;
+    background: transparent;
+    cursor: default;
+  }
+
   .modal-card {
+    position: relative;
+    z-index: 1;
     background: #0f172a;
     border: 1px solid #1e293b;
     box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);

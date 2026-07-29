@@ -113,8 +113,8 @@ export function qualityLabel(quality: Quality | undefined): string {
 export function invokeWrite(
   widget: WidgetDef,
   design: boolean,
-  onWrite: ((tagId: string, value: number | string) => void) | undefined,
-  value: number | string,
+  onWrite: ((tagId: string, value: number) => void) | undefined,
+  value: number,
 ): boolean {
   return invokeWriteToTag(widget.tag_id, design, onWrite, value);
 }
@@ -122,8 +122,8 @@ export function invokeWrite(
 export function invokeWriteToTag(
   tagId: string | null | undefined,
   design: boolean,
-  onWrite: ((tagId: string, value: number | string) => void) | undefined,
-  value: number | string,
+  onWrite: ((tagId: string, value: number) => void) | undefined,
+  value: number,
 ): boolean {
   if (design || !tagId || !onWrite) return false;
   if (typeof value === "number" && !Number.isFinite(value)) return false;

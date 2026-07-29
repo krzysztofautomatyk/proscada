@@ -120,22 +120,28 @@
             <span>Description (Click item to navigate / Przejdź do obiektu)</span>
           </div>
           {#each validation.errors as err}
-            <!-- svelte-ignore a11y_click_events_have_key_events -->
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div class="error-row err-item" onclick={() => handleIssueClick(err)} title="Click to navigate to this object in designer">
+            <button
+              type="button"
+              class="error-row err-item"
+              onclick={() => handleIssueClick(err)}
+              title="Click to navigate to this object in designer"
+            >
               <span class="sev-badge err">⛔ Error</span>
               <span class="err-path">{err.path}</span>
               <span class="err-msg">{err.message} ➜</span>
-            </div>
+            </button>
           {/each}
           {#each validation.warnings as warn}
-            <!-- svelte-ignore a11y_click_events_have_key_events -->
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div class="error-row warn-item" onclick={() => handleIssueClick(warn)} title="Click to navigate to this object in designer">
+            <button
+              type="button"
+              class="error-row warn-item"
+              onclick={() => handleIssueClick(warn)}
+              title="Click to navigate to this object in designer"
+            >
               <span class="sev-badge warn">⚠️ Warning</span>
               <span class="err-path">{warn.path}</span>
               <span class="err-msg">{warn.message} ➜</span>
-            </div>
+            </button>
           {/each}
         </div>
       {/if}
@@ -244,6 +250,21 @@
     cursor: pointer;
     user-select: none;
     transition: background 0.1s ease;
+    /* Rendered as a <button> so the row is keyboard-reachable. */
+    width: 100%;
+    text-align: left;
+    appearance: none;
+    background: none;
+    border-left: 0;
+    border-right: 0;
+    border-top: 0;
+    font: inherit;
+    color: inherit;
+  }
+
+  .error-row:focus-visible {
+    outline: 2px solid var(--vs-accent, #007acc);
+    outline-offset: -2px;
   }
 
   .error-row:hover {

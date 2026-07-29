@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { FormDef, TagDefinition, WidgetDef } from "$lib/types";
+  import type { FormDef, TagDefinition, UnauthorizedBehavior, WidgetDef } from "$lib/types";
   import {
     project,
     selectedFormId,
@@ -277,7 +277,11 @@
             <td>
               <select
                 value={widget.unauthorized_behavior ?? "disabled"}
-                onchange={(e) => updateWidget({ id: widget.id, unauthorized_behavior: e.currentTarget.value as any })}
+                onchange={(e) =>
+                  updateWidget({
+                    id: widget.id,
+                    unauthorized_behavior: e.currentTarget.value as UnauthorizedBehavior,
+                  })}
               >
                 <option value="disabled">Poszarzenie z kłódką (Disabled)</option>
                 <option value="hidden">Ukrycie (Hidden)</option>

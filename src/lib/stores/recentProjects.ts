@@ -75,41 +75,6 @@ export function sanitizeRecentItems(parsed: unknown): RecentProjectItem[] {
     .filter((item) => item.id.length > 0);
 }
 
-export async function openRecentProjectItem(item: RecentProjectItem): Promise<boolean> {
-  const { importProjectFromJson, importProjectFile, project, log } = await import("./app");
-  const { api } = await import("$lib/services/api");
-  const { ensureProjectTree } = await import("$lib/utils/projectTree");
-
-  if (item.id === "water_tank_dual_pump" || item.name.includes("Water Tank")) {
-    const p = await api.loadBuiltinWaterTank();
-    project.set(ensureProjectTree(p));
-    log("Załadowano wbudowany projekt Water Tank", "ok");
-    return true;
-  }
-
-  const isTauri =
-    typeof window !== "undefined" &&
-    ("__TAURI_INTERNALS__" in window || "__TAURI__" in window);
-
-  if (isTauri && item.path) {
-    try {
-      const { readTextFile } = await import("@tauri-apps/plugin-fs");
-      const content = await readTextFile(item.path);
-      if (content) {
-        await importProjectFromJson(content);
-        log(`Załadowano projekt ze ścieżki: ${item.path}`, "ok");
-        return true;
-      }
-    } catch {
-      log(`Plik ${item.path} nie istnieje lub został przeniesiony. Wybierz plik z dysku.`, "warn");
-    }
-  }
-
-  // Fallback to dialog picker
-  await importProjectFile();
-  return true;
-}
-
 export function togglePinRecentProject(id: string) {
   recentProjects.update((items) =>
     items.map((i) => (i.id === id ? { ...i, pinned: !i.pinned } : i)),

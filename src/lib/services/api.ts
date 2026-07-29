@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   AlarmInstance,
   AuditEntry,
+  AuditStatus,
   EngineSnapshot,
   Role,
   ScadaProject,
@@ -15,21 +16,28 @@ const isTauri = () =>
   typeof window !== "undefined" &&
   ("__TAURI_INTERNALS__" in window || "__TAURI__" in window);
 
-/** Browser mock when running `npm run dev` without Tauri. */
+/**
+ * Browser mock when running `npm run dev` without Tauri.
+ *
+ * It mirrors the backend's fail-closed defaults on purpose: a mock that starts
+ * as Administrator hides exactly the authorization bugs it should expose.
+ */
 let mockProject: ScadaProject | null = null;
 let mockConnected = false;
 let mockPoll = 0;
-let mockRole: Role = "administrator";
+let mockRole: Role = "viewer";
 let mockMode = "designer";
-let mockCurrentUser: UserSummary | null = {
-  id: "usr_admin",
-  username: "admin",
-  display_name: "Administrator",
-  security_level: 1000,
-  enabled: true,
-  has_pin: true,
-};
-let mockSecurityLevel = 1000;
+let mockCurrentUser: UserSummary | null = null;
+let mockSecurityLevel = 0;
+let mockPasswordChangeRequired = false;
+const mockPasswords = new Map<string, string>([
+  ["admin", "admin123"],
+  ["operator", "operator123"],
+]);
+const mockPins = new Map<string, string>([
+  ["admin", "1234"],
+  ["operator", "1111"],
+]);
 let mockUsers: UserSummary[] = [
   {
     id: "usr_admin",
@@ -38,6 +46,7 @@ let mockUsers: UserSummary[] = [
     security_level: 1000,
     enabled: true,
     has_pin: true,
+    password_change_required: true,
   },
   {
     id: "usr_operator",
@@ -46,6 +55,7 @@ let mockUsers: UserSummary[] = [
     security_level: 100,
     enabled: true,
     has_pin: true,
+    password_change_required: true,
   },
 ];
 
@@ -115,7 +125,23 @@ function mockSnap(): EngineSnapshot {
     security_level: mockSecurityLevel,
     project_name: mockProject?.name ?? null,
     mode: mockMode,
+    alarms_suspended: !mockConnected,
+    password_change_required: mockPasswordChangeRequired,
   };
+}
+
+function roleForLevel(level: number): Role {
+  if (level >= 1000) return "administrator";
+  if (level >= 500) return "engineer";
+  if (level >= 100) return "operator";
+  return "viewer";
+}
+
+function mockResetSession() {
+  mockCurrentUser = null;
+  mockSecurityLevel = 0;
+  mockRole = "viewer";
+  mockPasswordChangeRequired = false;
 }
 
 async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
@@ -142,10 +168,17 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
     }
     case "load_project":
       mockProject = args?.project as ScadaProject;
+      mockResetSession();
       return undefined as T;
     case "get_project":
       return mockProject as T;
     case "save_project_in_memory":
+      if (mockSecurityLevel < 500) {
+        throw new Error("Engineer or Administrator role is required to edit the project");
+      }
+      if (mockPasswordChangeRequired) {
+        throw new Error("Change the default password before editing the project");
+      }
       mockProject = args?.project as ScadaProject;
       return mockProject as T;
     case "get_snapshot":
@@ -157,68 +190,96 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
     case "stop_polling":
       mockConnected = false;
       return undefined as T;
-    case "set_role":
-      mockRole = args?.role as Role;
+    case "set_mode": {
+      const requested = String(args?.mode ?? "designer");
+      if (requested !== "designer" && requested !== "runtime") {
+        throw new Error(`Unknown mode: ${requested}`);
+      }
+      if (requested === "designer" && mockSecurityLevel < 500) {
+        throw new Error("Engineer or Administrator role is required to enter Designer");
+      }
+      mockMode = requested;
       return undefined as T;
-    case "set_mode":
-      mockMode = String(args?.mode ?? "designer");
-      return undefined as T;
+    }
     case "login": {
-      const rawTerm = args?.username_or_pin ?? args?.usernameOrPin ?? "";
+      const rawTerm = args?.usernameOrPin ?? args?.username_or_pin ?? "";
       const term = String(rawTerm).trim();
       const pwd = String(args?.password ?? "").trim();
 
       const found = mockUsers.find((u) => {
         if (!u.enabled) return false;
-        if (term === "1234" && u.username === "admin") return true;
-        if (term === "1111" && u.username === "operator") return true;
-        if (u.username.toLowerCase() === term.toLowerCase()) {
-          if (!pwd || pwd === "admin123" || pwd === "operator123") return true;
-        }
-        return false;
+        if (mockPins.get(u.username) === term) return true;
+        return (
+          u.username.toLowerCase() === term.toLowerCase() &&
+          pwd.length > 0 &&
+          mockPasswords.get(u.username) === pwd
+        );
       });
 
       if (found) {
         mockCurrentUser = found;
         mockSecurityLevel = found.security_level;
-        mockRole =
-          found.security_level >= 1000
-            ? "administrator"
-            : found.security_level >= 500
-            ? "engineer"
-            : found.security_level >= 100
-            ? "operator"
-            : "viewer";
+        mockRole = roleForLevel(found.security_level);
+        mockPasswordChangeRequired = found.password_change_required === true;
         return found as T;
       }
       throw new Error("Nieprawidłowa nazwa użytkownika, hasło lub PIN");
     }
     case "logout": {
-      mockCurrentUser = null;
-      mockSecurityLevel = 0;
-      mockRole = "viewer";
+      mockResetSession();
       return undefined as T;
+    }
+    case "change_password": {
+      const current = String(args?.currentPassword ?? "");
+      const next = String(args?.newPassword ?? "");
+      if (!mockCurrentUser) throw new Error("No user is signed in");
+      if (next.length < 12) throw new Error("New password must be at least 12 characters long");
+      if (next === current) throw new Error("New password must differ from the current one");
+      if (mockPasswords.get(mockCurrentUser.username) !== current) {
+        throw new Error("Current password is incorrect");
+      }
+      mockPasswords.set(mockCurrentUser.username, next);
+      mockPasswordChangeRequired = false;
+      mockCurrentUser = { ...mockCurrentUser, password_change_required: false };
+      mockUsers = mockUsers.map((u) =>
+        u.id === mockCurrentUser?.id ? { ...u, password_change_required: false } : u,
+      );
+      return mockCurrentUser as T;
     }
     case "verify_pin": {
       const pin = String(args?.pin ?? "");
-      return (pin === "1234" || pin === "1111") as T;
+      if (!mockCurrentUser) return false as T;
+      return (mockPins.get(mockCurrentUser.username) === pin) as T;
     }
     case "list_users": {
       return mockUsers as T;
     }
     case "save_user": {
+      if (mockSecurityLevel < 1000) {
+        throw new Error("Administrator permission (Security Level 1000) is required to manage users");
+      }
       const input = args?.user as UserAccountInput;
       const idx = mockUsers.findIndex(
         (u) => u.id === input.id || u.username.toLowerCase() === input.username.toLowerCase()
       );
+      const password = (input.password ?? "").trim();
+      if (idx < 0 && password.length === 0) {
+        throw new Error("A password is required when creating an account");
+      }
+      if (password.length > 0 && password.length < 12) {
+        throw new Error("Password must be at least 12 characters long");
+      }
       const sum: UserSummary = {
         id: input.id || `usr_${Date.now()}`,
         username: input.username,
         display_name: input.display_name,
         security_level: input.security_level,
         enabled: input.enabled,
-        has_pin: Boolean(input.pin),
+        has_pin: Boolean(input.pin) || (idx >= 0 && mockUsers[idx].has_pin),
+        password_change_required: false,
       };
+      if (password.length > 0) mockPasswords.set(input.username, password);
+      if (input.pin) mockPins.set(input.username, input.pin);
       if (idx >= 0) {
         mockUsers[idx] = sum;
       } else {
@@ -227,7 +288,13 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
       return sum as T;
     }
     case "delete_user": {
-      const id = String(args?.user_id ?? "");
+      if (mockSecurityLevel < 1000) {
+        throw new Error("Administrator permission (Security Level 1000) is required to manage users");
+      }
+      const id = String(args?.userId ?? "");
+      if (mockCurrentUser?.id === id) {
+        throw new Error("You cannot delete the account you are signed in with");
+      }
       mockUsers = mockUsers.filter((u) => u.id !== id);
       return undefined as T;
     }
@@ -235,11 +302,27 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
       return mockAudit as T;
     case "verify_audit":
       return true as T;
-    case "write_tag":
+    case "get_audit_status":
+      return {
+        chain_ok: true,
+        sink_path: null,
+        persisted: false,
+        last_error: "Browser mock — the durable audit sink needs tauri:dev",
+        in_memory: mockAudit.length,
+        appended: mockAudit.length,
+      } as T;
+    case "write_tag": {
+      if (mockSecurityLevel < 100) throw new Error("Role cannot write process values");
+      if (mockMode !== "runtime") {
+        throw new Error("Process writes are blocked outside Runtime mode");
+      }
+      if (mockPasswordChangeRequired) {
+        throw new Error("Change the default password before writing to the process");
+      }
       mockAudit.push({
         id: crypto.randomUUID(),
         ts: new Date().toISOString(),
-        actor: mockCurrentUser?.username ?? "engineer",
+        actor: mockCurrentUser?.username ?? "guest",
         role: mockRole,
         action: "tag.write",
         detail: `${args?.tagId}=${args?.value}`,
@@ -247,6 +330,7 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
         hash: "mock",
       });
       return undefined as T;
+    }
     case "ack_alarm":
       return undefined as T;
     case "test_device":
@@ -272,24 +356,24 @@ export const api = {
   startPolling: (deviceId?: string | null) =>
     call<void>("start_polling", { deviceId: deviceId ?? null }),
   stopPolling: () => call<void>("stop_polling"),
-  writeTag: (tagId: string, value: number | string) =>
-    call<void>("write_tag", { tagId, value }),
+  writeTag: (tagId: string, value: number) => call<void>("write_tag", { tagId, value }),
   ackAlarm: (defId: string) => call<void>("ack_alarm", { defId }),
-  setRole: (role: Role, actor: string) => call<void>("set_role", { role, actor }),
   setMode: (mode: string) => call<void>("set_mode", { mode }),
   login: (usernameOrPin: string, password?: string) =>
     call<UserSummary>("login", {
       usernameOrPin,
-      username_or_pin: usernameOrPin,
       password: password ?? null,
     }),
   logout: () => call<void>("logout"),
+  changePassword: (currentPassword: string, newPassword: string) =>
+    call<UserSummary>("change_password", { currentPassword, newPassword }),
   verifyPin: (pin: string) => call<boolean>("verify_pin", { pin }),
   listUsers: () => call<UserSummary[]>("list_users"),
   saveUser: (user: UserAccountInput) => call<UserSummary>("save_user", { user }),
-  deleteUser: (userId: string) => call<void>("delete_user", { user_id: userId }),
+  deleteUser: (userId: string) => call<void>("delete_user", { userId }),
   getAudit: (limit = 200) => call<AuditEntry[]>("get_audit", { limit }),
   verifyAudit: () => call<boolean>("verify_audit"),
+  getAuditStatus: () => call<AuditStatus>("get_audit_status"),
   testDevice: (host: string, port: number, unitId: number, timeoutMs: number) =>
     call<{ ok: boolean; message: string }>("test_device", {
       host,

@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "ProScada default capability — minimal privilege surface",
+  "description": "ProScada default capability — project storage locations only. $HOME is deliberately NOT in scope: it would expose ~/.ssh, ~/.aws and shell start-up files to any frontend code.",
   "windows": ["main"],
   "permissions": [
     "core:default",
@@ -14,10 +14,15 @@
     {
       "identifier": "fs:scope",
       "allow": [
-        { "path": "$HOME/**" },
-        { "path": "$DESKTOP/**" },
         { "path": "$DOCUMENT/**" },
-        { "path": "$DOWNLOAD/**" }
+        { "path": "$DESKTOP/**" },
+        { "path": "$DOWNLOAD/**" },
+        { "path": "$APPDATA/**" }
+      ],
+      "deny": [
+        { "path": "$HOME/.ssh/**" },
+        { "path": "$HOME/.aws/**" },
+        { "path": "$HOME/.config/**" }
       ]
     }
   ]

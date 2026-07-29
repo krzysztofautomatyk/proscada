@@ -114,11 +114,11 @@
   }
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     class="line-root"
     class:design
     bind:this={rootEl}
+    role="presentation"
     onpointermove={onCapMove}
     onpointerup={onCapUp}
     onpointercancel={onCapUp}
@@ -187,20 +187,26 @@
     </svg>
 
     {#if design && !widget.locked}
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
         class="ep start"
         style:left="{x1p}%"
         style:top="{y1p}%"
         title="Start — drag"
+        role="slider"
+        aria-label="Punkt początkowy łącznika"
+        aria-valuenow={Math.round(x1p)}
+        tabindex="0"
         onpointerdown={(e) => onCapDown(e, "start")}
       ></div>
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
         class="ep end"
         style:left="{x2p}%"
         style:top="{y2p}%"
         title="End — drag"
+        role="slider"
+        aria-label="Punkt końcowy łącznika"
+        aria-valuenow={Math.round(x2p)}
+        tabindex="0"
         onpointerdown={(e) => onCapDown(e, "end")}
       ></div>
     {/if}

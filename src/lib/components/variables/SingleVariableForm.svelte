@@ -1,4 +1,5 @@
 <script lang="ts">
+  const MULTI_REGISTER_TYPES = ["u32", "i32", "f32", "u64", "i64", "f64"];
   import type { TagDefinition, TagBinding, DeviceConfig } from "$lib/types";
   import type { DevicePollQuery } from "$lib/types/registerMap";
   import { validateRegisterTag } from "$lib/services/registerMapService";
@@ -39,6 +40,8 @@
   let bit_write_mode = $state<"mask_write" | "read_modify_write">("mask_write");
   let single_writer = $state(false);
   let verify_readback = $state(true);
+  let word_order = $state<"high_word_first" | "low_word_first">("high_word_first");
+  let min_security_level = $state(0);
 
   let unit = $state("");
   let scale = $state(1);
@@ -67,6 +70,8 @@
       bit_write_mode = editingTag.binding.bit_write_mode ?? "mask_write";
       single_writer = editingTag.binding.single_writer ?? false;
       verify_readback = editingTag.binding.verify_readback ?? true;
+      word_order = editingTag.binding.word_order ?? "high_word_first";
+      min_security_level = editingTag.binding.min_security_level ?? 0;
       string_length = editingTag.binding.string_length ?? 32;
       unit = editingTag.unit ?? "";
       scale = editingTag.scale ?? 1;
@@ -86,6 +91,8 @@
       bit_write_mode = "mask_write";
       single_writer = false;
       verify_readback = true;
+      word_order = "high_word_first";
+      min_security_level = 0;
       string_length = 32;
       unit = "";
       scale = 1;
@@ -137,6 +144,8 @@
         bit_write_mode: table === "holding" && bit !== null ? bit_write_mode : undefined,
         single_writer: bit_write_mode === "read_modify_write" ? single_writer : undefined,
         verify_readback: !readonly ? verify_readback : undefined,
+        word_order,
+        min_security_level: !readonly ? Number(min_security_level) || 0 : undefined,
         string_length: data_type === "string" ? Number(string_length) || 32 : undefined,
       },
       unit: unit.trim(),
@@ -276,12 +285,12 @@
     {/if}
 
     <!-- READONLY TOGGLE (PROMINENT REQUIREMENT) -->
-    {#if table === "holding" || table === "coil"}
+    {#if table === "holding" || table === "coil" || table === "memory"}
       <div class="form-group full-width readonly-box">
         <label class="checkbox-label">
           <input type="checkbox" bind:checked={readonly} />
           <span class="readonly-text">
-            🔒 <strong>Zmienna Tylko do Odczytu (Read-Only)</strong> — Zaznacz, aby zabronić aplikacji zapisu do sterownika
+            🔒 <strong>Zmienna Tylko do Odczytu (Read-Only)</strong> — Zaznacz, aby zabronić aplikacji zapisu do zmiennej
           </span>
         </label>
       </div>
@@ -303,6 +312,28 @@
             </label>
           </div>
         {/if}
+      {/if}
+
+      {#if MULTI_REGISTER_TYPES.includes(data_type)}
+        <div class="form-group">
+          <label for="f-wordorder">Kolejność słów (typ wielorejestrowy):</label>
+          <select id="f-wordorder" bind:value={word_order}>
+            <option value="high_word_first">High word first (norma Modbus)</option>
+            <option value="low_word_first">Low word first (Schneider / Wago)</option>
+          </select>
+        </div>
+      {/if}
+
+      {#if !readonly}
+        <div class="form-group">
+          <label for="f-minlevel">Minimalny poziom uprawnień do zapisu:</label>
+          <select id="f-minlevel" bind:value={min_security_level}>
+            <option value={0}>0 — bez dodatkowego wymagania</option>
+            <option value={100}>100 — Operator</option>
+            <option value={500}>500 — Inżynier</option>
+            <option value={1000}>1000 — Administrator</option>
+          </select>
+        </div>
       {/if}
     {/if}
 
@@ -388,11 +419,11 @@
 
   .form-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 12px 16px;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 14px 20px;
   }
 
-  .full-width { grid-column: span 2; }
+  .full-width { grid-column: 1 / -1; }
 
   .form-group {
     display: flex;

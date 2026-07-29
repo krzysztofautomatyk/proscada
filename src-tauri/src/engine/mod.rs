@@ -11,10 +11,10 @@ use tokio::sync::{watch, Mutex as AsyncMutex};
 use tokio::task::JoinHandle;
 
 use crate::audit::AuditLog;
-use crate::modbus::{self, ConnectionConfig};
+use crate::modbus::{self, codec, ConnectionConfig};
 use crate::project::{
-    hash_password, AlarmDefinition, AlarmPriority, BitWriteMode, DeviceConfig, ModbusTable, Role,
-    ScadaProject, TagDataType, TagDefinition, UserAccount, UserSummary,
+    credentials, AlarmDefinition, AlarmPriority, BitWriteMode, DeviceConfig, ModbusTable, Role,
+    ScadaProject, TagDataType, TagDefinition, UserAccount, UserSummary, LEGACY_SALT,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,6 +80,13 @@ pub struct AlarmInstance {
     pub latched: bool,
     pub active_since: Option<DateTime<Utc>>,
     pub last_change: DateTime<Utc>,
+    /// True when the source tag is not `Good`, so the displayed state is the
+    /// last trustworthy one rather than a current evaluation.
+    pub evaluation_suspended: bool,
+    /// Why evaluation is suspended, for operator-facing display.
+    pub suspended_reason: Option<String>,
+    /// When evaluation stopped being trustworthy.
+    pub suspended_since: Option<DateTime<Utc>>,
     #[serde(skip)]
     pending_active_since: Option<DateTime<Utc>>,
     #[serde(skip)]
@@ -101,6 +108,11 @@ pub struct EngineSnapshot {
     pub security_level: u32,
     pub project_name: Option<String>,
     pub mode: String,
+    /// True when alarm evaluation is not running against live data.
+    pub alarms_suspended: bool,
+    /// True when the signed-in account must change its password before it can
+    /// write to the process or administer users.
+    pub password_change_required: bool,
 }
 
 struct LiveTag {
@@ -135,12 +147,16 @@ pub struct Engine {
     inner: Arc<RwLock<EngineInner>>,
     audit: Arc<AuditLog>,
     write_locks: RegisterWriteLocks,
+    /// One reusable, serialized write connection per device. Without this every
+    /// operator command would open — and leak — a TCP session on the PLC.
+    write_sessions: WriteSessions,
     /// Dedicated Tokio runtime for Modbus I/O and the poll loop.
     /// Sync Tauri commands are not on a reactor — never use bare `tokio::spawn` here.
     rt: tokio::runtime::Runtime,
 }
 
 type RegisterWriteLocks = Mutex<HashMap<(String, u16), Arc<AsyncMutex<()>>>>;
+type WriteSessions = Mutex<HashMap<String, Arc<AsyncMutex<Option<modbus::ModbusContext>>>>>;
 
 impl Engine {
     pub fn new(audit: Arc<AuditLog>) -> Self {
@@ -151,16 +167,8 @@ impl Engine {
             .build()
             .expect("failed to create ProScada Tokio runtime");
 
-        let default_admin_summary = UserSummary {
-            id: "usr_admin".into(),
-            username: "admin".into(),
-            display_name: "Administrator".into(),
-            security_level: 1000,
-            enabled: true,
-            has_pin: true,
-        };
-
         Self {
+            // Fail-closed: the engine holds no privileges until `login` grants them.
             inner: Arc::new(RwLock::new(EngineInner {
                 project: None,
                 tags: HashMap::new(),
@@ -170,10 +178,10 @@ impl Engine {
                 last_error: None,
                 poll_count: 0,
                 last_poll_ms: 0,
-                role: Role::Administrator,
-                actor: "admin".into(),
-                current_user: Some(default_admin_summary),
-                security_level: 1000,
+                role: Role::Viewer,
+                actor: "guest".into(),
+                current_user: None,
+                security_level: 0,
                 last_activity_ts: Utc::now(),
                 mode: "designer".into(),
                 poll_handle: None,
@@ -181,6 +189,7 @@ impl Engine {
             })),
             audit,
             write_locks: Mutex::new(HashMap::new()),
+            write_sessions: Mutex::new(HashMap::new()),
             rt,
         }
     }
@@ -194,48 +203,64 @@ impl Engine {
         self.rt.handle().clone()
     }
 
-    pub fn load_project(&self, project: ScadaProject) -> Result<(), String> {
+    /// Install a project without touching the session.
+    ///
+    /// `verify_integrity` is only false for the built-in template, which is
+    /// constructed in memory and therefore has no stored hash to compare.
+    fn install_project(&self, project: ScadaProject, verify_integrity: bool) -> Result<(), String> {
         let mut proj = project;
-        proj.ensure_default_users();
-        proj.recompute_hash();
-        if !proj.verify_hash() {
+        // Verify *before* mutating, otherwise the check compares the content
+        // against a hash we just recomputed and can never fail.
+        if verify_integrity && !proj.verify_hash() {
             return Err("Project content hash verification failed".into());
         }
+        proj.validate()?;
+        proj.ensure_default_users();
+        proj.recompute_hash();
+
         self.stop_polling();
+        self.close_write_sessions();
         let mut g = self.inner.write();
         let mut tags = HashMap::new();
         for def in &proj.tags {
+            let is_internal = def.binding.table == ModbusTable::Memory
+                || def.binding.table == ModbusTable::System;
+            let initial_value = if is_internal {
+                def.initial_value
+                    .as_deref()
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .unwrap_or(0.0)
+            } else {
+                0.0
+            };
+            let initial_bool = if is_internal {
+                if let Some(ref s) = def.initial_value {
+                    s == "true" || s == "1" || initial_value != 0.0
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
             tags.insert(
                 def.id.clone(),
                 LiveTag {
                     def: def.clone(),
-                    value: 0.0,
-                    bool_value: false,
-                    quality: Quality::Bad,
+                    value: initial_value,
+                    bool_value: initial_bool,
+                    quality: if is_internal {
+                        Quality::Good
+                    } else {
+                        Quality::Bad
+                    },
                     ts: Utc::now(),
-                    raw: 0,
+                    raw: initial_value as u16,
                 },
             );
         }
         let mut alarms = HashMap::new();
         for def in &proj.alarms {
-            alarms.insert(
-                def.id.clone(),
-                AlarmInstance {
-                    def_id: def.id.clone(),
-                    name: def.name.clone(),
-                    message: def.message.clone(),
-                    priority: def.priority.clone(),
-                    group_id: def.group_id.clone(),
-                    state: AlarmState::Inactive,
-                    source_active: false,
-                    latched: def.latching,
-                    active_since: None,
-                    last_change: Utc::now(),
-                    pending_active_since: None,
-                    pending_clear_since: None,
-                },
-            );
+            alarms.insert(def.id.clone(), new_alarm_instance(def));
         }
         let name = proj.name.clone();
         g.project = Some(proj);
@@ -245,107 +270,265 @@ impl Engine {
         g.device_id = None;
         g.last_error = None;
         g.poll_count = 0;
+        let actor = g.actor.clone();
+        let role = g.role.clone();
         drop(g);
-        self.audit.append(
-            &self.inner.read().actor,
-            role_str(&self.inner.read().role),
-            "project.load",
-            &name,
-        );
+        self.audit
+            .append(&actor, role_str(&role), "project.load", &name);
         Ok(())
+    }
+
+    /// Load a project file. Loading always drops the current session, because
+    /// the project *is* the user database: adopting a new one must never carry
+    /// privileges granted by the previous one.
+    pub fn load_project(&self, project: ScadaProject) -> Result<(), String> {
+        self.install_project(project, true)?;
+        self.reset_session("project.load");
+        Ok(())
+    }
+
+    /// Load the built-in template during start-up, before any user exists.
+    pub fn load_builtin(&self, project: ScadaProject) -> Result<(), String> {
+        self.install_project(project, false)?;
+        self.reset_session("project.load_builtin");
+        Ok(())
+    }
+
+    fn reset_session(&self, reason: &str) {
+        let mut g = self.inner.write();
+        if g.current_user.is_none() && g.security_level == 0 {
+            return;
+        }
+        let prev = g.actor.clone();
+        g.current_user = None;
+        g.security_level = 0;
+        g.role = Role::Viewer;
+        g.actor = "guest".into();
+        g.last_activity_ts = Utc::now();
+        drop(g);
+        self.audit
+            .append(&prev, "viewer", "auth.session_reset", reason);
     }
 
     pub fn get_project(&self) -> Option<ScadaProject> {
         self.inner.read().project.clone()
     }
 
+    /// Persist designer edits.
+    ///
+    /// The user database is deliberately *not* taken from the incoming project:
+    /// accounts change only through `save_user`/`delete_user`, which require
+    /// administrator level. Otherwise an Engineer could grant themselves
+    /// administrator by editing the project payload.
     pub fn set_project_mut(&self, project: ScadaProject) -> Result<(), String> {
-        {
+        let existing_users = {
             let g = self.inner.read();
-            if !g.role.can_edit_project() && g.mode != "designer" {
-                return Err("Role cannot edit project".into());
+            if !g.role.can_edit_project() {
+                return Err(
+                    "Engineer or Administrator role is required to edit the project".into(),
+                );
             }
-        }
+            if g.current_user
+                .as_ref()
+                .is_some_and(|u| u.password_change_required)
+            {
+                return Err("Change the default password before editing the project".into());
+            }
+            g.project.as_ref().map(|p| p.users.clone())
+        };
         let mut p = project;
+        if let Some(users) = existing_users {
+            p.users = users;
+        }
         p.ensure_default_users();
         p.recompute_hash();
-        self.load_project(p)
+        self.install_project(p, false)
     }
 
-    pub fn set_role(&self, role: Role, actor: String) {
+    /// Switch between Designer and Runtime.
+    ///
+    /// Entering Designer is an engineering action and requires the matching
+    /// role; entering Runtime is always allowed so a viewer can observe.
+    pub fn set_mode(&self, mode: String) -> Result<(), String> {
+        if mode != "designer" && mode != "runtime" {
+            return Err(format!("Unknown mode: {mode}"));
+        }
         let mut g = self.inner.write();
-        g.role = role.clone();
-        g.actor = actor.clone();
-        g.security_level = match role {
-            Role::Administrator => 1000,
-            Role::Engineer => 500,
-            Role::Operator => 100,
-            Role::Viewer => 0,
-        };
-        drop(g);
-        self.audit
-            .append(&actor, role_str(&role), "role.set", role_str(&role));
-    }
-
-    pub fn set_mode(&self, mode: String) {
-        let mut g = self.inner.write();
+        if mode == "designer" && !g.role.can_edit_project() {
+            return Err("Engineer or Administrator role is required to enter Designer".into());
+        }
         g.mode = mode.clone();
+        g.last_activity_ts = Utc::now();
         let actor = g.actor.clone();
         let role = g.role.clone();
         drop(g);
         self.audit
             .append(&actor, role_str(&role), "mode.set", &mode);
+        Ok(())
     }
 
-    pub fn login(&self, username_or_pin: &str, password: Option<&str>) -> Result<UserSummary, String> {
+    /// Authenticate by username+password or by PIN alone.
+    ///
+    /// Legacy SHA-256 records are accepted once and immediately re-hashed with
+    /// Argon2id, so an old project upgrades itself on first successful login.
+    pub fn login(
+        &self,
+        username_or_pin: &str,
+        password: Option<&str>,
+    ) -> Result<UserSummary, String> {
         let mut g = self.inner.write();
         let term = username_or_pin.trim();
-
-        let matched = g.project.as_ref().ok_or("No project loaded")?.users.iter().find(|u| {
-            if !u.enabled {
-                return false;
-            }
-            if u.username.eq_ignore_ascii_case(term) {
-                if let Some(pwd) = password {
-                    let hashed = hash_password(pwd, &u.salt);
-                    if u.password_hash == hashed {
-                        return true;
-                    }
-                }
-                if let Some(pin) = &u.pin_hash {
-                    let hashed_pin = hash_password(term, &u.salt);
-                    if pin == &hashed_pin {
-                        return true;
-                    }
-                }
-            }
-            if let Some(pin) = &u.pin_hash {
-                let hashed_pin = hash_password(term, &u.salt);
-                if pin == &hashed_pin {
-                    return true;
-                }
-            }
-            false
-        }).map(|u| (u.to_summary(), u.security_level, u.username.clone()));
-
-        if let Some((summary, level, username)) = matched {
-            g.current_user = Some(summary.clone());
-            g.security_level = level;
-            g.role = security_level_to_role(level);
-            g.actor = username.clone();
-            g.last_activity_ts = Utc::now();
-            let role_desc = format!("L{level}");
+        if term.is_empty() {
             drop(g);
-            self.audit
-                .append(&username, &role_desc, "auth.login_success", "User authenticated");
-            Ok(summary)
-        } else {
-            let actor = if term.is_empty() { "unknown" } else { term };
-            drop(g);
-            self.audit
-                .append(actor, "unauthenticated", "auth.login_failed", "Invalid credentials");
-            Err("Invalid username, password or PIN".into())
+            self.audit.append(
+                "unknown",
+                "unauthenticated",
+                "auth.login_failed",
+                "Empty credential",
+            );
+            return Err("Invalid username, password or PIN".into());
         }
+
+        let project = g.project.as_ref().ok_or("No project loaded")?;
+        let mut matched: Option<(usize, LoginKind, credentials::Verification)> = None;
+        for (index, user) in project.users.iter().enumerate() {
+            if !user.enabled {
+                continue;
+            }
+            if user.username.eq_ignore_ascii_case(term) {
+                if let Some(pwd) = password.filter(|p| !p.is_empty()) {
+                    let outcome = credentials::verify_secret(pwd, &user.password_hash, &user.salt);
+                    if outcome.is_accepted() {
+                        matched = Some((index, LoginKind::Password, outcome));
+                        break;
+                    }
+                }
+            }
+            if let Some(pin_hash) = &user.pin_hash {
+                let outcome = credentials::verify_secret(term, pin_hash, &user.salt);
+                if outcome.is_accepted() {
+                    matched = Some((index, LoginKind::Pin, outcome));
+                    break;
+                }
+            }
+        }
+
+        let Some((index, kind, outcome)) = matched else {
+            drop(g);
+            self.audit.append(
+                term,
+                "unauthenticated",
+                "auth.login_failed",
+                "Invalid credentials",
+            );
+            return Err("Invalid username, password or PIN".into());
+        };
+
+        let mut rehashed = false;
+        if outcome == credentials::Verification::AcceptedNeedsRehash {
+            let secret = match kind {
+                LoginKind::Password => password.map(str::to_string),
+                LoginKind::Pin => Some(term.to_string()),
+            };
+            if let Some(secret) = secret {
+                if let Ok(upgraded) = credentials::hash_secret(&secret) {
+                    if let Some(project) = g.project.as_mut() {
+                        match kind {
+                            LoginKind::Password => project.users[index].password_hash = upgraded,
+                            LoginKind::Pin => project.users[index].pin_hash = Some(upgraded),
+                        }
+                        project.recompute_hash();
+                        rehashed = true;
+                    }
+                }
+            }
+        }
+
+        let user = &g.project.as_ref().expect("project present").users[index];
+        let summary = user.to_summary();
+        let level = user.security_level;
+        let username = user.username.clone();
+
+        g.current_user = Some(summary.clone());
+        g.security_level = level;
+        g.role = security_level_to_role(level);
+        g.actor = username.clone();
+        g.last_activity_ts = Utc::now();
+        drop(g);
+
+        let role_desc = format!("L{level}");
+        self.audit.append(
+            &username,
+            &role_desc,
+            "auth.login_success",
+            if rehashed {
+                "User authenticated; legacy credential upgraded to Argon2id"
+            } else {
+                "User authenticated"
+            },
+        );
+        Ok(summary)
+    }
+
+    /// Replace the signed-in user's own password and clear the forced-change flag.
+    pub fn change_password(
+        &self,
+        current_password: &str,
+        new_password: &str,
+    ) -> Result<UserSummary, String> {
+        if new_password.chars().count() < 12 {
+            return Err("New password must be at least 12 characters long".into());
+        }
+        if new_password == current_password {
+            return Err("New password must differ from the current one".into());
+        }
+
+        let mut g = self.inner.write();
+        let user_id = g
+            .current_user
+            .as_ref()
+            .map(|u| u.id.clone())
+            .ok_or("No user is signed in")?;
+        let project = g.project.as_mut().ok_or("No project loaded")?;
+        let index = project
+            .users
+            .iter()
+            .position(|u| u.id == user_id)
+            .ok_or("Signed-in user no longer exists in this project")?;
+        if !credentials::verify_secret(
+            current_password,
+            &project.users[index].password_hash,
+            &project.users[index].salt,
+        )
+        .is_accepted()
+        {
+            drop(g);
+            self.audit.append(
+                &user_id,
+                "unauthenticated",
+                "auth.password_change_failed",
+                "Current password rejected",
+            );
+            return Err("Current password is incorrect".into());
+        }
+
+        project.users[index].password_hash = credentials::hash_secret(new_password)?;
+        project.users[index].salt = LEGACY_SALT.into();
+        project.users[index].password_change_required = false;
+        let summary = project.users[index].to_summary();
+        project.recompute_hash();
+        g.current_user = Some(summary.clone());
+        let actor = g.actor.clone();
+        let level = g.security_level;
+        drop(g);
+
+        self.audit.append(
+            &actor,
+            &format!("L{level}"),
+            "auth.password_changed",
+            "Password replaced by its owner",
+        );
+        Ok(summary)
     }
 
     pub fn logout(&self) -> Result<(), String> {
@@ -367,28 +550,43 @@ impl Engine {
         Ok(())
     }
 
+    /// Re-authenticate the *signed-in* operator by PIN.
+    ///
+    /// Accepting any sufficiently privileged account's PIN would let one
+    /// operator confirm another operator's action, so only the current user's
+    /// PIN is considered.
     pub fn verify_pin(&self, pin: &str) -> Result<bool, String> {
-        let g = self.inner.read();
+        let mut g = self.inner.write();
         let project = g.project.as_ref().ok_or("No project loaded")?;
-        let current_user_id = g.current_user.as_ref().map(|u| u.id.as_str());
-
-        for u in &project.users {
-            if !u.enabled {
-                continue;
-            }
-            if let Some(current_id) = current_user_id {
-                if u.id != current_id && u.security_level < g.security_level {
-                    continue;
-                }
-            }
-            if let Some(pin_hash) = &u.pin_hash {
-                let h = hash_password(pin, &u.salt);
-                if pin_hash == &h {
-                    return Ok(true);
-                }
-            }
+        let Some(current) = g.current_user.as_ref() else {
+            return Ok(false);
+        };
+        let Some(user) = project
+            .users
+            .iter()
+            .find(|u| u.enabled && u.id == current.id)
+        else {
+            return Ok(false);
+        };
+        let Some(pin_hash) = &user.pin_hash else {
+            return Ok(false);
+        };
+        let accepted = credentials::verify_secret(pin, pin_hash, &user.salt).is_accepted();
+        if accepted {
+            g.last_activity_ts = Utc::now();
         }
-        Ok(false)
+        let actor = g.actor.clone();
+        let level = g.security_level;
+        drop(g);
+        if !accepted {
+            self.audit.append(
+                &actor,
+                &format!("L{level}"),
+                "auth.pin_rejected",
+                "PIN challenge failed",
+            );
+        }
+        Ok(accepted)
     }
 
     pub fn list_users(&self) -> Result<Vec<UserSummary>, String> {
@@ -399,16 +597,31 @@ impl Engine {
 
     pub fn save_user(&self, input: UserAccountInput) -> Result<UserSummary, String> {
         let mut g = self.inner.write();
-        if g.security_level < 1000 && g.mode != "designer" {
-            return Err("Administrator permission (Security Level 1000) required to manage users".into());
+        require_administrator(&g)?;
+        if input.username.trim().is_empty() {
+            return Err("Username must not be empty".into());
+        }
+        if let Some(pwd) = input.password.as_deref().map(str::trim) {
+            if !pwd.is_empty() && pwd.chars().count() < 12 {
+                return Err("Password must be at least 12 characters long".into());
+            }
+        }
+        if let Some(pin) = input.pin.as_deref().map(str::trim) {
+            if !pin.is_empty()
+                && (pin.chars().count() < 4 || !pin.chars().all(|c| c.is_ascii_digit()))
+            {
+                return Err("PIN must be at least 4 digits".into());
+            }
         }
         let project = g.project.as_mut().ok_or("No project loaded")?;
-        let salt = "proscada_salt";
 
         let user_idx = if let Some(id) = &input.id {
             project.users.iter().position(|u| u.id == *id)
         } else {
-            project.users.iter().position(|u| u.username.eq_ignore_ascii_case(&input.username))
+            project
+                .users
+                .iter()
+                .position(|u| u.username.eq_ignore_ascii_case(&input.username))
         };
 
         let summary = if let Some(idx) = user_idx {
@@ -417,30 +630,46 @@ impl Engine {
             u.display_name = input.display_name.clone();
             u.security_level = input.security_level;
             u.enabled = input.enabled;
-            if let Some(pwd) = &input.password {
-                if !pwd.trim().is_empty() {
-                    u.password_hash = hash_password(pwd.trim(), &u.salt);
+            if let Some(pwd) = input.password.as_deref().map(str::trim) {
+                if !pwd.is_empty() {
+                    u.password_hash = credentials::hash_secret(pwd)?;
+                    u.password_change_required = false;
                 }
             }
-            if let Some(pin) = &input.pin {
-                if !pin.trim().is_empty() {
-                    u.pin_hash = Some(hash_password(pin.trim(), &u.salt));
+            if let Some(pin) = input.pin.as_deref().map(str::trim) {
+                if !pin.is_empty() {
+                    u.pin_hash = Some(credentials::hash_secret(pin)?);
                 }
             }
             u.to_summary()
         } else {
-            let pwd = input.password.as_deref().unwrap_or("password123");
-            let pwd_hash = hash_password(pwd, salt);
-            let pin_hash = input.pin.as_ref().map(|p| hash_password(p, salt));
+            let pwd = input
+                .password
+                .as_deref()
+                .map(str::trim)
+                .filter(|p| !p.is_empty())
+                .ok_or("A password is required when creating an account")?;
+            let pin_hash = match input
+                .pin
+                .as_deref()
+                .map(str::trim)
+                .filter(|p| !p.is_empty())
+            {
+                Some(pin) => Some(credentials::hash_secret(pin)?),
+                None => None,
+            };
             let new_user = UserAccount {
-                id: input.id.unwrap_or_else(|| format!("usr_{}", uuid::Uuid::new_v4().simple())),
+                id: input
+                    .id
+                    .unwrap_or_else(|| format!("usr_{}", uuid::Uuid::new_v4().simple())),
                 username: input.username,
                 display_name: input.display_name,
-                password_hash: pwd_hash,
-                salt: salt.into(),
+                password_hash: credentials::hash_secret(pwd)?,
+                salt: LEGACY_SALT.into(),
                 pin_hash,
                 security_level: input.security_level,
                 enabled: input.enabled,
+                password_change_required: false,
             };
             let sum = new_user.to_summary();
             project.users.push(new_user);
@@ -456,7 +685,10 @@ impl Engine {
             &actor,
             &format!("L{level}"),
             "user.save",
-            &format!("User {} saved (Level {})", summary.username, summary.security_level),
+            &format!(
+                "User {} saved (Level {})",
+                summary.username, summary.security_level
+            ),
         );
 
         Ok(summary)
@@ -464,12 +696,17 @@ impl Engine {
 
     pub fn delete_user(&self, user_id: &str) -> Result<(), String> {
         let mut g = self.inner.write();
-        if g.security_level < 1000 && g.mode != "designer" {
-            return Err("Administrator permission (Security Level 1000) required to delete users".into());
+        require_administrator(&g)?;
+        if g.current_user.as_ref().is_some_and(|u| u.id == user_id) {
+            return Err("You cannot delete the account you are signed in with".into());
         }
         let project = g.project.as_mut().ok_or("No project loaded")?;
 
-        let admin_count = project.users.iter().filter(|u| u.enabled && u.security_level >= 1000).count();
+        let admin_count = project
+            .users
+            .iter()
+            .filter(|u| u.enabled && u.security_level >= 1000)
+            .count();
         let target = project.users.iter().find(|u| u.id == user_id);
 
         if let Some(target_u) = target {
@@ -497,37 +734,47 @@ impl Engine {
         Ok(())
     }
 
+    /// Expire an idle Runtime session.
+    ///
+    /// Kept separate from [`Engine::snapshot`] so that reading the engine state
+    /// is not a state-changing operation.
+    pub fn expire_idle_session(&self) {
+        let expired = {
+            let g = self.inner.read();
+            if g.mode != "runtime" || g.security_level == 0 {
+                false
+            } else {
+                let timeout_mins = g
+                    .project
+                    .as_ref()
+                    .map(|p| p.session_config.auto_logout_minutes)
+                    .unwrap_or(15);
+                timeout_mins > 0
+                    && (Utc::now() - g.last_activity_ts).num_seconds()
+                        >= i64::from(timeout_mins) * 60
+            }
+        };
+        if expired {
+            let _ = self.logout();
+        }
+    }
+
     pub fn snapshot(&self) -> EngineSnapshot {
         let g = self.inner.read();
         let now = Utc::now();
-
-        // Check for inactivity timeout in runtime mode
-        if g.mode == "runtime" && g.security_level > 0 {
-            let timeout_mins = g
-                .project
-                .as_ref()
-                .map(|p| p.session_config.auto_logout_minutes)
-                .unwrap_or(15);
-            if timeout_mins > 0 {
-                let inactive_secs = (now - g.last_activity_ts).num_seconds();
-                if inactive_secs >= (timeout_mins as i64) * 60 {
-                    drop(g);
-                    let _ = self.logout();
-                    return self.snapshot();
-                }
-            }
-        }
 
         let tags: Vec<TagValue> = g
             .tags
             .values()
             .map(|t| {
                 let age = (now - t.ts).num_milliseconds().max(0) as u64;
+                let is_internal = t.def.binding.table == ModbusTable::Memory
+                    || t.def.binding.table == ModbusTable::System;
                 TagValue {
                     tag_id: t.def.id.clone(),
                     value: t.value,
                     bool_value: t.bool_value,
-                    quality: if age > 3000 && t.quality == Quality::Good {
+                    quality: if !is_internal && age > 3000 && t.quality == Quality::Good {
                         Quality::Uncertain
                     } else {
                         t.quality
@@ -538,6 +785,8 @@ impl Engine {
                 }
             })
             .collect();
+        let alarms: Vec<AlarmInstance> = g.alarms.values().cloned().collect();
+        let alarms_suspended = alarms.iter().any(|a| a.evaluation_suspended);
         EngineSnapshot {
             connected: g.connected,
             device_id: g.device_id.clone(),
@@ -545,14 +794,38 @@ impl Engine {
             poll_count: g.poll_count,
             last_poll_ms: g.last_poll_ms,
             tags,
-            alarms: g.alarms.values().cloned().collect(),
+            alarms,
             role: g.role.clone(),
             actor: g.actor.clone(),
             current_user: g.current_user.clone(),
             security_level: g.security_level,
             project_name: g.project.as_ref().map(|p| p.name.clone()),
             mode: g.mode.clone(),
+            alarms_suspended,
+            password_change_required: g
+                .current_user
+                .as_ref()
+                .is_some_and(|u| u.password_change_required),
         }
+    }
+
+    /// Drop every cached write connection, e.g. when the project changes.
+    fn close_write_sessions(&self) {
+        let sessions: Vec<_> = {
+            let mut guard = self.write_sessions.lock();
+            guard.drain().map(|(_, v)| v).collect()
+        };
+        if sessions.is_empty() {
+            return;
+        }
+        self.rt.spawn(async move {
+            for session in sessions {
+                let mut guard = session.lock().await;
+                if let Some(ctx) = guard.take() {
+                    modbus::close(ctx).await;
+                }
+            }
+        });
     }
 
     pub fn stop_polling(&self) {
@@ -621,17 +894,35 @@ impl Engine {
         Ok(())
     }
 
+    /// Obtain the serialized write session for a device, reconnecting if needed.
+    async fn write_session(
+        &self,
+        device_id: &str,
+    ) -> Arc<AsyncMutex<Option<modbus::ModbusContext>>> {
+        let mut guard = self.write_sessions.lock();
+        guard
+            .entry(device_id.to_string())
+            .or_insert_with(|| Arc::new(AsyncMutex::new(None)))
+            .clone()
+    }
+
     pub async fn write_tag(&self, tag_id: &str, value: f64) -> Result<(), String> {
         if !value.is_finite() {
             return Err("Write value must be finite".into());
         }
-        let (role, actor, device, def) = {
+        let (role, actor, def) = {
             let g = self.inner.read();
             if !g.role.can_write() {
                 return Err("Role cannot write process values".into());
             }
             if g.mode != "runtime" {
                 return Err("Process writes are blocked outside Runtime mode".into());
+            }
+            if g.current_user
+                .as_ref()
+                .is_some_and(|u| u.password_change_required)
+            {
+                return Err("Change the default password before writing to the process".into());
             }
             let project = g.project.as_ref().ok_or("No project")?;
             let tag = project
@@ -643,6 +934,12 @@ impl Engine {
             if !tag.binding.writable {
                 return Err("Tag is not writable".into());
             }
+            if g.security_level < tag.binding.min_security_level {
+                return Err(format!(
+                    "Security level {} required to write this tag (current: {})",
+                    tag.binding.min_security_level, g.security_level
+                ));
+            }
             let live = g.tags.get(tag_id).ok_or("Live tag not found")?;
             if live.quality != Quality::Good {
                 return Err(format!(
@@ -650,13 +947,45 @@ impl Engine {
                     live.quality
                 ));
             }
-            let device = project
+            (g.role.clone(), g.actor.clone(), tag)
+        };
+
+        if def.binding.table == ModbusTable::Memory {
+            let bool_val = value != 0.0;
+            {
+                let mut g = self.inner.write();
+                if let Some(live) = g.tags.get_mut(tag_id) {
+                    live.value = value;
+                    live.bool_value = bool_val;
+                    live.quality = Quality::Good;
+                    live.ts = Utc::now();
+                    live.raw = value as u16;
+                }
+                let project_alarms = g
+                    .project
+                    .as_ref()
+                    .map(|p| p.alarms.clone())
+                    .unwrap_or_default();
+                evaluate_alarms(&mut g, &project_alarms);
+            }
+            self.audit.append(
+                &actor,
+                role_str(&role),
+                "tag.write",
+                &format!("{tag_id}={value}"),
+            );
+            return Ok(());
+        }
+
+        let device = {
+            let g = self.inner.read();
+            let project = g.project.as_ref().ok_or("No project")?;
+            project
                 .devices
                 .iter()
-                .find(|d| d.id == tag.device_id)
+                .find(|d| d.id == def.device_id)
                 .ok_or("Device missing")?
-                .clone();
-            (g.role.clone(), g.actor.clone(), device, tag)
+                .clone()
         };
 
         let cfg = ConnectionConfig {
@@ -674,126 +1003,46 @@ impl Engine {
                 .clone()
         };
         let _write_guard = lock.lock().await;
-        let verify_readback = def.binding.verify_readback;
+        let session = self.write_session(&def.device_id).await;
 
-        let (raw, bool_value, engineering_value, protocol) = match def.binding.table {
-            ModbusTable::Holding => {
-                if let Some(bit) = def.binding.bit {
-                    if !matches!(def.data_type, TagDataType::Bool) {
-                        return Err("Bit binding requires bool data_type".into());
+        let outcome = self
+            .rt
+            .spawn({
+                let def = def.clone();
+                async move {
+                    let mut ctx_guard = session.lock().await;
+                    if ctx_guard.is_none() {
+                        *ctx_guard = Some(modbus::connect(&cfg).await.map_err(|e| e.to_string())?);
                     }
-                    if bit > 15 {
-                        return Err(format!("Holding-register bit must be 0..15, got {bit}"));
-                    }
-                    let requested = value != 0.0;
-                    let cfg_for_write = cfg.clone();
-                    let readback = match def.binding.bit_write_mode {
-                        BitWriteMode::MaskWrite => self
-                            .rt
-                            .spawn(async move {
-                                modbus::write_holding_bit_masked(
-                                    &cfg_for_write,
-                                    addr,
-                                    bit,
-                                    requested,
-                                    verify_readback,
-                                )
-                                .await
-                            })
-                            .await
-                            .map_err(|e| format!("bit write task join: {e}"))?
-                            .map_err(|e| e.to_string())?,
-                        BitWriteMode::ReadModifyWrite => {
-                            if !def.binding.single_writer {
-                                return Err(
-                                    "Read-modify-write requires binding.single_writer=true; use FC22 or a dedicated PLC coil"
-                                        .into(),
-                                );
-                            }
-                            self.rt
-                                .spawn(async move {
-                                    modbus::write_holding_bit_rmw(
-                                        &cfg_for_write,
-                                        addr,
-                                        bit,
-                                        requested,
-                                        verify_readback,
-                                    )
-                                    .await
-                                })
-                                .await
-                                .map_err(|e| format!("bit RMW task join: {e}"))?
-                                .map_err(|e| e.to_string())?
+                    let ctx = ctx_guard.as_mut().expect("connection established");
+                    let result = perform_write(ctx, &cfg, &def, value).await;
+                    if result.is_err() {
+                        // A failed exchange may have desynchronized the socket.
+                        if let Some(dead) = ctx_guard.take() {
+                            modbus::close(dead).await;
                         }
-                    };
-                    let actual = ((readback >> bit) & 1) == 1;
-                    (
-                        readback,
-                        actual,
-                        if actual { 1.0 } else { 0.0 },
-                        match def.binding.bit_write_mode {
-                            BitWriteMode::MaskWrite => "FC22+FC03",
-                            BitWriteMode::ReadModifyWrite => "FC03+FC06+FC03(single-writer)",
-                        },
-                    )
-                } else {
-                    if def.scale == 0.0 {
-                        return Err("Tag scale cannot be zero".into());
                     }
-                    let requested_raw = ((value - def.offset) / def.scale).round() as i64;
-                    let requested_raw = requested_raw.clamp(0, u16::MAX as i64) as u16;
-                    let cfg_for_write = cfg.clone();
-                    let readback = self
-                        .rt
-                        .spawn(async move {
-                            modbus::write_holding(
-                                &cfg_for_write,
-                                addr,
-                                requested_raw,
-                                verify_readback,
-                            )
-                            .await
-                        })
-                        .await
-                        .map_err(|e| format!("holding write task join: {e}"))?
-                        .map_err(|e| e.to_string())?;
-                    (
-                        readback,
-                        readback != 0,
-                        readback as f64 * def.scale + def.offset,
-                        "FC06+FC03",
-                    )
+                    result
                 }
-            }
-            ModbusTable::Coil => {
-                if def.binding.bit.is_some() {
-                    return Err("Coil bindings must not define a register bit index".into());
-                }
-                if !matches!(def.data_type, TagDataType::Bool) {
-                    return Err("Coil binding requires bool data_type".into());
-                }
-                let requested = value != 0.0;
-                let cfg_for_write = cfg.clone();
-                let readback = self
-                    .rt
-                    .spawn(async move {
-                        modbus::write_coil(&cfg_for_write, addr, requested, verify_readback).await
-                    })
-                    .await
-                    .map_err(|e| format!("coil write task join: {e}"))?
-                    .map_err(|e| e.to_string())?;
-                (
-                    if readback { 1 } else { 0 },
-                    readback,
-                    if readback { 1.0 } else { 0.0 },
-                    "FC05+FC01",
-                )
-            }
-            ModbusTable::Input | ModbusTable::Discrete | ModbusTable::System => {
-                return Err("Input registers, discrete inputs, and system tags are read-only".into())
-            }
-            ModbusTable::Memory => {
-                return Err("Memory tags are stored in-memory in application runtime".into())
+            })
+            .await
+            .map_err(|e| format!("write task join: {e}"))?;
+
+        let WriteOutcome {
+            raw,
+            bool_value,
+            engineering_value,
+            protocol,
+        } = match outcome {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                self.audit.append(
+                    &actor,
+                    role_str(&role),
+                    "tag.write_failed",
+                    &format!("{tag_id}={value}: {error}"),
+                );
+                return Err(error);
             }
         };
 
@@ -806,6 +1055,7 @@ impl Engine {
                 t.quality = Quality::Good;
                 t.ts = Utc::now();
             }
+            g.last_activity_ts = Utc::now();
         }
 
         self.audit.append(
@@ -813,9 +1063,8 @@ impl Engine {
             role_str(&role),
             "tag.write",
             &format!(
-                "{tag_id}={value} (raw_readback={raw}, protocol={protocol}, bit={:?}, verify_readback={})",
-                def.binding.bit,
-                verify_readback
+                "{tag_id}={value} (observed={engineering_value}, raw_readback={raw}, protocol={protocol}, bit={:?}, verify_readback={})",
+                def.binding.bit, def.binding.verify_readback
             ),
         );
         Ok(())
@@ -826,6 +1075,9 @@ impl Engine {
         if !g.role.can_write() {
             return Err("Role cannot acknowledge alarms".into());
         }
+        // The operator interacted with the plant, so the session is alive even
+        // when the acknowledgement itself turns out to be a no-op.
+        g.last_activity_ts = Utc::now();
         let inst = g.alarms.get_mut(def_id).ok_or("Alarm not found")?;
         let reset =
             matches!(inst.state, AlarmState::ActiveAcked) && inst.latched && !inst.source_active;
@@ -845,6 +1097,182 @@ impl Engine {
         self.audit
             .append(&actor, role_str(&role), audit_action, def_id);
         Ok(())
+    }
+}
+
+/// Which credential satisfied a login attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LoginKind {
+    Password,
+    Pin,
+}
+
+fn require_administrator(g: &EngineInner) -> Result<(), String> {
+    if g.security_level < 1000 {
+        return Err(
+            "Administrator permission (Security Level 1000) is required to manage users".into(),
+        );
+    }
+    if g.current_user
+        .as_ref()
+        .is_some_and(|u| u.password_change_required)
+    {
+        return Err("Change the default password before administering users".into());
+    }
+    Ok(())
+}
+
+fn new_alarm_instance(def: &AlarmDefinition) -> AlarmInstance {
+    AlarmInstance {
+        def_id: def.id.clone(),
+        name: def.name.clone(),
+        message: def.message.clone(),
+        priority: def.priority.clone(),
+        group_id: def.group_id.clone(),
+        state: AlarmState::Inactive,
+        source_active: false,
+        latched: def.latching,
+        active_since: None,
+        last_change: Utc::now(),
+        evaluation_suspended: true,
+        suspended_reason: Some("No live data yet".into()),
+        suspended_since: Some(Utc::now()),
+        pending_active_since: None,
+        pending_clear_since: None,
+    }
+}
+
+struct WriteOutcome {
+    raw: u16,
+    bool_value: bool,
+    engineering_value: f64,
+    protocol: &'static str,
+}
+
+/// Execute one write on an established connection.
+///
+/// Every branch reads the target back, so the reported value is what the PLC
+/// actually holds, never what the UI asked for.
+async fn perform_write(
+    ctx: &mut modbus::ModbusContext,
+    cfg: &ConnectionConfig,
+    def: &TagDefinition,
+    value: f64,
+) -> Result<WriteOutcome, String> {
+    let addr = def.binding.address;
+    let verify_readback = def.binding.verify_readback;
+    let timeout_ms = cfg.timeout_ms;
+
+    match def.binding.table {
+        ModbusTable::Holding => {
+            if let Some(bit) = def.binding.bit {
+                if !matches!(def.data_type, TagDataType::Bool) {
+                    return Err("Bit binding requires bool data_type".into());
+                }
+                if bit > 15 {
+                    return Err(format!("Holding-register bit must be 0..15, got {bit}"));
+                }
+                let requested = value != 0.0;
+                let readback = match def.binding.bit_write_mode {
+                    BitWriteMode::MaskWrite => modbus::write_holding_bit_masked(
+                        ctx,
+                        addr,
+                        bit,
+                        requested,
+                        timeout_ms,
+                        verify_readback,
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?,
+                    BitWriteMode::ReadModifyWrite => {
+                        if !def.binding.single_writer {
+                            return Err(
+                                "Read-modify-write requires binding.single_writer=true; use FC22 or a dedicated PLC coil"
+                                    .into(),
+                            );
+                        }
+                        modbus::write_holding_bit_rmw(
+                            ctx,
+                            addr,
+                            bit,
+                            requested,
+                            timeout_ms,
+                            verify_readback,
+                        )
+                        .await
+                        .map_err(|e| e.to_string())?
+                    }
+                };
+                let actual = ((readback >> bit) & 1) == 1;
+                return Ok(WriteOutcome {
+                    raw: readback,
+                    bool_value: actual,
+                    engineering_value: if actual { 1.0 } else { 0.0 },
+                    protocol: match def.binding.bit_write_mode {
+                        BitWriteMode::MaskWrite => "FC22+FC03",
+                        BitWriteMode::ReadModifyWrite => "FC03+FC06+FC03(single-writer)",
+                    },
+                });
+            }
+
+            if def.scale == 0.0 {
+                return Err("Tag scale cannot be zero".into());
+            }
+            // Out-of-range values are rejected, never clamped: a silently
+            // clamped setpoint is indistinguishable from a successful write.
+            let scaled = (value - def.offset) / def.scale;
+            let words = codec::encode(def.data_type, def.binding.word_order, scaled)?;
+            let (readback, protocol) = if words.len() == 1 {
+                (
+                    vec![
+                        modbus::write_holding(ctx, addr, words[0], timeout_ms, verify_readback)
+                            .await
+                            .map_err(|e| e.to_string())?,
+                    ],
+                    "FC06+FC03",
+                )
+            } else {
+                (
+                    modbus::write_holding_block(ctx, addr, &words, timeout_ms, verify_readback)
+                        .await
+                        .map_err(|e| e.to_string())?,
+                    "FC16+FC03",
+                )
+            };
+            let decoded = codec::decode(def.data_type, def.binding.word_order, &readback)
+                .ok_or("Read-back is too short to decode")?;
+            let engineering_value = decoded * def.scale + def.offset;
+            Ok(WriteOutcome {
+                raw: readback[0],
+                bool_value: engineering_value != 0.0,
+                engineering_value,
+                protocol,
+            })
+        }
+        ModbusTable::Coil => {
+            if def.binding.bit.is_some() {
+                return Err("Coil bindings must not define a register bit index".into());
+            }
+            if !matches!(def.data_type, TagDataType::Bool) {
+                return Err("Coil binding requires bool data_type".into());
+            }
+            let requested = value != 0.0;
+            let readback = modbus::write_coil(ctx, addr, requested, timeout_ms, verify_readback)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(WriteOutcome {
+                raw: u16::from(readback),
+                bool_value: readback,
+                engineering_value: if readback { 1.0 } else { 0.0 },
+                protocol: "FC05+FC01",
+            })
+        }
+        ModbusTable::Input | ModbusTable::Discrete | ModbusTable::System => {
+            Err("Input registers, discrete inputs, and system tags are read-only".into())
+        }
+        ModbusTable::Memory => {
+            Err("Memory tags are stored in-memory in application runtime".into())
+        }
     }
 }
 
@@ -872,11 +1300,22 @@ fn build_read_plan(project: &ScadaProject, device_id: &str) -> Vec<ReadBlock> {
         ModbusTable::Coil,
         ModbusTable::Discrete,
     ] {
+        // Each tag claims every register it actually occupies, so a 32/64-bit
+        // value is never read one register short.
         let mut addresses: Vec<u16> = project
             .tags
             .iter()
             .filter(|tag| tag.device_id == device_id && tag.binding.table == table)
-            .map(|tag| tag.binding.address)
+            .flat_map(|tag| {
+                let span = match table {
+                    ModbusTable::Holding | ModbusTable::Input => {
+                        tag.data_type.register_count().unwrap_or(1)
+                    }
+                    _ => 1,
+                };
+                let start = tag.binding.address;
+                (0..span).filter_map(move |offset| start.checked_add(offset))
+            })
             .collect();
         addresses.sort_unstable();
         addresses.dedup();
@@ -1063,6 +1502,9 @@ async fn poll_loop(
                 g.connected = false;
                 g.last_error = Some(error.to_string());
                 mark_all_bad(&mut g);
+                // Alarms are still evaluated so that every instance is flagged
+                // as suspended instead of silently freezing on its last state.
+                evaluate_alarms(&mut g, &project.alarms);
             } else {
                 let mut g = inner.write();
                 g.connected = true;
@@ -1071,6 +1513,9 @@ async fn poll_loop(
                 g.last_poll_ms = started.elapsed().as_millis() as u64;
                 evaluate_alarms(&mut g, &project.alarms);
             }
+        } else {
+            let mut g = inner.write();
+            evaluate_alarms(&mut g, &project.alarms);
         }
 
         tokio::select! {
@@ -1083,11 +1528,16 @@ async fn poll_loop(
 
     let mut g = inner.write();
     g.connected = false;
+    mark_all_bad(&mut g);
+    evaluate_alarms(&mut g, &project.alarms);
 }
 
 fn mark_all_bad(g: &mut EngineInner) {
     for t in g.tags.values_mut() {
-        t.quality = Quality::Bad;
+        if t.def.binding.table != ModbusTable::Memory && t.def.binding.table != ModbusTable::System
+        {
+            t.quality = Quality::Bad;
+        }
     }
 }
 
@@ -1112,30 +1562,37 @@ fn apply_register_values(
             continue;
         }
         let raw = values[idx];
+
+        if matches!(def.data_type, TagDataType::Bool) {
+            let Some(live) = g.tags.get_mut(&def.id) else {
+                continue;
+            };
+            let bit = u16::from(def.binding.bit.unwrap_or(0));
+            let b = (raw >> bit) & 1 == 1;
+            live.raw = raw;
+            live.ts = now;
+            live.quality = Quality::Good;
+            live.bool_value = b;
+            live.value = if b { 1.0 } else { 0.0 };
+            continue;
+        }
+
+        // A wide value spanning past the end of this block is not decoded from
+        // a truncated buffer; it keeps its previous quality until a complete
+        // read arrives.
+        let Some(decoded) = codec::decode(def.data_type, def.binding.word_order, &values[idx..])
+        else {
+            continue;
+        };
         let Some(live) = g.tags.get_mut(&def.id) else {
             continue;
         };
+        let v = decoded * def.scale + def.offset;
         live.raw = raw;
         live.ts = now;
         live.quality = Quality::Good;
-        match def.data_type {
-            TagDataType::Bool => {
-                let bit = def.binding.bit.unwrap_or(0) as u16;
-                let b = (raw >> bit) & 1 == 1;
-                live.bool_value = b;
-                live.value = if b { 1.0 } else { 0.0 };
-            }
-            TagDataType::I16 => {
-                let v = (raw as i16) as f64 * def.scale + def.offset;
-                live.value = v;
-                live.bool_value = v != 0.0;
-            }
-            TagDataType::U16 | TagDataType::F32 | TagDataType::U32 | TagDataType::I32 | TagDataType::U64 | TagDataType::I64 | TagDataType::F64 | TagDataType::String => {
-                let v = raw as f64 * def.scale + def.offset;
-                live.value = v;
-                live.bool_value = v != 0.0;
-            }
-        }
+        live.value = v;
+        live.bool_value = v != 0.0;
     }
 }
 
@@ -1173,33 +1630,60 @@ fn apply_bit_values(
 fn evaluate_alarms(g: &mut EngineInner, defs: &[AlarmDefinition]) {
     let now = Utc::now();
     for def in defs {
-        let Some(tag) = g.tags.get(&def.tag_id) else {
-            continue;
+        // Resolve the source quality first: an alarm whose input is not `Good`
+        // must be reported as suspended, never as a fresh evaluation.
+        let source = g.tags.get(&def.tag_id).map(|tag| {
+            (
+                tag.quality,
+                tag.bool_value,
+                tag.value,
+                matches!(tag.def.data_type, TagDataType::Bool),
+            )
+        });
+
+        let suspension = match source {
+            None => Some("Source tag is not present in this project".to_string()),
+            Some((Quality::Good, _, _, _)) => None,
+            Some((quality, _, _, _)) => Some(format!("Source tag quality is {quality:?}")),
         };
-        if tag.quality != Quality::Good {
+
+        if let Some(reason) = suspension {
+            let Some(inst) = g.alarms.get_mut(&def.id) else {
+                continue;
+            };
+            if !inst.evaluation_suspended {
+                inst.evaluation_suspended = true;
+                inst.suspended_since = Some(now);
+                inst.last_change = now;
+            }
+            inst.suspended_reason = Some(reason);
+            inst.pending_active_since = None;
+            inst.pending_clear_since = None;
             continue;
         }
+
+        let (_, bool_value, value, is_bool) = source.expect("good-quality source");
         let was_source_active = g
             .alarms
             .get(&def.id)
             .map(|alarm| alarm.source_active)
             .unwrap_or(false);
-        let condition_active = if matches!(tag.def.data_type, TagDataType::Bool) {
-            tag.bool_value == def.when_true
+        let condition_active = if is_bool {
+            bool_value == def.when_true
         } else if let Some(hi) = def.hi_limit {
             let threshold = if was_source_active {
                 hi - def.deadband.max(0.0)
             } else {
                 hi
             };
-            tag.value >= threshold
+            value >= threshold
         } else if let Some(lo) = def.lo_limit {
             let threshold = if was_source_active {
                 lo + def.deadband.max(0.0)
             } else {
                 lo
             };
-            tag.value <= threshold
+            value <= threshold
         } else {
             false
         };
@@ -1207,6 +1691,12 @@ fn evaluate_alarms(g: &mut EngineInner, defs: &[AlarmDefinition]) {
         let Some(inst) = g.alarms.get_mut(&def.id) else {
             continue;
         };
+        if inst.evaluation_suspended {
+            inst.evaluation_suspended = false;
+            inst.suspended_reason = None;
+            inst.suspended_since = None;
+            inst.last_change = now;
+        }
         if condition_active == inst.source_active {
             inst.pending_active_since = None;
             inst.pending_clear_since = None;
@@ -1259,7 +1749,7 @@ fn evaluate_alarms(g: &mut EngineInner, defs: &[AlarmDefinition]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::project::{water_tank_project, BitWriteMode, SessionConfig, TagBinding};
+    use crate::project::{water_tank_project, BitWriteMode, SessionConfig, TagBinding, WordOrder};
 
     fn test_inner(tag: TagDefinition, alarm: &AlarmDefinition, value: f64) -> EngineInner {
         let bool_value = value != 0.0;
@@ -1276,23 +1766,7 @@ mod tests {
                     raw: value as u16,
                 },
             )]),
-            alarms: HashMap::from([(
-                alarm.id.clone(),
-                AlarmInstance {
-                    def_id: alarm.id.clone(),
-                    name: alarm.name.clone(),
-                    message: alarm.message.clone(),
-                    priority: alarm.priority.clone(),
-                    group_id: alarm.group_id.clone(),
-                    state: AlarmState::Inactive,
-                    source_active: false,
-                    latched: alarm.latching,
-                    active_since: None,
-                    last_change: Utc::now(),
-                    pending_active_since: None,
-                    pending_clear_since: None,
-                },
-            )]),
+            alarms: HashMap::from([(alarm.id.clone(), new_alarm_instance(alarm))]),
             connected: true,
             device_id: Some("test-device".into()),
             last_error: None,
@@ -1323,6 +1797,8 @@ mod tests {
                 bit_write_mode: BitWriteMode::MaskWrite,
                 single_writer: false,
                 verify_readback: true,
+                word_order: WordOrder::HighWordFirst,
+                min_security_level: 0,
             },
             unit: String::new(),
             description: String::new(),
@@ -1533,5 +2009,662 @@ mod tests {
         );
         assert_eq!(inner.tags["coil"].quality, Quality::Good);
         assert!(inner.tags["coil"].bool_value);
+    }
+
+    #[test]
+    fn alarm_evaluation_is_flagged_as_suspended_when_the_source_is_not_good() {
+        let tag = bool_tag("fault");
+        let alarm = AlarmDefinition {
+            id: "fault-alarm".into(),
+            name: "Fault".into(),
+            tag_id: tag.id.clone(),
+            group_id: "station".into(),
+            priority: AlarmPriority::High,
+            when_true: true,
+            hi_limit: None,
+            lo_limit: None,
+            deadband: 0.0,
+            on_delay_ms: 0,
+            off_delay_ms: 0,
+            latching: false,
+            message: "Fault".into(),
+        };
+        let mut inner = test_inner(tag, &alarm, 1.0);
+
+        evaluate_alarms(&mut inner, std::slice::from_ref(&alarm));
+        assert!(!inner.alarms["fault-alarm"].evaluation_suspended);
+        assert_eq!(inner.alarms["fault-alarm"].state, AlarmState::ActiveUnacked);
+
+        mark_all_bad(&mut inner);
+        evaluate_alarms(&mut inner, std::slice::from_ref(&alarm));
+        let instance = &inner.alarms["fault-alarm"];
+        assert!(
+            instance.evaluation_suspended,
+            "a bad-quality source must not be presented as a live evaluation"
+        );
+        assert!(instance.suspended_reason.is_some());
+        assert_eq!(
+            instance.state,
+            AlarmState::ActiveUnacked,
+            "the last trustworthy state is retained, but explicitly marked stale"
+        );
+
+        let live = inner.tags.get_mut("fault").expect("test tag");
+        live.quality = Quality::Good;
+        evaluate_alarms(&mut inner, std::slice::from_ref(&alarm));
+        assert!(!inner.alarms["fault-alarm"].evaluation_suspended);
+    }
+
+    // ---------------------------------------------------------------------
+    // Authorization gates
+    // ---------------------------------------------------------------------
+
+    fn engine_with_water_tank() -> Engine {
+        let engine = Engine::new(Arc::new(AuditLog::new()));
+        engine
+            .load_builtin(water_tank_project())
+            .expect("builtin project loads");
+        engine
+    }
+
+    fn sign_in_admin(engine: &Engine) {
+        engine
+            .login("admin", Some("admin123"))
+            .expect("admin login");
+    }
+
+    #[test]
+    fn engine_starts_without_any_privilege() {
+        let engine = engine_with_water_tank();
+        let snap = engine.snapshot();
+        assert_eq!(snap.role, Role::Viewer);
+        assert_eq!(snap.security_level, 0);
+        assert!(snap.current_user.is_none());
+        assert_eq!(snap.actor, "guest");
+    }
+
+    #[test]
+    fn entering_designer_requires_an_engineering_role() {
+        let engine = engine_with_water_tank();
+        assert!(engine.set_mode("designer".into()).is_err());
+        assert!(engine.set_mode("runtime".into()).is_ok());
+        assert!(engine.set_mode("sabotage".into()).is_err());
+
+        sign_in_admin(&engine);
+        assert!(engine.set_mode("designer".into()).is_ok());
+    }
+
+    #[test]
+    fn designer_mode_does_not_bypass_user_administration() {
+        let engine = engine_with_water_tank();
+        engine
+            .login("operator", Some("operator123"))
+            .expect("operator login");
+        // The operator cannot even enter designer any more, but force the mode
+        // to prove the guard no longer depends on it.
+        engine.inner.write().mode = "designer".into();
+
+        let attempt = engine.save_user(UserAccountInput {
+            id: None,
+            username: "mallory".into(),
+            display_name: "Mallory".into(),
+            password: Some("a-very-long-password".into()),
+            pin: None,
+            security_level: 1000,
+            enabled: true,
+        });
+        assert!(
+            attempt.is_err(),
+            "designer mode must not grant admin rights"
+        );
+        assert!(engine.delete_user("usr_admin").is_err());
+    }
+
+    #[test]
+    fn saving_a_project_never_rewrites_the_user_database() {
+        let engine = engine_with_water_tank();
+        sign_in_admin(&engine);
+        engine
+            .change_password("admin123", "a-much-longer-password")
+            .expect("password change");
+
+        let mut project = engine.get_project().expect("project");
+        project.users = vec![UserAccount {
+            id: "usr_mallory".into(),
+            username: "mallory".into(),
+            display_name: "Mallory".into(),
+            password_hash: credentials::hash_secret("irrelevant").expect("hash"),
+            salt: LEGACY_SALT.into(),
+            pin_hash: None,
+            security_level: 1000,
+            enabled: true,
+            password_change_required: false,
+        }];
+        engine.set_project_mut(project).expect("save project");
+
+        let users = engine.list_users().expect("users");
+        assert!(
+            users.iter().all(|u| u.username != "mallory"),
+            "an injected account must not survive a project save"
+        );
+        assert!(users.iter().any(|u| u.username == "admin"));
+    }
+
+    #[test]
+    fn loading_a_project_drops_the_current_session() {
+        let engine = engine_with_water_tank();
+        sign_in_admin(&engine);
+        assert_eq!(engine.snapshot().security_level, 1000);
+
+        engine
+            .load_project(water_tank_project())
+            .expect("load project");
+        let snap = engine.snapshot();
+        assert_eq!(snap.security_level, 0);
+        assert_eq!(snap.role, Role::Viewer);
+        assert!(snap.current_user.is_none());
+    }
+
+    #[test]
+    fn a_tampered_project_hash_is_rejected() {
+        let engine = engine_with_water_tank();
+        let mut project = water_tank_project();
+        project.recompute_hash();
+        project.name = "Tampered".into();
+        assert!(
+            engine.load_project(project).is_err(),
+            "content hash must be checked before the project is normalized"
+        );
+    }
+
+    #[test]
+    fn editing_the_project_requires_an_engineering_role() {
+        let engine = engine_with_water_tank();
+        let project = engine.get_project().expect("project");
+        assert!(engine.set_project_mut(project).is_err());
+    }
+
+    #[test]
+    fn a_default_account_cannot_write_before_changing_its_password() {
+        let engine = engine_with_water_tank();
+        sign_in_admin(&engine);
+        engine.set_mode("runtime".into()).expect("runtime");
+        assert!(engine.snapshot().password_change_required);
+
+        let error = engine
+            .rt
+            .block_on(engine.write_tag("wt.sp_p1_on", 500.0))
+            .expect_err("write must be refused");
+        assert!(
+            error.contains("default password"),
+            "unexpected error: {error}"
+        );
+
+        engine
+            .change_password("admin123", "a-much-longer-password")
+            .expect("password change");
+        assert!(!engine.snapshot().password_change_required);
+    }
+
+    #[test]
+    fn change_password_enforces_length_and_the_current_secret() {
+        let engine = engine_with_water_tank();
+        sign_in_admin(&engine);
+        assert!(engine.change_password("admin123", "short").is_err());
+        assert!(engine
+            .change_password("wrong", "a-much-longer-password")
+            .is_err());
+        assert!(engine
+            .change_password("admin123", "a-much-longer-password")
+            .is_ok());
+        assert!(engine.login("admin", Some("admin123")).is_err());
+        assert!(engine
+            .login("admin", Some("a-much-longer-password"))
+            .is_ok());
+    }
+
+    #[test]
+    fn legacy_sha256_credentials_are_upgraded_on_first_login() {
+        let engine = engine_with_water_tank();
+        {
+            let mut g = engine.inner.write();
+            let project = g.project.as_mut().expect("project");
+            let user = project
+                .users
+                .iter_mut()
+                .find(|u| u.username == "admin")
+                .expect("admin");
+            user.password_hash = crate::project::hash_password("admin123", LEGACY_SALT);
+            user.salt = LEGACY_SALT.into();
+        }
+        engine.login("admin", Some("admin123")).expect("login");
+        let stored = engine
+            .get_project()
+            .expect("project")
+            .users
+            .iter()
+            .find(|u| u.username == "admin")
+            .expect("admin")
+            .password_hash
+            .clone();
+        assert!(
+            stored.starts_with("$argon2"),
+            "a legacy digest must be replaced on successful login"
+        );
+    }
+
+    #[test]
+    fn pin_challenge_only_accepts_the_signed_in_operator() {
+        let engine = engine_with_water_tank();
+        assert!(!engine.verify_pin("1234").expect("no session"));
+
+        engine
+            .login("operator", Some("operator123"))
+            .expect("operator login");
+        assert!(engine.verify_pin("1111").expect("own pin"));
+        assert!(
+            !engine.verify_pin("1234").expect("admin pin"),
+            "another account's PIN must not confirm this operator's action"
+        );
+    }
+
+    #[test]
+    fn writes_are_refused_outside_runtime_and_below_the_required_level() {
+        let engine = engine_with_water_tank();
+
+        // Viewer, designer mode.
+        let error = engine
+            .rt
+            .block_on(engine.write_tag("wt.sp_p1_on", 500.0))
+            .expect_err("viewer write");
+        assert!(error.contains("Role cannot write"), "unexpected: {error}");
+
+        engine
+            .login("operator", Some("operator123"))
+            .expect("operator login");
+        let error = engine
+            .rt
+            .block_on(engine.write_tag("wt.sp_p1_on", 500.0))
+            .expect_err("designer write");
+        assert!(error.contains("Runtime mode"), "unexpected: {error}");
+    }
+
+    #[test]
+    fn writes_are_refused_for_read_only_tags_and_bad_quality() {
+        let engine = engine_with_water_tank();
+        sign_in_admin(&engine);
+        engine
+            .change_password("admin123", "a-much-longer-password")
+            .expect("password change");
+        engine.set_mode("runtime".into()).expect("runtime");
+
+        let error = engine
+            .rt
+            .block_on(engine.write_tag("wt.p1_run", 1.0))
+            .expect_err("read-only tag");
+        assert!(error.contains("not writable"), "unexpected: {error}");
+
+        // Writable tag, but nothing has been polled yet, so quality is Bad.
+        let error = engine
+            .rt
+            .block_on(engine.write_tag("wt.sp_p1_on", 500.0))
+            .expect_err("bad quality");
+        assert!(
+            error.contains("quality must be Good"),
+            "unexpected: {error}"
+        );
+    }
+
+    #[test]
+    fn a_tag_can_demand_a_higher_security_level_than_the_role_alone() {
+        let engine = engine_with_water_tank();
+        {
+            let mut g = engine.inner.write();
+            let project = g.project.as_mut().expect("project");
+            let tag = project
+                .tags
+                .iter_mut()
+                .find(|t| t.id == "wt.sp_p1_on")
+                .expect("setpoint tag");
+            tag.binding.min_security_level = 500;
+        }
+        engine
+            .login("operator", Some("operator123"))
+            .expect("operator login");
+        engine.inner.write().mode = "runtime".into();
+        engine
+            .inner
+            .write()
+            .current_user
+            .as_mut()
+            .expect("user")
+            .password_change_required = false;
+
+        let error = engine
+            .rt
+            .block_on(engine.write_tag("wt.sp_p1_on", 500.0))
+            .expect_err("level gate");
+        assert!(error.contains("Security level 500"), "unexpected: {error}");
+    }
+
+    #[test]
+    fn user_administration_requires_administrator_level() {
+        let engine = engine_with_water_tank();
+        engine
+            .login("operator", Some("operator123"))
+            .expect("operator login");
+        assert!(engine
+            .save_user(UserAccountInput {
+                id: None,
+                username: "mallory".into(),
+                display_name: "Mallory".into(),
+                password: Some("a-very-long-password".into()),
+                pin: None,
+                security_level: 1000,
+                enabled: true,
+            })
+            .is_err());
+    }
+
+    #[test]
+    fn new_accounts_require_a_password_and_reject_weak_secrets() {
+        let engine = engine_with_water_tank();
+        sign_in_admin(&engine);
+        engine
+            .change_password("admin123", "a-much-longer-password")
+            .expect("password change");
+
+        let missing_password = engine.save_user(UserAccountInput {
+            id: None,
+            username: "no-secret".into(),
+            display_name: "No Secret".into(),
+            password: None,
+            pin: None,
+            security_level: 100,
+            enabled: true,
+        });
+        assert!(missing_password.is_err());
+
+        let weak = engine.save_user(UserAccountInput {
+            id: None,
+            username: "weak".into(),
+            display_name: "Weak".into(),
+            password: Some("short".into()),
+            pin: None,
+            security_level: 100,
+            enabled: true,
+        });
+        assert!(weak.is_err());
+    }
+
+    #[test]
+    fn project_validation_rejects_content_the_engine_cannot_represent() {
+        let mut project = water_tank_project();
+        project.tags[0].data_type = TagDataType::String;
+        assert!(project.validate().is_err(), "String has no Modbus width");
+
+        let mut project = water_tank_project();
+        project.tags[0].binding.bit = Some(16);
+        project.tags[0].data_type = TagDataType::Bool;
+        assert!(project.validate().is_err(), "bit 16 does not exist");
+
+        let mut project = water_tank_project();
+        project.tags[0].binding.table = ModbusTable::Input;
+        project.tags[0].binding.writable = true;
+        assert!(project.validate().is_err(), "input registers are read-only");
+
+        let mut project = water_tank_project();
+        project.tags[0].scale = 0.0;
+        assert!(project.validate().is_err(), "zero scale is not invertible");
+    }
+
+    #[test]
+    fn an_idle_runtime_session_expires_but_activity_keeps_it_alive() {
+        let engine = engine_with_water_tank();
+        engine
+            .login("operator", Some("operator123"))
+            .expect("operator login");
+        engine.inner.write().mode = "runtime".into();
+        assert_eq!(engine.snapshot().security_level, 100);
+
+        // Reading the snapshot must never expire the session by itself.
+        engine.inner.write().last_activity_ts = Utc::now() - chrono::Duration::minutes(60);
+        assert_eq!(
+            engine.snapshot().security_level,
+            100,
+            "snapshot must not be a state-changing operation"
+        );
+
+        engine.expire_idle_session();
+        let snap = engine.snapshot();
+        assert_eq!(snap.security_level, 0);
+        assert_eq!(snap.role, Role::Viewer);
+    }
+
+    #[test]
+    fn acknowledging_an_alarm_counts_as_activity() {
+        let engine = engine_with_water_tank();
+        engine
+            .login("operator", Some("operator123"))
+            .expect("operator login");
+        engine.inner.write().last_activity_ts = Utc::now() - chrono::Duration::minutes(60);
+        let alarm_id = engine
+            .snapshot()
+            .alarms
+            .first()
+            .map(|a| a.def_id.clone())
+            .expect("water tank defines alarms");
+
+        engine.ack_alarm(&alarm_id).expect("ack");
+        engine.inner.write().mode = "runtime".into();
+        engine.expire_idle_session();
+        assert_eq!(
+            engine.snapshot().security_level,
+            100,
+            "an operator acting on the plant must not be logged out"
+        );
+    }
+
+    #[test]
+    fn multi_register_tags_are_read_in_full() {
+        let mut project = water_tank_project();
+        let device_id = project.devices[0].id.clone();
+        let mut wide = project.tags[0].clone();
+        wide.id = "wide".into();
+        wide.data_type = TagDataType::F32;
+        wide.binding.bit = None;
+        wide.binding.address = 2000;
+        project.tags = vec![wide];
+
+        let plan = build_read_plan(&project, &device_id);
+        assert!(
+            plan.contains(&ReadBlock {
+                table: ModbusTable::Holding,
+                start: 2000,
+                quantity: 2,
+            }),
+            "a 32-bit tag must claim both of its registers: {plan:?}"
+        );
+    }
+
+    #[test]
+    fn memory_tags_can_be_written_in_runtime() {
+        let mut project = water_tank_project();
+        let mem_tag = TagDefinition {
+            id: "mem.sp_calc".into(),
+            name: "Internal Calculated SP".into(),
+            device_id: "SYS_INTERNAL".into(),
+            data_type: TagDataType::F32,
+            unit: "bar".into(),
+            description: "Internal Memory Tag".into(),
+            scale: 1.0,
+            offset: 0.0,
+            decimals: 2,
+            binding: TagBinding {
+                table: ModbusTable::Memory,
+                address: 0,
+                bit: None,
+                writable: true,
+                bit_write_mode: BitWriteMode::MaskWrite,
+                single_writer: false,
+                verify_readback: true,
+                word_order: WordOrder::HighWordFirst,
+                min_security_level: 0,
+            },
+            initial_value: Some("4.5".into()),
+        };
+        project.tags.push(mem_tag);
+        assert!(
+            project.validate().is_ok(),
+            "project validation should accept SYS_INTERNAL memory tag"
+        );
+
+        let audit = Arc::new(crate::audit::AuditLog::new());
+        let engine = Engine::new(audit);
+        engine
+            .install_project(project, false)
+            .expect("install project");
+
+        let snap = engine.snapshot();
+        let live = snap
+            .tags
+            .iter()
+            .find(|t| t.tag_id == "mem.sp_calc")
+            .expect("live tag");
+        assert_eq!(live.quality, Quality::Good);
+        assert_eq!(live.value, 4.5);
+
+        engine
+            .login("operator", Some("operator123"))
+            .expect("login");
+        engine
+            .change_password("operator123", "a-much-longer-password")
+            .expect("change password");
+        engine.inner.write().mode = "runtime".into();
+
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(engine.write_tag("mem.sp_calc", 12.8))
+            .expect("write memory tag");
+
+        let snap_after = engine.snapshot();
+        let live_after = snap_after
+            .tags
+            .iter()
+            .find(|t| t.tag_id == "mem.sp_calc")
+            .expect("live tag after write");
+        assert_eq!(live_after.value, 12.8);
+        assert_eq!(live_after.quality, Quality::Good);
+    }
+
+    #[test]
+    fn mark_all_bad_preserves_internal_memory_and_system_tags() {
+        let mut project = water_tank_project();
+        let mem_tag = TagDefinition {
+            id: "mem.status".into(),
+            name: "Memory Status".into(),
+            device_id: "SYS_INTERNAL".into(),
+            data_type: TagDataType::Bool,
+            unit: String::new(),
+            description: "Internal Status".into(),
+            scale: 1.0,
+            offset: 0.0,
+            decimals: 0,
+            binding: TagBinding {
+                table: ModbusTable::Memory,
+                address: 0,
+                bit: None,
+                writable: true,
+                bit_write_mode: BitWriteMode::MaskWrite,
+                single_writer: false,
+                verify_readback: true,
+                word_order: WordOrder::HighWordFirst,
+                min_security_level: 0,
+            },
+            initial_value: Some("true".into()),
+        };
+        project.tags.push(mem_tag);
+
+        let audit = Arc::new(crate::audit::AuditLog::new());
+        let engine = Engine::new(audit);
+        engine.install_project(project, false).expect("install");
+
+        {
+            let mut g = engine.inner.write();
+            mark_all_bad(&mut g);
+        }
+
+        let snap = engine.snapshot();
+        let live_modbus = snap
+            .tags
+            .iter()
+            .find(|t| t.tag_id == "wt.level_cm")
+            .expect("plc tag");
+        assert_eq!(live_modbus.quality, Quality::Bad);
+
+        let live_mem = snap
+            .tags
+            .iter()
+            .find(|t| t.tag_id == "mem.status")
+            .expect("mem tag");
+        assert_eq!(
+            live_mem.quality,
+            Quality::Good,
+            "memory tags must not be degraded when modbus disconnects"
+        );
+    }
+
+    #[test]
+    fn memory_tags_do_not_age_out_to_uncertain_in_snapshot() {
+        let mut project = water_tank_project();
+        let mem_tag = TagDefinition {
+            id: "mem.stale_check".into(),
+            name: "Stale Check Tag".into(),
+            device_id: "SYS_INTERNAL".into(),
+            data_type: TagDataType::F32,
+            unit: String::new(),
+            description: "Age test".into(),
+            scale: 1.0,
+            offset: 0.0,
+            decimals: 2,
+            binding: TagBinding {
+                table: ModbusTable::Memory,
+                address: 0,
+                bit: None,
+                writable: true,
+                bit_write_mode: BitWriteMode::MaskWrite,
+                single_writer: false,
+                verify_readback: true,
+                word_order: WordOrder::HighWordFirst,
+                min_security_level: 0,
+            },
+            initial_value: Some("100.0".into()),
+        };
+        project.tags.push(mem_tag);
+
+        let audit = Arc::new(crate::audit::AuditLog::new());
+        let engine = Engine::new(audit);
+        engine.install_project(project, false).expect("install");
+
+        // Manually set timestamp to 10 seconds ago
+        {
+            let mut g = engine.inner.write();
+            if let Some(t) = g.tags.get_mut("mem.stale_check") {
+                t.ts = Utc::now() - chrono::Duration::seconds(10);
+            }
+        }
+
+        let snap = engine.snapshot();
+        let live_mem = snap
+            .tags
+            .iter()
+            .find(|t| t.tag_id == "mem.stale_check")
+            .expect("memory tag");
+
+        assert_eq!(
+            live_mem.quality,
+            Quality::Good,
+            "internal memory tags must maintain Quality::Good even after 3 seconds without poll"
+        );
     }
 }

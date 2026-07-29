@@ -282,11 +282,11 @@
   }
 </script>
 
+<svelte:window onkeydown={(event) => isModalOpen && handleKeyDown(event)} />
+
 {#if isModalOpen}
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="backdrop" onpointerdown={handleClose}></div>
-  <!-- svelte-ignore a11y_interactive_supports_focus -->
-  <div class="modal" role="dialog" aria-labelledby="dev-modal-title" aria-modal="true" tabindex="-1" onkeydown={handleKeyDown}>
+  <button type="button" class="backdrop" aria-label="Zamknij okno urządzenia" onclick={handleClose}></button>
+  <div class="modal" role="dialog" aria-labelledby="dev-modal-title" aria-modal="true">
     <div class="modal-header">
       <div class="title-wrap">
         <span class="header-icon">🔌</span>
@@ -520,6 +520,14 @@
 
 <style>
   .backdrop {
+    /* Rendered as a <button> so the dismissal affordance is keyboard-reachable. */
+    appearance: none;
+    border: 0;
+    padding: 0;
+    margin: 0;
+    font: inherit;
+    color: inherit;
+    cursor: default;
     position: fixed; inset: 0; background: rgba(0, 0, 0, 0.65);
     backdrop-filter: blur(4px); z-index: 9998; animation: fade-in 0.15s ease-out;
   }

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { api } from "$lib/services/api";
+  import { errorMessage } from "$lib/utils/errors";
 
   let {
     open = false,
@@ -50,8 +51,8 @@
       } else {
         errorMsg = "Niepoprawny PIN autoryzacyjny";
       }
-    } catch (e: any) {
-      errorMsg = e?.message || "Błąd autoryzacji PIN";
+    } catch (e) {
+      errorMsg = errorMessage(e, "Błąd autoryzacji PIN");
     } finally {
       loading = false;
     }
@@ -74,10 +75,14 @@
 <svelte:window onkeydown={handleKeydown} />
 
 {#if open}
-  <div class="modal-backdrop" onclick={onclose} role="presentation">
-    <!-- svelte-ignore a11y_interactive_supports_focus -->
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <div class="modal-card" onclick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" tabindex="-1">
+  <div class="modal-backdrop">
+    <button
+      type="button"
+      class="backdrop-dismiss"
+      aria-label="Zamknij okno autoryzacji PIN"
+      onclick={onclose}
+    ></button>
+    <div class="modal-card" role="dialog" aria-modal="true">
       <header class="modal-header">
         <div class="title-group">
           <div class="warning-icon">
@@ -143,7 +148,21 @@
     z-index: 10000;
   }
 
+  /* Full-size, transparent dismissal target behind the dialog. */
+  .backdrop-dismiss {
+    position: absolute;
+    inset: 0;
+    appearance: none;
+    border: 0;
+    padding: 0;
+    margin: 0;
+    background: transparent;
+    cursor: default;
+  }
+
   .modal-card {
+    position: relative;
+    z-index: 1;
     background: #0f172a;
     border: 1px solid #dc2626;
     box-shadow: 0 25px 50px -12px rgba(220, 38, 38, 0.25);

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { ScadaProject } from "$lib/types";
+  import type { FormDef, ScadaProject, WidgetDef } from "$lib/types";
   import {
     project,
     createComponentTemplateFromSelection,
@@ -19,7 +19,7 @@
   const currentProject = $derived($project as ScadaProject | null);
   const existingTemplates = $derived(currentProject?.component_templates ?? []);
 
-  let snapshotSelection = $state<{ form: any; widgets: any[] } | null>(null);
+  let snapshotSelection = $state<{ form: FormDef; widgets: WidgetDef[] } | null>(null);
 
   const selectionInfo = $derived(snapshotSelection || (open ? selectedWidgetsForTemplate() : null));
 
@@ -88,15 +88,8 @@
 </script>
 
 {#if open}
-  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <div
-    class="backdrop"
-    role="dialog"
-    aria-modal="true"
-    tabindex="-1"
-    onclick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-  >
+  <div class="backdrop" role="dialog" aria-modal="true">
+    <button type="button" class="backdrop-dismiss" aria-label="Zamknij okno" onclick={onClose}></button>
     <form class="panel" onsubmit={handleSubmit}>
 
       <!-- HEADER -->
@@ -222,6 +215,20 @@
 {/if}
 
 <style>
+  .backdrop-dismiss {
+    position: absolute;
+    inset: 0;
+    appearance: none;
+    border: 0;
+    padding: 0;
+    margin: 0;
+    background: transparent;
+    cursor: default;
+  }
+  .panel {
+    position: relative;
+    z-index: 1;
+  }
   .backdrop {
     position: fixed; inset: 0; z-index: 9200;
     background: rgba(0,0,0,.7);

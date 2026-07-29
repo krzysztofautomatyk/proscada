@@ -40,6 +40,8 @@ export interface DeviceConfig {
   queries?: ModbusQueryConfig[];
 }
 
+export type WordOrder = "high_word_first" | "low_word_first";
+
 export interface TagBinding {
   address: number;
   bit?: number | null;
@@ -49,6 +51,10 @@ export interface TagBinding {
   single_writer?: boolean;
   verify_readback?: boolean;
   string_length?: number;
+  /** Register order for data types wider than one register. */
+  word_order?: WordOrder;
+  /** Backend-enforced minimum security level required to write this tag. */
+  min_security_level?: number;
 }
 
 export type TagDataType =
@@ -87,6 +93,8 @@ export interface UserSummary {
   security_level: number;
   enabled: boolean;
   has_pin: boolean;
+  /** Seeded accounts must replace their default password before they can act. */
+  password_change_required?: boolean;
 }
 
 export interface UserAccountInput {
@@ -249,7 +257,12 @@ export interface ProjectNode {
   /** Body for script / note / markdown */
   content?: string;
   /** Script language (v1: javascript only) */
-  language?: "javascript";
+  /**
+   * Script node dialect. `proscada-actions` is the deterministic action language
+   * executed by `scriptRuntime`; `javascript` only appears in projects created
+   * before that change and no longer runs.
+   */
+  language?: "proscada-actions" | "javascript";
   collapsed?: boolean;
 }
 
@@ -294,6 +307,10 @@ export interface AlarmInstance {
   latched?: boolean;
   active_since?: string | null;
   last_change: string;
+  /** True when the source tag is not Good, so the state shown is stale. */
+  evaluation_suspended?: boolean;
+  suspended_reason?: string | null;
+  suspended_since?: string | null;
 }
 
 export interface EngineSnapshot {
@@ -310,6 +327,9 @@ export interface EngineSnapshot {
   security_level: number;
   project_name?: string | null;
   mode: string;
+  /** True when at least one alarm is not evaluated against live data. */
+  alarms_suspended?: boolean;
+  password_change_required?: boolean;
 }
 
 export interface AuditEntry {
@@ -321,4 +341,13 @@ export interface AuditEntry {
   detail: string;
   prev_hash: string;
   hash: string;
+}
+
+export interface AuditStatus {
+  chain_ok: boolean;
+  sink_path?: string | null;
+  persisted: boolean;
+  last_error?: string | null;
+  in_memory: number;
+  appended: number;
 }

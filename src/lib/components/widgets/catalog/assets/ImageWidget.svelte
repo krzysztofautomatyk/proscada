@@ -18,7 +18,13 @@
 
   const falseSrc = $derived(str("src", ""));
   const trueSrc = $derived(str("trueSrc", ""));
-  const fit = $derived(str("fit", "contain"));
+  const OBJECT_FITS = ["contain", "cover", "fill", "none", "scale-down"] as const;
+  type ObjectFit = (typeof OBJECT_FITS)[number];
+  const fit = $derived<ObjectFit>(
+    (OBJECT_FITS as readonly string[]).includes(str("fit", "contain"))
+      ? (str("fit", "contain") as ObjectFit)
+      : "contain",
+  );
   const alt = $derived(str("alt", "Image"));
 
   const stateMode = $derived(str("stateMode", "none"));
@@ -48,7 +54,7 @@
   <img
     src={activeSrc || defaultPumpSvg}
     {alt}
-    style:object-fit={fit as any}
+    style:object-fit={fit}
     class="img-element"
   />
 </div>

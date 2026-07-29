@@ -57,7 +57,7 @@
     widget: WidgetDef;
     tag?: TagValue | null;
     design?: boolean;
-    onWrite?: (tagId: string, value: number | string) => void;
+    onWrite?: (tagId: string, value: number) => void;
     ancestorFormIds?: Set<string>;
   }
 

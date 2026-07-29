@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { errorMessage } from "$lib/utils/errors";
   import { api } from "$lib/services/api";
   import type { UserAccountInput, UserSummary } from "$lib/types";
 
@@ -23,8 +24,8 @@
     errorMsg = "";
     try {
       users = await api.listUsers();
-    } catch (e: any) {
-      errorMsg = e?.message || "Błąd pobierania listy użytkowników";
+    } catch (e) {
+      errorMsg = errorMessage(e, "Błąd pobierania listy użytkowników");
     } finally {
       loading = false;
     }
@@ -78,8 +79,8 @@
       successMsg = `Zapisano użytkownika ${editingUser.username}`;
       editingUser = null;
       await loadUsers();
-    } catch (e: any) {
-      errorMsg = e?.message || "Nie udało się zapisać użytkownika";
+    } catch (e) {
+      errorMsg = errorMessage(e, "Nie udało się zapisać użytkownika");
     } finally {
       loading = false;
     }
@@ -93,8 +94,8 @@
       await api.deleteUser(u.id);
       successMsg = `Usunięto konto ${u.username}`;
       await loadUsers();
-    } catch (e: any) {
-      errorMsg = e?.message || "Nie udało się usunąć użytkownika";
+    } catch (e) {
+      errorMsg = errorMessage(e, "Nie udało się usunąć użytkownika");
     } finally {
       loading = false;
     }
@@ -116,10 +117,14 @@
 </script>
 
 {#if open}
-  <div class="modal-backdrop" onclick={onclose} role="presentation">
-    <!-- svelte-ignore a11y_interactive_supports_focus -->
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <div class="modal-card" onclick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" tabindex="-1">
+  <div class="modal-backdrop">
+    <button
+      type="button"
+      class="backdrop-dismiss"
+      aria-label="Zamknij okno użytkowników"
+      onclick={onclose}
+    ></button>
+    <div class="modal-card" role="dialog" aria-modal="true">
       <header class="modal-header">
         <div class="title-group">
           <div class="icon-box">
@@ -174,13 +179,32 @@
               </div>
 
               <div class="field">
-                <label for="u-password">{editingUser.id ? "Nowe Hasło (Zostaw puste b.z.)" : "Hasło"}</label>
-                <input id="u-password" type="password" bind:value={editingUser.password} placeholder="••••••••" />
+                <label for="u-password">
+                  {editingUser.id ? "Nowe Hasło (Zostaw puste b.z.)" : "Hasło (min. 12 znaków)"}
+                </label>
+                <input
+                  id="u-password"
+                  type="password"
+                  minlength="12"
+                  autocomplete="new-password"
+                  required={!editingUser.id}
+                  bind:value={editingUser.password}
+                  placeholder="co najmniej 12 znaków"
+                />
               </div>
 
               <div class="field">
                 <label for="u-pin">{editingUser.id ? "Nowy PIN 4-6 cyfr (Zostaw puste b.z.)" : "Szybki PIN"}</label>
-                <input id="u-pin" type="text" maxlength="6" bind:value={editingUser.pin} placeholder="np. 1234" />
+                <input
+                  id="u-pin"
+                  type="text"
+                  inputmode="numeric"
+                  pattern="[0-9]*"
+                  minlength="4"
+                  maxlength="6"
+                  bind:value={editingUser.pin}
+                  placeholder="np. 1234"
+                />
               </div>
 
               <div class="field full checkbox-field">
@@ -278,7 +302,21 @@
     z-index: 9999;
   }
 
+  /* Full-size, transparent dismissal target behind the dialog. */
+  .backdrop-dismiss {
+    position: absolute;
+    inset: 0;
+    appearance: none;
+    border: 0;
+    padding: 0;
+    margin: 0;
+    background: transparent;
+    cursor: default;
+  }
+
   .modal-card {
+    position: relative;
+    z-index: 1;
     background: #0f172a;
     border: 1px solid #1e293b;
     box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);

@@ -95,9 +95,10 @@
                 <tr
                   class:selected={selectedIndex === index}
                   class:selectable
-                  tabindex={selectable ? 0 : -1}
+                  tabindex="0"
                   role={selectable ? "button" : undefined}
-                  aria-pressed={selectable ? selectedIndex === index : undefined}
+                  aria-pressed={selectedIndex === index}
+                aria-disabled={!selectable}
                   onclick={() => toggle(index)}
                   onkeydown={(e) => onRowKey(e, index)}
                 >
@@ -109,33 +110,33 @@
         {:else if variant === "list"}
           <ul class="list">
             {#each pageRows as { row, index } (index)}
-              <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-              <li
-                class:selected={selectedIndex === index}
-                class:selectable
-                tabindex={selectable ? 0 : -1}
-                role={selectable ? "button" : undefined}
-                aria-pressed={selectable ? selectedIndex === index : undefined}
-                onclick={() => toggle(index)}
-                onkeydown={(e) => onRowKey(e, index)}
-              >
-                {#each columns as col (col)}
-                  <span class="kv"><em>{col}</em>{cellText(row, col)}</span>
-                {/each}
+              <li class:selected={selectedIndex === index} class:selectable>
+                <button
+                  type="button"
+                  class="row-button"
+                  aria-pressed={selectedIndex === index}
+                  disabled={!selectable}
+                  onclick={() => toggle(index)}
+                  onkeydown={(e) => onRowKey(e, index)}
+                >
+                  {#each columns as col (col)}
+                    <span class="kv"><em>{col}</em>{cellText(row, col)}</span>
+                  {/each}
+                </button>
               </li>
             {/each}
           </ul>
         {:else}
           <div class="grid">
             {#each pageRows as { row, index } (index)}
-              <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
               <div
                 class="cell"
                 class:selected={selectedIndex === index}
                 class:selectable
-                tabindex={selectable ? 0 : -1}
-                role={selectable ? "button" : undefined}
-                aria-pressed={selectable ? selectedIndex === index : undefined}
+                tabindex="0"
+                role="button"
+                aria-pressed={selectedIndex === index}
+                aria-disabled={!selectable}
                 onclick={() => toggle(index)}
                 onkeydown={(e) => onRowKey(e, index)}
               >
@@ -207,6 +208,20 @@
     display: flex;
     flex-direction: column;
     gap: 4px;
+  }
+  .row-button {
+    display: contents;
+    appearance: none;
+    background: none;
+    border: 0;
+    padding: 0;
+    font: inherit;
+    color: inherit;
+    text-align: inherit;
+    cursor: pointer;
+  }
+  .row-button:disabled {
+    cursor: default;
   }
   .list li {
     border: 1px solid #e2e8f0;

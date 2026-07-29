@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { activate } from "$lib/utils/a11y";
   import type { ComponentTemplate, ProjectNode, ProjectNodeKind, ScadaProject } from "$lib/types";
   import {
     selectedFormId,
@@ -250,12 +251,14 @@
     {@const active =
       $selectedNodeId === node.id ||
       (node.kind === "screen" && node.ref_id === $selectedFormId)}
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
     <div
       class="tree-item tree-row"
       class:active
       class:folder={isFolder}
+      role="treeitem"
+      aria-expanded={isFolder ? !collapsed : undefined}
+      aria-selected={active}
+      tabindex="0"
       data-testid="tree-node-{node.kind}-{node.id}"
       style:padding-left="{depth * 12 + 12}px"
       draggable={design && !isFolder}
@@ -275,12 +278,28 @@
       onmousemove={(e) => handleNodeMouseMove(node, e)}
       onmouseleave={() => handleNodeMouseLeave(node)}
       oncontextmenu={(e) => openCtx(e, node)}
+      onkeydown={activate(() => {
+        if (isFolder) {
+          toggleFolderCollapsed(node.id);
+        } else if (node.kind === "component") {
+          openComponentModal(node);
+        } else {
+          onSelect(node);
+        }
+      })}
     >
       {#if isFolder}
-        <!-- svelte-ignore a11y_click_events_have_key_events -->
-        <span class="twist" onclick={(e) => { e.stopPropagation(); toggleFolderCollapsed(node.id); }} role="button" tabindex="0">
+        <button
+          type="button"
+          class="twist"
+          aria-label={collapsed ? `Rozwiń ${node.name}` : `Zwiń ${node.name}`}
+          onclick={(e) => {
+            e.stopPropagation();
+            toggleFolderCollapsed(node.id);
+          }}
+        >
           {collapsed ? "▶" : "▼"}
-        </span>
+        </button>
       {:else}
         <span class="twist spacer"></span>
       {/if}
@@ -323,7 +342,6 @@
     {/if}
   </div>
 
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     class="panel-body se-body"
     role="tree"
@@ -333,8 +351,6 @@
     ondrop={(e) => onDrop(e, null)}
   >
     <!-- Project root -->
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
     <div
       class="tree-item tree-row project-root"
       class:active={!$selectedNodeId}
@@ -367,7 +383,6 @@
     {#each project.devices as d}
       {@const expanded = isDeviceExpanded(d.id)}
       {@const queriesList = d.queries ?? []}
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
         class="tree-item device-row"
         style:padding-left="16px"
@@ -434,7 +449,6 @@
       <!-- Nested Modbus Poll Queries under PLC Device -->
       {#if expanded}
         {#each queriesList as q}
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div
             class="tree-item query-row"
             style:padding-left="38px"
@@ -464,7 +478,6 @@
       <button type="button" class="btn-group-add" title="Otwórz Menedżer Zmiennych / Dodaj..." onclick={() => openVariablesManager()}>🏷️+</button>
     </div>
 
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
       class="tree-item device-row"
       style:padding-left="24px"
@@ -478,7 +491,6 @@
       <span class="label">Centralna Baza Zmiennych ({totalTagsCount})</span>
     </div>
 
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
       class="tree-item device-row"
       style:padding-left="24px"
@@ -492,7 +504,6 @@
       <span class="label">Zmienne Pamięci ({memoryTagsCount})</span>
     </div>
 
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
       class="tree-item device-row"
       style:padding-left="24px"
@@ -526,9 +537,7 @@
 </div>
 
 {#if ctx.open}
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <div class="ctx-backdrop" onclick={closeCtx}></div>
+  <button type="button" class="ctx-backdrop" aria-label="Zamknij menu kontekstowe" onclick={closeCtx}></button>
   <div class="ctx-menu" style:left="{ctx.x}px" style:top="{ctx.y}px">
     {#if design}
       {#if ctx.node}
@@ -859,6 +868,15 @@
     font-weight: 700;
     color: var(--vs-text-bright);
   }
+  button.twist {
+    appearance: none;
+    background: none;
+    border: 0;
+    padding: 0;
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
+  }
   .twist {
     width: 12px;
     flex-shrink: 0;
@@ -899,6 +917,14 @@
     color: var(--vs-text-dim);
   }
   .ctx-backdrop {
+    /* Rendered as a <button> so the dismissal affordance is keyboard-reachable. */
+    appearance: none;
+    border: 0;
+    padding: 0;
+    margin: 0;
+    font: inherit;
+    color: inherit;
+    cursor: default;
     position: fixed;
     inset: 0;
     z-index: 9998;

@@ -9,6 +9,7 @@
     installPumpStationTemplate,
     instantiateComponentTemplate,
   } from "$lib/stores/app";
+  import { openTextFile } from "$lib/services/fileIo";
 
   let selectedId = $state("");
   const templates = $derived($project?.component_templates ?? []);
@@ -31,7 +32,6 @@
 
   async function bulkFromFile() {
     if (!selected) return;
-    const { openTextFile } = await import("$lib/services/fileIo");
     const picked = await openTextFile([{ name: "Object list", extensions: ["csv"] }]);
     if (!picked) return;
     try {

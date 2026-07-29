@@ -11,18 +11,21 @@ description: Enforce ProScada high-assurance invariants — fail-closed writes, 
 
 ## Key files
 - Write gating: `src-tauri/src/engine/mod.rs` (`write_tag`), commands `src-tauri/src/commands/mod.rs`.
-- Roles/mode: `Role` in `src/lib/types.ts`, `set_role`/`set_mode` in engine/commands.
-- Audit (hash-chained): `src-tauri/src/audit/mod.rs` (`append`, `verify_audit`).
+- Roles/mode: `Role` in `src/lib/types.ts`; role comes only from `login`, mode from `set_mode`.
+- Credentials: `src-tauri/src/project/credentials.rs` (Argon2id, legacy SHA-256 upgrade).
+- Audit (hash-chained, JSONL-persisted): `src-tauri/src/audit/mod.rs`.
 - CSP + capabilities: `src-tauri/tauri.conf.json` (`security.csp`), `src-tauri/capabilities/`.
-- Integrity: `src-tauri/src/project/mod.rs` (`content_hash`, SHA-256).
+- Integrity: `src-tauri/src/project/mod.rs` (`content_hash`, `validate`).
 
 ## Invariants (fail closed)
-1. **Mode**: process writes are rejected unless engine `mode == "runtime"`. Never bypass for Designer/preview.
+1. **Mode**: process writes are rejected unless engine `mode == "runtime"`. Entering Designer requires Engineer or Administrator.
 2. **Quality**: refuse to write a tag whose quality is not `Good`.
-3. **RBAC**: check `Role` before writes and before alarm ack/reset; roles without permission are rejected.
+3. **RBAC**: role comes only from `login`; there is no command that sets it. `mode` is never a bypass for an authorization check.
 4. **Read-back**: every Modbus write is observed; mismatch fails when `verify_readback=true`, while self-clearing commands may disable equality only.
 5. **Single-writer RMW**: bit RMW only when `single_writer=true`; otherwise require FC22 or a dedicated coil.
-6. **Audit**: writes, mode/role changes and alarm ack/reset append to the in-memory hash chain; keep `verify_audit` valid and do not claim persistent SOE.
+6. **Range**: a value outside the target type's range is rejected, never clamped.
+7. **User database**: `save_project_in_memory` never rewrites accounts; `load_project` drops the session.
+8. **Audit**: every state-changing operation and every denied write appends to the persisted hash chain; keep `verify_audit` valid across trimming and restarts.
 
 ## Procedure
 1. Add new privileged actions behind the same mode + RBAC + quality checks; return a clear error on denial (never silently succeed).

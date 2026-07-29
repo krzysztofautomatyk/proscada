@@ -30,14 +30,19 @@ ProScada nie jest safety PLC. Watchdog, interlock, permissive i funkcje bezpiecz
 ## Nienaruszalne reguły
 
 - Nie wykonuj zapisu procesu poza Runtime.
-- Backend egzekwuje rolę, writable i quality `Good`.
+- Backend egzekwuje rolę, `min_security_level` tagu, writable i quality `Good`.
+- Rola pochodzi wyłącznie z `login`; nie ma komendy ustawiającej rolę z UI.
+- Silnik startuje jako `Viewer` bez użytkownika; brak snapshotu = brak uprawnień.
+- Wejście w Designer wymaga roli Engineer lub Administrator.
+- `save_project_in_memory` nigdy nie nadpisuje bazy użytkowników.
+- Wartość poza zakresem typu jest odrzucana, nigdy obcinana.
 - Bit holding register ma zakres `0..15`, bit 0 = LSB.
 - Preferuj FC22; RMW wymaga `single_writer=true`.
 - Samokasująca komenda używa `verify_readback=false`, lecz nadal jest odczytywana obserwacyjnie.
 - UI nie może deklarować sukcesu procesu na podstawie samego kliknięcia lub ACK transportu.
 - Alarm należy do centralnego engine, nie do lokalnego ekranu.
 - Nie dodawaj arbitralnego JS, remote script, `javascript:` ani sekretów do projektu/komponentu.
-- Nie traktuj `new Function` w `scriptRuntime.ts` jako prawdziwego sandboxa; każda zmiana wymaga ręcznego review bezpieczeństwa.
+- Skrypty projektowe to deterministyczny język akcji w `scriptRuntime.ts`; nie przywracaj `eval` ani `new Function`.
 - Agent i CI nie mogą łączyć się z PLC, skanować sieci OT ani używać sekretów produkcyjnych.
 - Zachowaj parytet nowej komendy: Rust command, `generate_handler!`, `api.ts`, mock i typy.
 - Nie rozszerzaj Tauri capabilities ani scope plików bez threat modelu i ręcznego review.
@@ -76,8 +81,10 @@ npm run validate:widgets
 npm run validate:docs
 npm run validate:ai
 npm run validate:yaml
-npm run test:pump-template
+npm test
 npm run build
+cargo fmt --all --manifest-path src-tauri/Cargo.toml -- --check
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 

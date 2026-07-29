@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { WidgetDef, TagValue } from "$lib/types";
+  import { formatTrustedValue, resolveTagQuality } from "../../shared/quality";
 
   interface Props {
     widget: WidgetDef;
@@ -8,10 +9,16 @@
     onWrite?: (tagId: string, value: number) => void;
   }
 
-  let { widget, tag = null }: Props = $props();
+  let { widget, tag = null, design = false }: Props = $props();
 
-  const levelCm = $derived(tag?.value ?? 450);
-  const levelPct = $derived(Math.max(0, Math.min(1, levelCm / 1000)));
+  const quality = $derived(resolveTagQuality(widget, tag, design));
+  // No fabricated fallback level: an untrusted tag renders an empty tank and a
+  // placeholder readout, never a plausible-looking number.
+  const levelCm = $derived(quality.degraded ? null : (tag?.value ?? null));
+  const levelLabel = $derived(formatTrustedValue(quality, levelCm, 0));
+  const levelPct = $derived(
+    levelCm === null ? 0 : Math.max(0, Math.min(1, levelCm / 1000)),
+  );
 
   const CX = 200;
   const TOP = 90;
@@ -80,7 +87,7 @@
 
     <!-- Digital Level Display -->
     <text x={CX} y={waterY - 14} text-anchor="middle" font-size="22" font-weight="800" fill="#132352">
-      {levelCm.toFixed(0)} cm
+      {levelLabel} cm
     </text>
   </svg>
 </div>

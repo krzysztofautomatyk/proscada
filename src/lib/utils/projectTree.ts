@@ -44,14 +44,19 @@ export function iconFor(kind: ProjectNodeKind): string {
 export function defaultContent(kind: ProjectNodeKind, name: string): string {
   switch (kind) {
     case "script":
-      return `// ProScada HMI script — ${name}
-// API: writeTag(id, value), getTag(id), getTagValue(id), log(msg), navigate(formId), ackAlarm(id)
-// Event: event = { type, widgetId, formId, tagId }
+      return `# ProScada action script — ${name}
+# One statement per line. JavaScript is not executed.
+#
+# Actions:
+#   writeTag "tag.id" <number>
+#   ackAlarm "alarm.id"
+#   navigate "form.id"
+#   log "message"
+#
+# Guarded statement:
+#   if "tag.id" >= 100 then writeTag "other.tag" 0
 
-async function onEvent(event) {
-  log("script fired: " + event.type + " @ " + (event.widgetId ?? "?"));
-  // Example: await writeTag("wt.sim_en", 1);
-}
+log "script fired"
 `;
     case "style":
       return `/* ProScada Style Sheet — ${name} */
@@ -384,7 +389,16 @@ export function isAncestor(
   return false;
 }
 
-/** Validate imported JSON shape loosely. */
+/**
+ * Validate imported JSON shape loosely and normalize it for the Designer.
+ *
+ * The stored `content_hash` describes the project exactly as the Rust core last
+ * serialized it. Normalization legitimately changes the content (missing system
+ * folders, schema migration), so the hash is cleared rather than carried
+ * forward: keeping a hash that no longer matches would make the backend reject
+ * every imported file, and silently ignoring the mismatch would make the check
+ * meaningless. The backend recomputes the hash when it adopts the project.
+ */
 export function normalizeImportedProject(raw: unknown): ScadaProject {
   if (!raw || typeof raw !== "object") throw new Error("Invalid project file");
   const o = raw as Record<string, unknown>;
@@ -401,7 +415,7 @@ export function normalizeImportedProject(raw: unknown): ScadaProject {
   p.design_system = normalizeProjectDesignSystem(p.design_system);
   p.tree = Array.isArray(p.tree) ? p.tree : [];
   p.description = p.description ?? "";
-  p.content_hash = p.content_hash ?? "";
+  p.content_hash = "";
   p.schema_version = Number(p.schema_version) || CURRENT_SCHEMA;
   return ensureProjectTree(p);
 }

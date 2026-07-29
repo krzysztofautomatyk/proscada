@@ -198,7 +198,16 @@ test("childrenOf and ensureProjectTree handle undefined or omitted parent_id on 
   assert.ok(synced.tree, "Synced tree must exist");
 
   const rootChildren = childrenOf(synced.tree, null);
-  assert.equal(rootChildren.length, 6, "Must return all 6 root items when requesting childrenOf(tree, null)");
+  // The six seeded folders plus the guaranteed root "Komponenty" folder.
+  assert.equal(
+    rootChildren.length,
+    7,
+    "Must return every root item, including the guaranteed Components folder",
+  );
+  assert.ok(
+    rootChildren.some((child) => child.kind === "components_folder"),
+    "ensureProjectTree must guarantee a root Components folder",
+  );
 
   for (const child of rootChildren) {
     assert.equal(child.parent_id, null, `Root item ${child.name} must have parent_id normalized to null`);

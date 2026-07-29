@@ -16,7 +16,7 @@
   interface Props {
     snapshot: EngineSnapshot | null;
     tagMap: Map<string, TagValue>;
-    onWrite: (tagId: string, value: number | string) => Promise<void> | void;
+    onWrite: (tagId: string, value: number) => Promise<void> | void;
     designMode?: boolean;
   }
 
@@ -24,6 +24,12 @@
 
   const vm = $derived(
     projectWaterTank(tagMap, snapshot?.connected ?? false, snapshot?.alarms ?? []),
+  );
+
+  // Surfaced explicitly: a frozen alarm list must never look like a live one.
+  const alarmsSuspended = $derived(
+    snapshot?.alarms_suspended === true ||
+      (snapshot?.alarms ?? []).some((alarm) => alarm.evaluation_suspended === true),
   );
 
   const G = "#16A34A";
@@ -166,6 +172,14 @@
       <span class="pill" class:g={vm.connected} class:r={!vm.connected}>
         {vm.connected ? "MODBUS OK" : "OFFLINE"}
       </span>
+      {#if alarmsSuspended}
+        <span
+          class="pill r"
+          title="Alarm evaluation is not running against live data; the states shown are the last trustworthy ones."
+        >
+          ALARMS STALE
+        </span>
+      {/if}
     </div>
   </header>
 

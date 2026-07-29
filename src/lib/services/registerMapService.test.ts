@@ -164,4 +164,36 @@ describe("registerMapService domain rules", () => {
     const writableTag = setTagReadonly(readonlyTag, false);
     assert.equal(writableTag.binding.writable, true);
   });
+
+  it("validates internal memory tags (bool, f32) without requiring Modbus device or bit index", () => {
+    const memoryBoolTag: Partial<TagDefinition> = {
+      id: "mem_flag",
+      name: "Memory Flag",
+      device_id: "SYS_INTERNAL",
+      data_type: "bool",
+      binding: {
+        address: 0,
+        table: "memory",
+        writable: true,
+      },
+    };
+
+    const resBool = validateRegisterTag(memoryBoolTag, []);
+    assert.equal(resBool.valid, true);
+
+    const memoryF32Tag: Partial<TagDefinition> = {
+      id: "mem_calc",
+      name: "Calculated Value",
+      device_id: "SYS_INTERNAL",
+      data_type: "f32",
+      binding: {
+        address: 0,
+        table: "memory",
+        writable: true,
+      },
+    };
+
+    const resF32 = validateRegisterTag(memoryF32Tag, []);
+    assert.equal(resF32.valid, true);
+  });
 });

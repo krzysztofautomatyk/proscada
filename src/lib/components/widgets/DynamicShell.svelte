@@ -12,6 +12,7 @@
   } from "$lib/utils/dynamics";
   import { normalizeProjectDesignSystem } from "$lib/utils/designSystem";
   import { runScriptById } from "$lib/services/scriptRuntime";
+  import { resolveTagQuality } from "./shared/quality";
   import { get } from "svelte/store";
   import type { Snippet } from "svelte";
 
@@ -27,7 +28,13 @@
   const blinking = $derived(isWidgetBlinking(cfg, $tagMap, widget.tag_id));
   const customAnimating = $derived(isWidgetAnimating(cfg, $tagMap, widget.tag_id));
   const visible = $derived(isWidgetVisible(cfg, $tagMap, widget.tag_id));
-  const currentSecurityLevel = $derived($snapshot?.security_level ?? 1000);
+  // Fail-closed: an unknown snapshot grants no privileges.
+  const currentSecurityLevel = $derived($snapshot?.security_level ?? 0);
+  // Every widget bound to a tag gets the same quality treatment, so a renderer
+  // can never accidentally present a dead value as a live one.
+  const quality = $derived(
+    resolveTagQuality(widget, widget.tag_id ? $tagMap.get(widget.tag_id) : null, design),
+  );
   const minLevel = $derived(widget.min_level ?? 0);
   const isUnauthorized = $derived(!design && minLevel > 0 && currentSecurityLevel < minLevel);
   const behavior = $derived(widget.unauthorized_behavior || "disabled");
@@ -66,6 +73,13 @@
     ].includes(widget.widget_type),
   );
 
+  /** True when the shell itself is the control, rather than a passive frame. */
+  const shellIsInteractive = $derived(
+    !design &&
+      ((!!clickScriptId && !ownsInteraction) ||
+        (isUnauthorized && behavior === "prompt_login")),
+  );
+
   async function onShellClick(e: MouseEvent) {
     if (design) return;
     if (isUnauthorized) {
@@ -91,8 +105,6 @@
 </script>
 
 {#if !isHidden || design}
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div
     class="dyn-shell"
     class:blinking
@@ -117,9 +129,22 @@
     style:--psc-border={styleClass?.border ?? "#cbd5e1"}
     style:font-family={fontToken ? "var(--psc-font-family)" : undefined}
     style:color="var(--psc-text)"
-    onclick={onShellClick}
   >
+    {#if shellIsInteractive}
+      <!-- The shell itself stays passive; the activation affordance is a real
+           button so it is focusable and operable from the keyboard. -->
+      <button
+        type="button"
+        class="shell-activator"
+        aria-label={isUnauthorized ? `Zaloguj się, aby użyć kontrolki` : "Uruchom skrypt kontrolki"}
+        onclick={onShellClick}
+      ></button>
+    {/if}
     {@render children()}
+
+    {#if quality.degraded}
+      <div class="quality-veil" title={`${quality.label}: ${quality.reason}`} aria-hidden="true"></div>
+    {/if}
 
     {#if isUnauthorized && behavior === "disabled"}
       <div class="unauthorized-overlay" title={`Wymagany poziom uprawnień: L${minLevel}`}>
@@ -224,6 +249,31 @@
     padding: 2px 5px;
     border-radius: 4px;
     font-weight: 700;
+  }
+  /* Untrustworthy process data must be unmistakable at a glance. */
+  .shell-activator {
+    position: absolute;
+    inset: 0;
+    z-index: 9;
+    appearance: none;
+    background: transparent;
+    border: 0;
+    padding: 0;
+    margin: 0;
+    cursor: pointer;
+  }
+  .shell-activator:focus-visible {
+    outline: 2px solid #1f6feb;
+    outline-offset: -2px;
+  }
+  .quality-veil {
+    position: absolute;
+    inset: 0;
+    z-index: 11;
+    pointer-events: none;
+    border-radius: inherit;
+    outline: 1.5px solid rgba(239, 68, 68, 0.85);
+    outline-offset: -1.5px;
   }
   @keyframes scada-blink {
     0%,
