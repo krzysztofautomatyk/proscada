@@ -17,8 +17,10 @@
     log,
     snapshot,
     dirty,
+    refreshSnapshotNow,
   } from "$lib/stores/app";
   import { api } from "$lib/services/api";
+  import { errorMessage } from "$lib/utils/errors";
   import { activate } from "$lib/utils/a11y";
   import { createAndSaveNewProject } from "$lib/stores/projectStorage";
   import { ensureProjectTree } from "$lib/utils/projectTree";
@@ -35,6 +37,27 @@
   let newProjectDesc = $state("");
   let selectedTemplate = $state<"blank" | "water_tank">("blank");
   const canEngineer = $derived(($snapshot?.security_level ?? 0) >= 500);
+
+  async function handleQuickDevLogin() {
+    try {
+      await api.devLoginAdmin();
+      await refreshSnapshotNow();
+      log("Szybkie logowanie deweloperskie (admin) powiodło się", "ok");
+    } catch (e) {
+      log(`Błąd szybkiego logowania: ${errorMessage(e, "Błąd autoryzacji")}`, "err");
+    }
+  }
+
+  async function handleLogoutFromStart() {
+    try {
+      await api.logout();
+      await api.setMode("runtime");
+      await refreshSnapshotNow();
+      log("Wylogowano z poziomu okna startowego", "info");
+    } catch (e) {
+      log(`Błąd wylogowania: ${e}`, "err");
+    }
+  }
 
   // Sorted and filtered recent projects
   const filteredProjects = $derived.by(() => {
@@ -261,9 +284,18 @@
             <span class="vs-brand-sub">Visual Studio–Style Project Launcher · Engineering Workstation</span>
           </div>
         </div>
-        <button class="vs-start-close-btn" title="Zamknij ekran startowy (Esc)" onclick={closeWindow}>
-          ✕
-        </button>
+        <div class="vs-header-right">
+          <div class="vs-user-badge" class:logged-in={canEngineer}>
+            {#if canEngineer}
+              <span class="vs-user-status">👤 {$snapshot?.current_user?.display_name || $snapshot?.actor || "Użytkownik"} ({$snapshot?.role})</span>
+            {:else}
+              <span class="vs-user-status dim">🟡 Gość (Brak uprawnień edycji)</span>
+            {/if}
+          </div>
+          <button class="vs-start-close-btn" title="Zamknij ekran startowy (Esc)" onclick={closeWindow}>
+            ✕
+          </button>
+        </div>
       </div>
 
       <!-- Drag Overlay Banner -->
@@ -429,13 +461,45 @@
             </button>
           </div>
           {#if !canEngineer}
-            <button
-              type="button"
-              class="vs-btn-primary"
-              onclick={() => window.dispatchEvent(new CustomEvent("proscada:open-login"))}
-            >
-              Zaloguj jako Engineer lub Administrator
-            </button>
+            <div class="vs-auth-card">
+              <div class="vs-auth-icon">🔒</div>
+              <div class="vs-auth-info">
+                <div class="vs-auth-title">Brak uprawnień edytora</div>
+                <div class="vs-auth-desc">
+                  Tworzenie, edycja i otwieranie projektów wymaga logowania jako <strong>Engineer</strong> lub <strong>Administrator</strong>.
+                </div>
+              </div>
+              <div class="vs-auth-actions">
+                <button
+                  type="button"
+                  class="vs-btn-pri"
+                  onclick={() => window.dispatchEvent(new CustomEvent("proscada:open-login"))}
+                >
+                  🔑 Zaloguj się
+                </button>
+                {#if import.meta.env.DEV}
+                  <button
+                    type="button"
+                    class="vs-btn-dev"
+                    title="Tryb deweloperski: zaloguj od razu jako admin (admin/admin123)"
+                    onclick={handleQuickDevLogin}
+                  >
+                    ⚡ Szybkie logowanie (Admin)
+                  </button>
+                {/if}
+              </div>
+            </div>
+          {:else}
+            <div class="vs-auth-card logged-in">
+              <div class="vs-auth-icon">✅</div>
+              <div class="vs-auth-info">
+                <div class="vs-auth-title">Zalogowano: {$snapshot?.current_user?.display_name || $snapshot?.actor}</div>
+                <div class="vs-auth-desc">Rola: <strong>{$snapshot?.role}</strong> (Security: {$snapshot?.security_level})</div>
+              </div>
+              <button type="button" class="vs-btn-sec" onclick={handleLogoutFromStart}>
+                Wyloguj
+              </button>
+            </div>
           {/if}
         </div>
       </div>
@@ -604,8 +668,9 @@
   .vs-start-modal {
     position: relative;
     width: 100%;
-    max-width: 1040px;
-    height: 660px;
+    max-width: 1140px;
+    height: 720px;
+    max-height: 90vh;
     background: var(--vs-bg, #1e1e1e);
     border: 1px solid var(--vs-border, #3b3b3b);
     border-radius: 8px;
@@ -646,6 +711,94 @@
     padding: 16px 24px;
     background: var(--vs-panel-header-bg, #252526);
     border-bottom: 1px solid var(--vs-border, #333333);
+  }
+
+  .vs-header-right {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+
+  .vs-user-badge {
+    padding: 4px 10px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--vs-border, #3c3c3c);
+    border-radius: 14px;
+    font-size: 11.5px;
+    color: var(--vs-text-dim, #aaaaaa);
+  }
+
+  .vs-user-badge.logged-in {
+    background: rgba(16, 185, 129, 0.12);
+    border-color: rgba(16, 185, 129, 0.4);
+    color: #10b981;
+    font-weight: 600;
+  }
+
+  .vs-user-status.dim {
+    color: var(--vs-text-dim, #aaaaaa);
+  }
+
+  .vs-auth-card {
+    margin-top: 16px;
+    padding: 16px;
+    background: rgba(239, 68, 68, 0.08);
+    border: 1px solid rgba(239, 68, 68, 0.25);
+    border-radius: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .vs-auth-card.logged-in {
+    background: rgba(16, 185, 129, 0.08);
+    border-color: rgba(16, 185, 129, 0.25);
+    flex-direction: row;
+    align-items: center;
+  }
+
+  .vs-auth-icon {
+    font-size: 22px;
+  }
+
+  .vs-auth-info {
+    flex: 1;
+  }
+
+  .vs-auth-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--vs-text-bright, #ffffff);
+    margin-bottom: 3px;
+  }
+
+  .vs-auth-desc {
+    font-size: 11.5px;
+    color: var(--vs-text-dim, #aaaaaa);
+    line-height: 1.4;
+  }
+
+  .vs-auth-actions {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+
+  .vs-btn-dev {
+    background: linear-gradient(135deg, #8b5cf6, #6366f1);
+    border: none;
+    color: #ffffff;
+    padding: 6px 14px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: filter 0.15s ease;
+  }
+
+  .vs-btn-dev:hover {
+    filter: brightness(1.15);
   }
 
   .vs-start-brand {
@@ -928,48 +1081,81 @@
   .vs-action-cards {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 10px;
   }
 
   .vs-action-card {
+    position: relative;
     display: flex;
     align-items: center;
-    gap: 16px;
-    padding: 16px;
+    gap: 14px;
+    padding: 12px 14px;
     background: var(--vs-bg-2, #252526);
     border: 1px solid var(--vs-border, #333333);
-    border-radius: 6px;
+    border-radius: 8px;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: all 0.2s ease;
     flex-shrink: 0;
     min-width: 0;
   }
 
-  .vs-action-card:hover {
-    background: var(--vs-hover, #2c2c2d);
-    border-color: var(--vs-accent, #007acc);
-    transform: translateY(-1px);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  .vs-action-card.primary {
+    border-color: rgba(0, 122, 204, 0.45);
+    background: linear-gradient(135deg, rgba(0, 122, 204, 0.12), rgba(30, 30, 30, 0.7));
   }
 
-  .vs-action-card.primary {
-    border-left: 3px solid var(--vs-accent, #007acc);
+  .vs-action-card.primary .vs-card-icon {
+    background: linear-gradient(135deg, #007acc, #005999);
+    color: #ffffff;
+    box-shadow: 0 2px 10px rgba(0, 122, 204, 0.4);
   }
 
   .vs-action-card.accent {
-    border-left: 3px solid #10b981;
+    border-color: rgba(16, 185, 129, 0.45);
+    background: linear-gradient(135deg, rgba(16, 185, 129, 0.1), rgba(30, 30, 30, 0.7));
+  }
+
+  .vs-action-card.accent .vs-card-icon {
+    background: linear-gradient(135deg, #10b981, #059669);
+    color: #ffffff;
+    box-shadow: 0 2px 10px rgba(16, 185, 129, 0.35);
+  }
+
+  .vs-action-card:hover:not(:disabled) {
+    background: var(--vs-hover, #2d2d30);
+    border-color: #38bdf8;
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(0, 122, 204, 0.25);
+  }
+
+  .vs-action-card.primary:hover:not(:disabled) {
+    background: linear-gradient(135deg, rgba(0, 122, 204, 0.22), rgba(40, 40, 45, 0.8));
+    border-color: #38bdf8;
+    box-shadow: 0 6px 20px rgba(0, 122, 204, 0.35);
+  }
+
+  .vs-action-card:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+    pointer-events: none;
+    filter: grayscale(0.5);
   }
 
   .vs-card-icon {
-    font-size: 24px;
+    font-size: 20px;
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 40px;
-    height: 40px;
-    background: rgba(255, 255, 255, 0.05);
+    width: 38px;
+    height: 38px;
+    background: rgba(255, 255, 255, 0.06);
     border-radius: 8px;
     flex-shrink: 0;
+    transition: transform 0.2s ease;
+  }
+
+  .vs-action-card:hover:not(:disabled) .vs-card-icon {
+    transform: scale(1.05);
   }
 
   .vs-card-content {
@@ -1001,9 +1187,9 @@
     flex-shrink: 0;
   }
 
-  .vs-action-card:hover .vs-card-arrow {
+  .vs-action-card:hover:not(:disabled) .vs-card-arrow {
     transform: translateX(4px);
-    color: var(--vs-accent, #007acc);
+    color: #38bdf8;
   }
 
   .vs-start-footer {
@@ -1134,22 +1320,30 @@
   .vs-template-card {
     display: flex;
     align-items: flex-start;
-    gap: 12px;
-    padding: 12px;
+    gap: 14px;
+    padding: 14px;
     background: var(--vs-bg-2, #252526);
     border: 1px solid var(--vs-border, #333333);
-    border-radius: 6px;
+    border-radius: 8px;
     cursor: pointer;
+    transition: all 0.18s ease;
+  }
+
+  .vs-template-card:hover {
+    border-color: var(--vs-accent, #007acc);
+    background: rgba(255, 255, 255, 0.03);
   }
 
   .vs-template-card.selected {
-    border-color: var(--vs-accent, #007acc);
-    background: rgba(0, 122, 204, 0.1);
+    border-color: #38bdf8;
+    background: linear-gradient(135deg, rgba(0, 122, 204, 0.15), rgba(0, 122, 204, 0.05));
+    box-shadow: 0 0 12px rgba(0, 122, 204, 0.25);
   }
 
   .vs-tmpl-radio {
-    font-size: 14px;
-    color: var(--vs-accent, #007acc);
+    font-size: 16px;
+    color: #38bdf8;
+    margin-top: 1px;
   }
 
   .vs-tmpl-title {

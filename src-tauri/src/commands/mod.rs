@@ -144,6 +144,19 @@ pub fn bootstrap_admin(
 }
 
 #[tauri::command]
+pub fn dev_login_admin(state: State<'_, AppState>) -> Result<UserSummary, String> {
+    #[cfg(debug_assertions)]
+    {
+        state.engine.dev_force_admin_login()
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = state;
+        Err("Dev login is unavailable in release builds".into())
+    }
+}
+
+#[tauri::command]
 pub fn list_users(state: State<'_, AppState>) -> Result<Vec<UserSummary>, String> {
     state.engine.list_users()
 }

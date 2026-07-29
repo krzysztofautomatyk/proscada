@@ -7,18 +7,22 @@ import type { TagValue, WidgetDef } from "$lib/types";
  * Every other state must be visually distinguishable, otherwise the operator
  * cannot tell a live reading from a dead one.
  */
-export type TagTrust = "ok" | "stale" | "bad" | "missing" | "unbound";
+export type TagTrust = "ok" | "stale" | "bad" | "comm_lost" | "missing" | "unbound";
 
 export interface TagQuality {
   trust: TagTrust;
-  /** True when the widget is bound to a tag but the value must not be trusted. */
+  /** True when the widget is bound to a tag but the value must not be trusted as live. */
   degraded: boolean;
-  /** Short operator-facing label, e.g. `BAD`. */
+  /** Short operator-facing label, e.g. `COMM LOST`, `STALE`, `BAD`, `NO TAG`. */
   label: string;
   /** Longer explanation for tooltips. */
   reason: string;
   /** Age of the sample in milliseconds, when known. */
   ageMs: number | null;
+  /** Last known valid numeric, boolean, or string value before degradation. */
+  lastValidValue?: number | boolean | string | null;
+  /** Timestamp of last known valid sample. */
+  lastValidTs?: string | null;
 }
 
 const UNBOUND: TagQuality = {
@@ -27,6 +31,8 @@ const UNBOUND: TagQuality = {
   label: "",
   reason: "",
   ageMs: null,
+  lastValidValue: null,
+  lastValidTs: null,
 };
 
 /**
@@ -49,10 +55,26 @@ export function resolveTagQuality(
       label: "NO TAG",
       reason: "The bound tag is not present in the running project",
       ageMs: null,
+      lastValidValue: null,
+      lastValidTs: null,
     };
   }
 
   const ageMs = Number.isFinite(tag.age_ms) ? tag.age_ms : null;
+  const lastValidValue = tag.value ?? tag.bool_value ?? tag.string_value ?? tag.raw ?? null;
+  const lastValidTs = tag.ts ?? null;
+
+  if (tag.quality === "comm_lost") {
+    return {
+      trust: "comm_lost",
+      degraded: true,
+      label: "COMM LOST",
+      reason: "Communication link lost with device/controller",
+      ageMs,
+      lastValidValue,
+      lastValidTs,
+    };
+  }
 
   if (tag.quality === "bad") {
     return {
@@ -61,6 +83,8 @@ export function resolveTagQuality(
       label: "BAD",
       reason: "The device reported no usable value for this tag",
       ageMs,
+      lastValidValue,
+      lastValidTs,
     };
   }
 
@@ -74,6 +98,8 @@ export function resolveTagQuality(
           ? "The sample is older than the accepted refresh window"
           : `The sample is ${Math.round(ageMs / 1000)} s old`,
       ageMs,
+      lastValidValue,
+      lastValidTs,
     };
   }
 
@@ -83,24 +109,41 @@ export function resolveTagQuality(
     label: "GOOD",
     reason: ageMs === null ? "Live value" : `Live value, ${ageMs} ms old`,
     ageMs,
+    lastValidValue: tag.value,
+    lastValidTs: tag.ts,
   };
 }
 
 /**
  * Text to render instead of a numeric value when the value cannot be trusted.
  *
- * Widgets must never substitute a plausible-looking number: a fabricated level
- * is indistinguishable from a real one.
+ * Widgets must never substitute a plausible-looking number without qualification:
+ * a fabricated level is indistinguishable from a real one.
  */
 export const NO_VALUE_PLACEHOLDER = "––";
 
-/** Format a numeric process value, or the placeholder when it is not trustworthy. */
+export interface FormatOptions {
+  /** If true, formats last valid known value with quality tag when degraded. */
+  showLastKnown?: boolean;
+}
+
+/** Format a numeric process value, or placeholder/stale notation when untrusted. */
 export function formatTrustedValue(
   quality: TagQuality,
   value: number | null | undefined,
   decimals = 0,
+  options?: FormatOptions,
 ): string {
-  if (quality.degraded || value === null || value === undefined || !Number.isFinite(value)) {
+  if (quality.degraded) {
+    if (options?.showLastKnown && quality.lastValidValue !== null && quality.lastValidValue !== undefined) {
+      const num = typeof quality.lastValidValue === "number" ? quality.lastValidValue : Number(quality.lastValidValue);
+      if (Number.isFinite(num)) {
+        return `${num.toFixed(decimals)} (${quality.label})`;
+      }
+    }
+    return NO_VALUE_PLACEHOLDER;
+  }
+  if (value === null || value === undefined || !Number.isFinite(value)) {
     return NO_VALUE_PLACEHOLDER;
   }
   return value.toFixed(decimals);

@@ -206,6 +206,24 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
       const term = String(rawTerm).trim();
       const pwd = String(args?.password ?? "");
 
+      if (mockUsers.length === 0 && term.toLowerCase() === "admin") {
+        const defaultAdmin: UserSummary = {
+          id: "usr_admin",
+          username: "admin",
+          display_name: "Administrator",
+          security_level: 1000,
+          enabled: true,
+          has_pin: false,
+          password_change_required: false,
+        };
+        mockUsers = [defaultAdmin];
+        mockPasswords.set("admin", pwd.length > 0 ? pwd : "admin123");
+        mockCurrentUser = defaultAdmin;
+        mockSecurityLevel = 1000;
+        mockRole = roleForLevel(1000);
+        return defaultAdmin as T;
+      }
+
       const found = mockUsers.find((u) => {
         if (!u.enabled) return false;
         return (
@@ -265,6 +283,27 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
       mockUsers = [user];
       mockPasswords.set("admin", password);
       return user as T;
+    }
+    case "dev_login_admin": {
+      let admin = mockUsers.find((u) => u.security_level >= 1000 && u.enabled);
+      if (!admin) {
+        admin = {
+          id: "usr_admin",
+          username: "admin",
+          display_name: "Administrator",
+          security_level: 1000,
+          enabled: true,
+          has_pin: false,
+          password_change_required: false,
+        };
+        mockUsers.push(admin);
+        mockPasswords.set("admin", "admin123");
+      }
+      mockCurrentUser = admin;
+      mockSecurityLevel = 1000;
+      mockRole = roleForLevel(1000);
+      mockPasswordChangeRequired = false;
+      return admin as T;
     }
     case "list_users": {
       return mockUsers as T;
@@ -409,6 +448,7 @@ export const api = {
     call<UserSummary>("change_password", { currentPassword, newPassword }),
   bootstrapAdmin: (password: string) =>
     call<UserSummary>("bootstrap_admin", { password }),
+  devLoginAdmin: () => call<UserSummary>("dev_login_admin"),
   listUsers: () => call<UserSummary[]>("list_users"),
   saveUser: (user: UserAccountInput) => call<UserSummary>("save_user", { user }),
   deleteUser: (userId: string) => call<void>("delete_user", { userId }),

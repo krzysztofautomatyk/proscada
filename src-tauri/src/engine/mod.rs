@@ -899,6 +899,7 @@ impl Engine {
         project.validate()?;
         project.recompute_hash();
         self.user_realm_store.persist_users(&project.users, true)?;
+        g.login_throttle.clear();
         g.project = Some(project);
         drop(g);
         self.audit.append(
@@ -906,6 +907,60 @@ impl Engine {
             "unauthenticated",
             "auth.bootstrap_admin",
             "First Administrator provisioned; bootstrap permanently closed",
+        );
+        Ok(summary)
+    }
+
+    /// Force-authenticate an Administrator session during local development (`tauri:dev`).
+    ///
+    /// This bypasses password checks, cleared locks, and invalid credentials in
+    /// debug builds so developer iteration is never blocked by stale realm files.
+    pub fn dev_force_admin_login(&self) -> Result<UserSummary, String> {
+        let mut g = self.inner.write();
+        let project = g.project.as_mut().ok_or("No project loaded")?;
+
+        let admin_pos = project
+            .users
+            .iter()
+            .position(|u| u.enabled && u.security_level >= 1000);
+
+        let summary = if let Some(idx) = admin_pos {
+            project.users[idx].to_summary()
+        } else {
+            let user = UserAccount {
+                id: format!("usr_{}", uuid::Uuid::new_v4().simple()),
+                username: "admin".into(),
+                display_name: "Administrator".into(),
+                password_hash: credentials::hash_secret("admin123")?,
+                salt: LEGACY_SALT.into(),
+                pin_hash: None,
+                security_level: 1000,
+                enabled: true,
+                password_change_required: false,
+            };
+            let sum = user.to_summary();
+            project.users.push(user);
+            let _ = self.user_realm_store.persist_users(&project.users, true);
+            sum
+        };
+
+        let level = summary.security_level;
+        let username = summary.username.clone();
+
+        g.current_user = Some(summary.clone());
+        g.security_level = level;
+        g.role = security_level_to_role(level);
+        g.actor = username.clone();
+        g.last_activity_ts = Utc::now();
+        g.auth_epoch = g.auth_epoch.wrapping_add(1);
+        g.login_throttle.clear();
+        drop(g);
+
+        self.audit.append(
+            &username,
+            &format!("L{level}"),
+            "auth.dev_force_login",
+            "Developer Administrator session authenticated",
         );
         Ok(summary)
     }
@@ -2102,14 +2157,22 @@ enum LoginKind {
 }
 
 fn login_is_throttled(g: &mut EngineInner, key: &str) -> bool {
-    let now = Utc::now();
-    g.login_throttle.retain(|_, state| {
-        state.blocked_until.is_some_and(|until| until > now) || state.failures > 0
-    });
-    g.login_throttle
-        .get(key)
-        .and_then(|state| state.blocked_until)
-        .is_some_and(|until| until > now)
+    #[cfg(all(debug_assertions, not(test)))]
+    {
+        let _ = (g, key);
+        false
+    }
+    #[cfg(not(all(debug_assertions, not(test))))]
+    {
+        let now = Utc::now();
+        g.login_throttle.retain(|_, state| {
+            state.blocked_until.is_some_and(|until| until > now) || state.failures > 0
+        });
+        g.login_throttle
+            .get(key)
+            .and_then(|state| state.blocked_until)
+            .is_some_and(|until| until > now)
+    }
 }
 
 fn record_login_failure(g: &mut EngineInner, key: &str) {

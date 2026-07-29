@@ -14,8 +14,8 @@
   const str = (k: string, d = "") => String(cfg[k] ?? d);
   const pumpName = $derived(str("pumpName", "PUMP 1"));
 
-  const known = $derived(design || tag?.quality === "good");
-  const isRunning = $derived(known && (tag?.bool_value ?? false));
+  const known = $derived(design || !!tag);
+  const isRunning = $derived(known && (tag?.bool_value ?? (tag?.value !== undefined ? tag.value > 0 : false)));
   const isFault = $derived(known && Boolean(cfg.fault ?? false));
 </script>
 

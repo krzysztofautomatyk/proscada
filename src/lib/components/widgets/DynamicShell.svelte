@@ -108,6 +108,10 @@
   <div
     class="dyn-shell"
     class:blinking
+    class:degraded={quality.degraded}
+    class:comm-lost={quality.trust === "comm_lost" || quality.trust === "bad"}
+    class:stale={quality.trust === "stale"}
+    class:missing={quality.trust === "missing"}
     class:hidden-design={(!visible || isUnauthorized) && design}
     class:unauthorized-disabled={isUnauthorized && behavior === "disabled"}
     class:unauthorized-prompt={isUnauthorized && behavior === "prompt_login"}
@@ -142,21 +146,24 @@
     {/if}
     <div
       class="process-content"
-      aria-hidden={quality.degraded && !design ? "true" : undefined}
-      inert={quality.degraded && !design}
+      class:degraded={quality.degraded}
+      class:interaction-blocked={quality.degraded && ownsInteraction && !design}
     >
       {@render children()}
     </div>
 
     {#if quality.degraded}
       <div
-        class="quality-veil"
-        title={`${quality.label}: ${quality.reason}`}
+        class="quality-badge"
+        class:comm-lost={quality.trust === "comm_lost" || quality.trust === "bad"}
+        class:stale={quality.trust === "stale"}
+        class:missing={quality.trust === "missing"}
+        title={`${quality.label}: ${quality.reason}${quality.lastValidTs ? '\nOstatnia dobra wartość: ' + (quality.lastValidValue ?? 'brak') + ' (' + quality.lastValidTs + ')' : ''}`}
         role="status"
         aria-live="polite"
       >
-        <strong>{quality.label}</strong>
-        <span>VALUE UNAVAILABLE</span>
+        <span class="badge-icon">⚡</span>
+        <span class="badge-label">{quality.label}</span>
       </div>
     {/if}
 
@@ -186,8 +193,28 @@
     position: relative;
     box-sizing: border-box;
   }
+  .dyn-shell.degraded {
+    outline: 1.5px dashed var(--quality-border-color, #c084fc);
+    outline-offset: -1px;
+    border-radius: 4px;
+  }
+  .dyn-shell.degraded.comm-lost {
+    --quality-border-color: #a855f7;
+  }
+  .dyn-shell.degraded.stale {
+    --quality-border-color: #d97706;
+  }
+  .dyn-shell.degraded.missing {
+    --quality-border-color: #64748b;
+  }
   .process-content {
     display: contents;
+  }
+  .process-content.degraded {
+    filter: saturate(0.6);
+  }
+  .process-content.interaction-blocked {
+    pointer-events: none !important;
   }
   .clickable {
     cursor: pointer;
@@ -267,7 +294,6 @@
     border-radius: 4px;
     font-weight: 700;
   }
-  /* Untrustworthy process data must be unmistakable at a glance. */
   .shell-activator {
     position: absolute;
     inset: 0;
@@ -283,37 +309,45 @@
     outline: 2px solid #1f6feb;
     outline-offset: -2px;
   }
-  .quality-veil {
+  /* ISA-101 System Quality Badge: Muted Purple / Amber / Slate - NO RED FOR DATA QUALITY */
+  .quality-badge {
     position: absolute;
-    inset: 0;
-    z-index: 11;
-    pointer-events: auto;
-    border-radius: inherit;
-    outline: 2px solid rgba(153, 27, 27, 0.95);
-    outline-offset: -1.5px;
-    display: flex;
-    flex-direction: column;
+    top: 2px;
+    right: 2px;
+    z-index: 14;
+    display: inline-flex;
     align-items: center;
-    justify-content: center;
-    gap: 2px;
-    background: repeating-linear-gradient(
-      135deg,
-      rgba(254, 242, 242, 0.96),
-      rgba(254, 242, 242, 0.96) 7px,
-      rgba(254, 226, 226, 0.96) 7px,
-      rgba(254, 226, 226, 0.96) 14px
-    );
-    color: #7f1d1d;
+    gap: 3px;
+    padding: 2px 5px;
+    border-radius: 4px;
     font-size: 9px;
     font-weight: 800;
+    line-height: 1;
     letter-spacing: 0.04em;
-    text-align: center;
+    pointer-events: auto;
+    cursor: help;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
   }
-  .quality-veil strong {
-    font-size: 11px;
+  .quality-badge.comm-lost {
+    background: #581c87;
+    color: #f5d0fe;
+    border: 1px solid #c084fc;
   }
-  .quality-veil span {
-    font-size: 8px;
+  .quality-badge.stale {
+    background: #78350f;
+    color: #fef08a;
+    border: 1px solid #f59e0b;
+  }
+  .quality-badge.missing {
+    background: #1e293b;
+    color: #cbd5e1;
+    border: 1px solid #64748b;
+  }
+  .badge-icon {
+    font-size: 9px;
+  }
+  .badge-label {
+    text-transform: uppercase;
   }
   @keyframes scada-blink {
     0%,

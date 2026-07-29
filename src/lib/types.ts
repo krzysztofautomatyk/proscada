@@ -8,7 +8,7 @@ export type LeftPanelTab =
   | "components"
   | "alarms";
 
-export type Quality = "good" | "uncertain" | "bad";
+export type Quality = "good" | "uncertain" | "bad" | "comm_lost";
 
 export type AlarmPriority = "low" | "medium" | "high" | "critical";
 

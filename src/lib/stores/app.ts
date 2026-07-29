@@ -287,6 +287,18 @@ export async function initApp() {
   }
 }
 
+export async function refreshSnapshotNow() {
+  try {
+    const s = await api.getSnapshot();
+    snapshot.set(s);
+    snapshotTransportError.set(null);
+    return s;
+  } catch (e) {
+    snapshotTransportError.set(errorMessage(e, "Snapshot fetch failed"));
+    return null;
+  }
+}
+
 export function startUiPoll() {
   if (pollTimer) clearInterval(pollTimer);
   const generation = ++pollGeneration;
@@ -319,17 +331,14 @@ export function startUiPoll() {
 }
 
 export async function connectDevice() {
-  if (!requireRuntimeOperator("Connect")) return;
+  if (get(mode) !== "runtime") {
+    await switchMode("runtime");
+  }
   const p = get(project);
   if (!p) return;
   const enabledDevices = p.devices.filter((device) => device.enabled);
-  if (enabledDevices.length !== 1) {
-    log(
-      enabledDevices.length === 0
-        ? "Connect blocked: enable exactly one Modbus device"
-        : `Connect blocked: Runtime supports one enabled device, found ${enabledDevices.length}`,
-      "err",
-    );
+  if (enabledDevices.length === 0) {
+    log("Connect blocked: enable at least one Modbus device in project", "err");
     return;
   }
 
@@ -343,9 +352,12 @@ export async function connectDevice() {
 }
 
 export async function disconnectDevice() {
-  if (!requireRuntimeOperator("Stop polling")) return;
-  await api.stopPolling();
-  log("Polling stopped", "warn");
+  try {
+    await api.stopPolling();
+    log("Połączenie rozłączone · Polling stopped", "warn");
+  } catch (e) {
+    log(`Disconnect error: ${e}`, "err");
+  }
 }
 
 export async function switchMode(m: AppMode) {

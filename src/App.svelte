@@ -79,6 +79,7 @@
   import UserManagementModal from "$lib/components/auth/UserManagementModal.svelte";
   import ChangePasswordModal from "$lib/components/auth/ChangePasswordModal.svelte";
   import BootstrapAdminModal from "$lib/components/auth/BootstrapAdminModal.svelte";
+  import SystemCommBanner from "$lib/components/runtime/SystemCommBanner.svelte";
 
   let leftTab = $state<LeftPanelTab>("solution");
   let settingsOpen = $state(false);
@@ -545,6 +546,7 @@
     onNewWaterTank={reloadWaterTank}
     onOpenSettings={() => (settingsOpen = true)}
   />
+  <SystemCommBanner tagMap={$tagMap} />
 
   <div class="toolbar">
     <button
@@ -574,10 +576,25 @@
       <button class="tb" title="Add New Screen" onclick={() => addNewForm()}>+ Screen</button>
     {/if}
     <div class="sep"></div>
-    {#if canOperateRuntime}
-      <button class="tb" title="Connect Modbus" onclick={() => connectDevice()}>Connect</button>
-      <button class="tb" title="Stop Poll" onclick={() => disconnectDevice()}>Stop</button>
-    {/if}
+    <!-- Connect / Disconnect Modbus Toolbar Controls: Always available -->
+    <button
+      class="tb"
+      class:primary={!$snapshot?.connected}
+      title={$snapshot?.connected ? "Modbus podłączony (odczyt aktywny)" : "Połącz i uruchom odczyt z PLC"}
+      disabled={$snapshot?.connected}
+      onclick={() => connectDevice()}
+    >
+      Connect
+    </button>
+    <button
+      class="tb"
+      class:primary={$snapshot?.connected}
+      title={!$snapshot?.connected ? "Modbus rozłączony" : "Przerwij odczyt / rozłącz z PLC"}
+      disabled={!$snapshot?.connected}
+      onclick={() => disconnectDevice()}
+    >
+      Disconnect
+    </button>
     <div class="sep"></div>
 
     <!-- Security & User Identity Badge Controls -->

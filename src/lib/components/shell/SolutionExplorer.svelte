@@ -466,9 +466,23 @@
           </div>
         {:else}
           <div class="tree-item empty-query-row" style:padding-left="38px">
-            <span class="hint">Brak zapytań (Kliknij 📡+, aby dodać)</span>
+            <span class="hint">Brak zapytań Modbus</span>
           </div>
         {/each}
+        {#if design}
+          <div
+            class="tree-item add-query-action"
+            style:padding-left="38px"
+            role="button"
+            tabindex="0"
+            title="Dodaj nowe zapytanie blokowe do sterownika {d.name}"
+            onclick={() => openEditDeviceModal(d.id, "queries")}
+            onkeydown={(e) => (e.key === "Enter" || e.key === " ") && openEditDeviceModal(d.id, "queries")}
+          >
+            <span class="ico">➕</span>
+            <span class="label add-label">Dodaj zapytanie Modbus...</span>
+          </div>
+        {/if}
       {/if}
     {/each}
 
@@ -1031,6 +1045,18 @@
   .hint {
     font-size: 10px;
     color: #64748b;
+  }
+  .add-query-action {
+    color: #60a5fa;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .add-query-action:hover {
+    background: rgba(96, 165, 250, 0.15);
+    color: #93c5fd;
+  }
+  .add-label {
+    color: inherit;
   }
 </style>
 

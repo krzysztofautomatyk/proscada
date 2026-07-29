@@ -12,10 +12,13 @@
   let { widget, tag = null, design = false }: Props = $props();
 
   const quality = $derived(resolveTagQuality(widget, tag, design));
-  // No fabricated fallback level: an untrusted tag renders an empty tank and a
-  // placeholder readout, never a plausible-looking number.
-  const levelCm = $derived(quality.degraded ? null : (tag?.value ?? null));
-  const levelLabel = $derived(formatTrustedValue(quality, levelCm, 0));
+  // Preserve last valid level reading or current value even when quality is degraded, so visualization graphics remain intact.
+  const levelCm = $derived.by(() => {
+    if (tag?.value !== undefined && tag.value !== null) return tag.value;
+    if (typeof quality.lastValidValue === "number") return quality.lastValidValue;
+    return design ? 500 : 0;
+  });
+  const levelLabel = $derived(formatTrustedValue(quality, levelCm, 0, { showLastKnown: true }));
   const levelPct = $derived(
     levelCm === null ? 0 : Math.max(0, Math.min(1, levelCm / 1000)),
   );

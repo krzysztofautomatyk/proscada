@@ -85,6 +85,7 @@ pub fn run() {
             commands::logout,
             commands::change_password,
             commands::bootstrap_admin,
+            commands::dev_login_admin,
             commands::list_users,
             commands::save_user,
             commands::delete_user,

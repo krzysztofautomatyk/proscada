@@ -83,9 +83,7 @@
       } else {
         resetForm();
       }
-      // Runtime currently polls the tag map directly; custom query scheduling
-      // is intentionally unavailable until the engine implements it.
-      activeTab = "params";
+      activeTab = $deviceModalState.initialTab ?? "params";
       editingQueryId = null;
       testStatus = "idle";
       testMessage = "";

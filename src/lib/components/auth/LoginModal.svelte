@@ -1,6 +1,7 @@
 <script lang="ts">
   import { api } from "$lib/services/api";
   import { errorMessage } from "$lib/utils/errors";
+  import { refreshSnapshotNow } from "$lib/stores/app";
   import type { UserSummary } from "$lib/types";
 
   let {
@@ -35,9 +36,25 @@
     }
     loading = true;
     try {
-      const user = await api.login(username.trim(), password);
+      let user: UserSummary;
+      try {
+        user = await api.login(username.trim(), password);
+      } catch (firstErr) {
+        // If login failed on fresh installation where bootstrap admin is needed
+        if (username.trim().toLowerCase() === "admin") {
+          try {
+            await api.bootstrapAdmin(password);
+            user = await api.login("admin", password);
+          } catch {
+            throw firstErr;
+          }
+        } else {
+          throw firstErr;
+        }
+      }
       username = "";
       password = "";
+      await refreshSnapshotNow();
       onsuccess(user);
       onclose();
     } catch (e) {
@@ -148,6 +165,32 @@
 
       <footer class="modal-footer">
         <button type="button" class="btn btn-secondary" onclick={onclose} disabled={loading}>Anuluj</button>
+        {#if import.meta.env.DEV}
+          <button
+            type="button"
+            class="btn btn-dev-quick"
+            disabled={loading}
+            title="Tryb DEV: Automatycznie zaloguj jako admin"
+            onclick={async () => {
+              loading = true;
+              errorMsg = "";
+              try {
+                const user = await api.devLoginAdmin();
+                username = "";
+                password = "";
+                await refreshSnapshotNow();
+                onsuccess(user);
+                onclose();
+              } catch (e) {
+                errorMsg = errorMessage(e, "Błąd autoryzacji DEV");
+              } finally {
+                loading = false;
+              }
+            }}
+          >
+            ⚡ Auto-Admin (Dev)
+          </button>
+        {/if}
         <button type="button" class="btn btn-primary" onclick={handleLogin} disabled={loading}>
           {#if loading}
             <span class="spinner"></span> Zaloguj...
@@ -192,7 +235,7 @@
     border: 1px solid #1e293b;
     box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);
     border-radius: 16px;
-    width: 420px;
+    width: 500px;
     max-width: 92vw;
     color: #f8fafc;
     overflow: hidden;
@@ -342,6 +385,14 @@
   }
   .btn-primary:hover {
     background: linear-gradient(135deg, #0369a1, #1d4ed8);
+  }
+
+  .btn-dev-quick {
+    background: linear-gradient(135deg, #8b5cf6, #6366f1);
+    color: #ffffff;
+  }
+  .btn-dev-quick:hover {
+    filter: brightness(1.15);
   }
 
   .btn:disabled {

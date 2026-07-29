@@ -21,26 +21,29 @@
   const num = (k: string, d = 0) => Number(cfg[k] ?? d);
 
   const quality = $derived(resolveTagQuality(widget, tag, design));
-  const levelCm = $derived(quality.degraded ? null : (tag?.value ?? null));
-  const levelLabel = $derived(formatTrustedValue(quality, levelCm, 0));
+  const levelCm = $derived.by(() => {
+    if (tag?.value !== undefined && tag.value !== null) return tag.value;
+    if (typeof quality.lastValidValue === "number") return quality.lastValidValue;
+    return null;
+  });
+  const levelLabel = $derived(formatTrustedValue(quality, levelCm, 0, { showLastKnown: true }));
   const spanLabel = $derived(
     levelCm === null ? NO_VALUE_PLACEHOLDER : (levelCm / 10).toFixed(1),
   );
 
-  // Pump states come from configured tags; without them the panel says so
-  // instead of inventing a running pump.
+  // Pump states come from configured tags; retain last state when degraded
   const p1TagId = $derived(str("pump1TagId"));
   const p2TagId = $derived(str("pump2TagId"));
   const p1 = $derived(p1TagId ? ($tagMap.get(p1TagId) ?? null) : null);
   const p2 = $derived(p2TagId ? ($tagMap.get(p2TagId) ?? null) : null);
-  const p1Known = $derived(!design && !!p1 && p1.quality === "good");
-  const p2Known = $derived(!design && !!p2 && p2.quality === "good");
-  const p1Run = $derived(p1Known && p1!.bool_value);
-  const p2Run = $derived(p2Known && p2!.bool_value);
+  const p1Known = $derived(design || !!p1);
+  const p2Known = $derived(design || !!p2);
+  const p1Run = $derived(p1Known && (p1?.bool_value ?? (p1?.value !== undefined ? p1.value > 0 : false)));
+  const p2Run = $derived(p2Known && (p2?.bool_value ?? (p2?.value !== undefined ? p2.value > 0 : false)));
   const inflowTagId = $derived(str("inflowTagId"));
   const inflow = $derived(inflowTagId ? ($tagMap.get(inflowTagId) ?? null) : null);
   const inflowLabel = $derived(
-    !design && inflow && inflow.quality === "good"
+    inflow
       ? inflow.value.toFixed(2)
       : NO_VALUE_PLACEHOLDER,
   );
