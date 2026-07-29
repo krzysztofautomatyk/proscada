@@ -37,8 +37,8 @@ cargo deny --manifest-path src-tauri/Cargo.toml check advisories licenses source
 
 CI uruchamia przypięty `cargo-deny 0.20.2` z polityką `deny.toml`. Workflow release
 tworzy SPDX JSON SBOM, sumy SHA-256 i — dla tagów `v*` — atestację provenance
-GitHub. Artefakty pozostają niepodpisanymi kandydatami, dopóki organizacja nie
-dostarczy własnego procesu code signing.
+GitHub oraz publikuje je w GitHub Release. Artefakty pozostają niepodpisanymi
+kandydatami, dopóki organizacja nie dostarczy własnego procesu code signing.
 
 `deny.toml` jawnie dokumentuje terminowy wyjątek dla transitive Linux GTK/glib;
 dotyczy wyłącznie nieużywanej przez ProScada ścieżki `VariantStrIter` i wymaga

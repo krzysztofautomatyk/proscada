@@ -53,9 +53,10 @@ Jeśli uruchomiona kopia ProScada blokuje plik EXE lub MSI, zamknij ją przed bu
 ## Kandydaci desktopowi
 
 `.github/workflows/release.yml` buduje kandydatów Linux, Windows i macOS dla tagów
-`v*` lub ręcznego uruchomienia. Publikuje wyłącznie artefakty workflow: niepodpisane
-bundle, sumy SHA-256 oraz SPDX JSON SBOM. Dla tagów GitHub tworzy atestację
-provenance opartą na krótkotrwałej tożsamości workflow.
+`v*` lub ręcznego uruchomienia. Dla tagu `v*` publikuje GitHub Release z
+niepodpisanymi bundle, sumami SHA-256 oraz SPDX JSON SBOM. Ręczne uruchomienie
+publikuje tylko artefakty workflow. Dla tagów GitHub tworzy atestację provenance
+opartą na krótkotrwałej tożsamości workflow.
 
 Linux jest bundlowany na Ubuntu 22.04, aby nie podnosić niepotrzebnie minimalnej
 wersji glibc. Zgodność instalatora z docelową dystrybucją nadal wymaga smoke testu.
