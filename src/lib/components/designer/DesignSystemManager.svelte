@@ -152,16 +152,16 @@
 </div>
 
 <style>
-  .manager { height: 100%; overflow: auto; background: var(--vs-panel, #252526); color: var(--vs-text, #ccc); font-size: 10px; }
-  header { position: sticky; top: 0; z-index: 2; display: flex; justify-content: space-between; gap: 8px; padding: 9px; border-bottom: 1px solid var(--vs-border, #444); background: #202020; }
-  header strong, header span { display: block; } header strong { color: #fff; font-size: 11px; } header span { margin-top: 2px; color: #9ca3af; font-size: 9px; }
-  section { padding: 7px; border-bottom: 1px solid var(--vs-border, #444); }
-  .section-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 5px; color: #93c5fd; font-weight: 800; text-transform: uppercase; }
-  article { display: grid; gap: 4px; margin-bottom: 6px; padding: 6px; border: 1px solid #444; border-radius: 4px; background: #2d2d30; }
-  input, select, button { min-width: 0; box-sizing: border-box; border: 1px solid #555; border-radius: 3px; background: #1e1e1e; color: #ddd; font: inherit; }
+  .manager { height: 100%; overflow: auto; background: var(--gh-canvas-overlay, #161b22); color: var(--gh-fg-default, #e6edf3); font-size: 10px; }
+  header { position: sticky; top: 0; z-index: 2; display: flex; justify-content: space-between; gap: 8px; padding: 9px; border-bottom: 1px solid var(--gh-border-default, #30363d); background: var(--gh-canvas-default, #0d1117); }
+  header strong, header span { display: block; } header strong { color: var(--vs-text-bright, #f0f6fc); font-size: 11px; } header span { margin-top: 2px; color: var(--gh-fg-muted, #848d97); font-size: 9px; }
+  section { padding: 7px; border-bottom: 1px solid var(--gh-border-default, #30363d); }
+  .section-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 5px; color: var(--copilot-purple-light, #a371f7); font-weight: 800; text-transform: uppercase; }
+  article { display: grid; gap: 4px; margin-bottom: 6px; padding: 6px; border: 1px solid var(--gh-border-default, #30363d); border-radius: 6px; background: var(--gh-canvas-subtle, #161b22); }
+  input, select, button { min-width: 0; box-sizing: border-box; border: 1px solid var(--gh-border-default, #30363d); border-radius: 4px; background: var(--gh-canvas-inset, #010409); color: var(--gh-fg-default, #e6edf3); font: inherit; }
   input, select { width: 100%; min-height: 24px; padding: 3px 5px; } button { min-height: 23px; padding: 2px 7px; cursor: pointer; }
   .row { display: grid; grid-template-columns: 1fr 1fr auto; gap: 4px; }
-  .colors { display: flex; align-items: center; gap: 4px; } .colors label { display: grid; gap: 1px; color: #9ca3af; font-size: 7px; text-align: center; } .colors input { width: 32px; padding: 1px; }
-  .delete { color: #fca5a5; } small { color: #8b949e; font-size: 8px; }
+  .colors { display: flex; align-items: center; gap: 4px; } .colors label { display: grid; gap: 1px; color: var(--gh-fg-muted, #848d97); font-size: 7px; text-align: center; } .colors input { width: 32px; padding: 1px; }
+  .delete { color: #fca5a5; } small { color: var(--gh-fg-subtle, #6e7681); font-size: 8px; }
 </style>
 

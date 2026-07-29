@@ -439,9 +439,9 @@
   }
 
   .tag-chip {
-    background: #1e293b;
-    border: 1px solid #334155;
-    color: #f8fafc;
+    background: var(--gh-canvas-subtle, #161b22);
+    border: 1px solid var(--gh-border-default, #30363d);
+    color: var(--gh-fg-default, #e6edf3);
     font-size: 10.5px;
     font-weight: 600;
     padding: 2px 6px;
@@ -454,59 +454,59 @@
   }
 
   .tag-chip:hover {
-    background: #3b82f6;
-    border-color: #60a5fa;
+    background: var(--copilot-purple, #8957e5);
+    border-color: var(--copilot-purple-light, #a371f7);
     color: #fff;
   }
 
   .tag-chip.is-bool {
-    background: #0c4a6e;
-    border-color: #0284c7;
-    color: #e0f2fe;
+    background: rgba(57, 197, 207, 0.15);
+    border-color: var(--copilot-cyan, #39c5cf);
+    color: var(--copilot-cyan, #39c5cf);
   }
 
   .bit-idx {
-    color: #38bdf8;
-    font-family: monospace;
+    color: var(--copilot-cyan, #39c5cf);
+    font-family: var(--font-mono, monospace);
     font-size: 9.5px;
   }
 
   .multi-count-badge {
-    background: #312e81;
-    border: 1px solid #4338ca;
-    color: #c7d2fe;
+    background: rgba(137, 87, 229, 0.2);
+    border: 1px solid var(--copilot-purple-light, #a371f7);
+    color: var(--copilot-purple-light, #a371f7);
     padding: 2px 6px;
     border-radius: 3px;
     font-size: 10px;
     font-weight: 700;
   }
 
-  .type-badge.multi { background: #6366f1; }
+  .type-badge.multi { background: var(--copilot-purple, #8957e5); }
 
   .live-val { color: #4ade80; font-weight: 600; }
-  .unit-cell small { color: #64748b; }
+  .unit-cell small { color: var(--gh-fg-subtle, #6e7681); }
   .desc-cell {
     max-width: 200px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    color: #94a3b8;
+    color: var(--gh-fg-muted, #848d97);
   }
 
   .actions-cell { display: flex; gap: 4px; justify-content: center; }
 
   .btn-icon {
-    background: #272738;
-    border: 1px solid #334155;
-    color: #fff;
+    background: var(--gh-canvas-inset, #010409);
+    border: 1px solid var(--gh-border-default, #30363d);
+    color: var(--gh-fg-default, #e6edf3);
     padding: 3px 6px;
     border-radius: 3px;
     font-size: 11px;
     cursor: pointer;
   }
 
-  .btn-icon:hover { background: #3b82f6; }
-  .btn-icon.active { background: #0284c7; border-color: #38bdf8; }
+  .btn-icon:hover { background: var(--copilot-purple, #8957e5); }
+  .btn-icon.active { background: var(--copilot-purple, #8957e5); border-color: var(--copilot-purple-light, #a371f7); }
 
   .btn-add-tag {
     background: #16a34a;

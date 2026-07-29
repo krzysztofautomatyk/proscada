@@ -75,12 +75,12 @@
     cursor: pointer;
   }
   button:hover:not(:disabled) {
-    border-color: #3b82f6;
-    background: #2563eb;
-    color: #fff;
+    border-color: var(--copilot-purple-light, #a371f7);
+    background: var(--vs-selection, rgba(163, 113, 247, 0.2));
+    color: var(--vs-text-bright, #f0f6fc);
   }
   button:focus-visible {
-    outline: 2px solid #60a5fa;
+    outline: 2px solid var(--copilot-purple-light, #a371f7);
     outline-offset: 1px;
   }
   button:disabled {

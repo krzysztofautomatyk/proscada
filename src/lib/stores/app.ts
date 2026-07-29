@@ -698,6 +698,9 @@ export function extractTagSlotsFromWidgets(
 
   for (const w of widgets) {
     const label =
+      (w.config as Record<string, unknown>)?.tag_alias as string ||
+      (w.config as Record<string, unknown>)?.tag_name as string ||
+      (w.config as Record<string, unknown>)?.name as string ||
       (w.config as Record<string, unknown>)?.label as string ||
       (w.config as Record<string, unknown>)?.text as string ||
       (w.config as Record<string, unknown>)?.alt as string ||

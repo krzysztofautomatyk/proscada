@@ -418,6 +418,10 @@
       {/if}
     </div>
   {/each}
+  <div class="copilot-header-badge" title="GitHub Copilot Engine active for ProScada Workstation">
+    <span class="copilot-spark">✨</span>
+    <span class="copilot-text">GitHub Copilot</span>
+  </div>
 </div>
 
 <style>
@@ -528,5 +532,34 @@
     padding: 4px 12px 4px 28px;
     color: var(--vs-warn, #eab308);
     font-size: 11px;
+  }
+
+  .copilot-header-badge {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 10px;
+    margin-top: 3px;
+    margin-bottom: 3px;
+    margin-right: 6px;
+    border-radius: 12px;
+    background: var(--copilot-gradient, linear-gradient(135deg, #a371f7 0%, #2f81f7 100%));
+    color: #ffffff;
+    font-weight: 700;
+    font-size: 11px;
+    letter-spacing: 0.03em;
+    box-shadow: 0 0 10px rgba(163, 113, 247, 0.35);
+    border: 1px solid rgba(255, 255, 255, 0.25);
+  }
+
+  .copilot-spark {
+    display: inline-block;
+    animation: copilot-pulse 2s infinite ease-in-out;
+  }
+
+  @keyframes copilot-pulse {
+    0%, 100% { transform: scale(1); opacity: 0.9; }
+    50% { transform: scale(1.25); opacity: 1; filter: drop-shadow(0 0 4px #ffffff); }
   }
 </style>

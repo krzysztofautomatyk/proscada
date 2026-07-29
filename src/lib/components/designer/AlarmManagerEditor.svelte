@@ -110,13 +110,13 @@
 </div>
 
 <style>
-  .manager { height: 100%; overflow: auto; background: var(--vs-panel, #252526); color: #ccc; font-size: 9px; }
-  header { padding: 9px; border-bottom: 1px solid #444; background: #202020; } header strong, header span { display: block; } header strong { color: #fff; font-size: 11px; } header span { margin-top: 2px; color: #9ca3af; }
-  section { padding: 7px; border-bottom: 1px solid #444; } .section-title { display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; color: #fca5a5; font-weight: 800; text-transform: uppercase; }
-  article { display: grid; gap: 4px; margin-bottom: 6px; padding: 6px; border: 1px solid #444; border-radius: 4px; background: #2d2d30; }
-  input, select, button { min-width: 0; min-height: 24px; box-sizing: border-box; border: 1px solid #555; border-radius: 3px; background: #1e1e1e; color: #ddd; padding: 3px 5px; font: inherit; } button { cursor: pointer; }
+  .manager { height: 100%; overflow: auto; background: var(--gh-canvas-overlay, #161b22); color: var(--gh-fg-default, #e6edf3); font-size: 9px; }
+  header { padding: 9px; border-bottom: 1px solid var(--gh-border-default, #30363d); background: var(--gh-canvas-default, #0d1117); } header strong, header span { display: block; } header strong { color: var(--vs-text-bright, #f0f6fc); font-size: 11px; } header span { margin-top: 2px; color: var(--gh-fg-muted, #848d97); }
+  section { padding: 7px; border-bottom: 1px solid var(--gh-border-default, #30363d); } .section-title { display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; color: var(--gh-danger-emphasis, #da3633); font-weight: 800; text-transform: uppercase; }
+  article { display: grid; gap: 4px; margin-bottom: 6px; padding: 6px; border: 1px solid var(--gh-border-default, #30363d); border-radius: 6px; background: var(--gh-canvas-subtle, #161b22); }
+  input, select, button { min-width: 0; min-height: 24px; box-sizing: border-box; border: 1px solid var(--gh-border-default, #30363d); border-radius: 4px; background: var(--gh-canvas-inset, #010409); color: var(--gh-fg-default, #e6edf3); padding: 3px 5px; font: inherit; } button { cursor: pointer; }
   .row { display: grid; grid-template-columns: 1fr 1fr auto; gap: 4px; } .row.two { grid-template-columns: 1fr 1fr; } .row.three { grid-template-columns: 1fr 70px auto; } .row label { display: flex; align-items: center; gap: 3px; } .row label input { min-height: auto; }
-  .timing { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; } .timing label { display: grid; gap: 2px; color: #9ca3af; } .delete { color: #fca5a5; }
-  small, footer { color: #8b949e; font-size: 8px; } footer { padding: 8px; line-height: 1.4; }
+  .timing { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; } .timing label { display: grid; gap: 2px; color: var(--gh-fg-muted, #848d97); } .delete { color: #fca5a5; }
+  small, footer { color: var(--gh-fg-subtle, #6e7681); font-size: 8px; } footer { padding: 8px; line-height: 1.4; }
 </style>
 

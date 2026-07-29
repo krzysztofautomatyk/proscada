@@ -810,6 +810,9 @@
       </span>
     {/if}
     <span class="item">Mode: {$mode}</span>
+    <span class="sb-copilot-pill" title="GitHub Copilot Engine active for ProScada Workstation">
+      <span class="copilot-spark">✨</span> Copilot: Active
+    </span>
     <button
       type="button"
       class="item sb-autosave-item"
@@ -844,6 +847,20 @@
   .sb-autosave-item:focus-visible {
     outline: 2px solid #1f6feb;
     outline-offset: 1px;
+  }
+  .sb-copilot-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 8px;
+    border-radius: 10px;
+    background: rgba(137, 87, 229, 0.2);
+    border: 1px solid rgba(163, 113, 247, 0.45);
+    color: #d2a8ff;
+    font-weight: 700;
+    font-size: 10.5px;
+    letter-spacing: 0.02em;
+    box-shadow: 0 0 8px rgba(163, 113, 247, 0.25);
   }
   .sb-badge {
     padding: 1px 6px;

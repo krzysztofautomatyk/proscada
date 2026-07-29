@@ -107,12 +107,12 @@
 </div>
 
 <style>
-  .manager { height: 100%; overflow: auto; background: var(--vs-panel, #252526); color: #ccc; font-size: 10px; }
-  header { padding: 9px; border-bottom: 1px solid #444; background: #202020; } header strong, header span { display: block; } header strong { color: #fff; font-size: 11px; } header span { margin-top: 2px; color: #9ca3af; font-size: 9px; }
+  .manager { height: 100%; overflow: auto; background: var(--gh-canvas-overlay, #161b22); color: var(--gh-fg-default, #e6edf3); font-size: 10px; }
+  header { padding: 9px; border-bottom: 1px solid var(--gh-border-default, #30363d); background: var(--gh-canvas-default, #0d1117); } header strong, header span { display: block; } header strong { color: var(--vs-text-bright, #f0f6fc); font-size: 11px; } header span { margin-top: 2px; color: var(--gh-fg-muted, #848d97); font-size: 9px; }
   .actions, .selected-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; padding: 7px; }
-  button { min-height: 28px; border: 1px solid #555; border-radius: 4px; background: #333337; color: #ddd; font: inherit; cursor: pointer; } button:hover { border-color: #3b82f6; background: #37373d; }
-  .template-list { display: grid; gap: 4px; padding: 7px; } .template-list button { display: grid; gap: 2px; padding: 6px; text-align: left; } .template-list button.selected { border-color: #3b82f6; background: #1e3a5f; } .template-list strong { color: #fff; } .template-list span { color: #9ca3af; font-size: 8px; }
-  section { margin: 7px; padding: 8px; border: 1px solid #444; border-radius: 5px; background: #2d2d30; } h3 { margin: 0 0 5px; color: #93c5fd; font-size: 10px; } p { margin: 4px 0; color: #aaa; line-height: 1.4; } dl { display: grid; grid-template-columns: 62px 1fr; gap: 3px; } dt { color: #8b949e; } dd { min-width: 0; margin: 0; overflow-wrap: anywhere; color: #ddd; }
-  .selected-actions { padding: 6px 0 0; } .delete { color: #fca5a5; } .pump button { width: 100%; margin-top: 6px; border-color: #7c3aed; color: #ddd6fe; }
-  footer { padding: 8px; color: #8b949e; font-size: 8px; line-height: 1.4; }
+  button { min-height: 28px; border: 1px solid var(--gh-border-default, #30363d); border-radius: 4px; background: var(--gh-canvas-inset, #010409); color: var(--gh-fg-default, #e6edf3); font: inherit; cursor: pointer; } button:hover { border-color: var(--copilot-purple-light, #a371f7); background: var(--gh-border-muted, #21262d); }
+  .template-list { display: grid; gap: 4px; padding: 7px; } .template-list button { display: grid; gap: 2px; padding: 6px; text-align: left; } .template-list button.selected { border-color: var(--copilot-purple-light, #a371f7); background: rgba(163, 113, 247, 0.2); } .template-list strong { color: var(--vs-text-bright, #f0f6fc); } .template-list span { color: var(--gh-fg-muted, #848d97); font-size: 8px; }
+  section { margin: 7px; padding: 8px; border: 1px solid var(--gh-border-default, #30363d); border-radius: 6px; background: var(--gh-canvas-subtle, #161b22); } h3 { margin: 0 0 5px; color: var(--copilot-purple-light, #a371f7); font-size: 10px; } p { margin: 4px 0; color: var(--gh-fg-muted, #848d97); line-height: 1.4; } dl { display: grid; grid-template-columns: 62px 1fr; gap: 3px; } dt { color: var(--gh-fg-subtle, #6e7681); } dd { min-width: 0; margin: 0; overflow-wrap: anywhere; color: var(--gh-fg-default, #e6edf3); }
+  .selected-actions { padding: 6px 0 0; } .delete { color: #fca5a5; } .pump button { width: 100%; margin-top: 6px; border-color: var(--copilot-purple, #8957e5); color: var(--copilot-purple-light, #a371f7); }
+  footer { padding: 8px; color: var(--gh-fg-subtle, #6e7681); font-size: 8px; line-height: 1.4; }
 </style>

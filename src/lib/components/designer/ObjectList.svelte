@@ -256,8 +256,8 @@
     background: var(--vs-bg-3, #2d2d30);
   }
   .count {
-    background: #3e3e42;
-    color: #fff;
+    background: var(--gh-border-muted, #21262d);
+    color: var(--vs-text-bright, #f0f6fc);
     border-radius: 99px;
     padding: 0 7px;
     font-size: 10px;
@@ -265,8 +265,8 @@
   .hint {
     padding: 4px 10px;
     font-size: 10px;
-    color: #6b7280;
-    border-bottom: 1px solid var(--vs-border-soft, #2b2b2b);
+    color: var(--gh-fg-muted, #848d97);
+    border-bottom: 1px solid var(--gh-border-muted, #21262d);
     line-height: 1.35;
   }
   .groups-bar {
@@ -275,12 +275,12 @@
     gap: 4px;
     align-items: center;
     padding: 6px 8px;
-    border-bottom: 1px solid #2b2b2b;
+    border-bottom: 1px solid var(--gh-border-muted, #21262d);
   }
   .groups-title {
     font-size: 10px;
     font-weight: 700;
-    color: #9d9d9d;
+    color: var(--gh-fg-muted, #848d97);
     margin-right: 4px;
   }
   .g-chip {
@@ -300,7 +300,7 @@
   .empty {
     padding: 16px;
     font-size: 12px;
-    color: #6b7280;
+    color: var(--gh-fg-muted, #848d97);
   }
   .row {
     display: grid;
@@ -308,19 +308,19 @@
     gap: 6px;
     align-items: center;
     padding: 6px 8px;
-    border-bottom: 1px solid #2b2b2b;
+    border-bottom: 1px solid var(--gh-border-muted, #21262d);
     cursor: pointer;
     border-left: 3px solid transparent;
   }
   .row.grouped {
-    border-left-color: var(--grp-color, #3b82f6);
+    border-left-color: var(--grp-color, var(--copilot-purple-light, #a371f7));
   }
   .row:hover {
-    background: #2a2d2e;
+    background: var(--gh-border-muted, #21262d);
   }
   .row.selected {
-    background: #094771;
-    color: #fff;
+    background: var(--vs-selection, rgba(163, 113, 247, 0.2));
+    color: var(--vs-text-bright, #f0f6fc);
   }
   .row.locked .name {
     color: #eab308;
@@ -360,14 +360,14 @@
     display: flex;
     gap: 4px;
     padding: 6px;
-    border-top: 1px solid var(--vs-border, #3e3e42);
-    background: var(--vs-bg-3, #2d2d30);
+    border-top: 1px solid var(--gh-border-default, #30363d);
+    background: var(--gh-canvas-default, #0d1117);
   }
   .toolbar button {
     flex: 1;
-    background: #333;
-    border: 1px solid #444;
-    color: #ccc;
+    background: var(--gh-canvas-inset, #010409);
+    border: 1px solid var(--gh-border-default, #30363d);
+    color: var(--gh-fg-default, #e6edf3);
     border-radius: 3px;
     padding: 4px;
     cursor: pointer;

@@ -19,19 +19,27 @@
   --gh-danger-emphasis: #da3633;
   --gh-attention-fg: #d29922;
 
+  /* Copilot Signature Neon Accents */
+  --copilot-purple: #8957e5;
+  --copilot-purple-light: #a371f7;
+  --copilot-cyan: #39c5cf;
+  --copilot-blue: #2f81f7;
+  --copilot-gradient: linear-gradient(135deg, #a371f7 0%, #2f81f7 100%);
+  --copilot-glow: 0 0 12px rgba(163, 113, 247, 0.35);
+
   /* Shell mapping */
   --vs-bg: var(--gh-canvas-default);
   --vs-bg-2: var(--gh-canvas-overlay);
-  --vs-bg-3: #21262d;
-  --vs-bg-4: #30363d;
+  --vs-bg-3: #161b22;
+  --vs-bg-4: #21262d;
   --vs-border: var(--gh-border-default);
   --vs-border-soft: var(--gh-border-muted);
   --vs-text: var(--gh-fg-default);
   --vs-text-dim: var(--gh-fg-muted);
   --vs-text-bright: #f0f6fc;
-  --vs-accent: var(--gh-accent-emphasis);
-  --vs-accent-2: var(--gh-accent-hover);
-  --vs-selection: var(--gh-accent-subtle);
+  --vs-accent: var(--copilot-purple);
+  --vs-accent-2: var(--copilot-purple-light);
+  --vs-selection: rgba(163, 113, 247, 0.2);
   --vs-menu: var(--gh-canvas-overlay);
   --vs-danger: var(--gh-danger-emphasis);
   --vs-warn: var(--gh-attention-fg);
@@ -43,16 +51,16 @@
 
   --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
   --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
-  --menubar-h: 30px;
-  --toolbar-h: 38px;
-  --statusbar-h: 26px;
+  --menubar-h: 32px;
+  --toolbar-h: 40px;
+  --statusbar-h: 28px;
 
   /* Runtime HMI tokens */
-  --hmi-bg: #f4f5f7;
-  --hmi-card: #ffffff;
-  --hmi-border: #e5e7eb;
-  --hmi-text: #1f2937;
-  --hmi-muted: #6b7280;
+  --hmi-bg: #0d1117;
+  --hmi-card: #161b22;
+  --hmi-border: #30363d;
+  --hmi-text: #e6edf3;
+  --hmi-muted: #848d97;
   --hmi-green: #238636;
   --hmi-yellow: #d29922;
   --hmi-red: #da3633;
@@ -94,11 +102,13 @@ button {
   border: 1px solid transparent;
   background: transparent;
   color: var(--vs-text);
-  border-radius: 2px;
+  border-radius: 6px;
+  transition: all 0.15s ease;
 }
 
 button:hover:not(:disabled) {
   background: var(--vs-bg-4);
+  border-color: var(--gh-border-default);
 }
 
 button:disabled {
@@ -107,37 +117,44 @@ button:disabled {
 }
 
 button.primary {
-  background: var(--vs-accent);
-  color: #fff;
-  border-color: var(--vs-accent);
+  background: var(--copilot-gradient);
+  color: #ffffff;
+  border: 1px solid rgba(255, 255, 255, 0.2);
   padding: 4px 12px;
+  font-weight: 600;
+  box-shadow: 0 0 10px rgba(163, 113, 247, 0.25);
 }
 
 button.primary:hover:not(:disabled) {
-  background: var(--vs-accent-2);
+  background: linear-gradient(135deg, #b78af7 0%, #388bfd 100%);
+  box-shadow: 0 0 14px rgba(163, 113, 247, 0.45);
 }
 
 button.danger {
   color: #fff;
-  background: #a1260d;
-  border-color: #a1260d;
+  background: #da3633;
+  border-color: #f85149;
   padding: 4px 10px;
+  border-radius: 6px;
 }
 
 input,
 select,
 textarea {
-  background: #3c3c3c;
+  background: var(--gh-canvas-inset);
   border: 1px solid var(--vs-border);
-  border-radius: 2px;
-  padding: 3px 6px;
+  color: var(--vs-text);
+  border-radius: 6px;
+  padding: 4px 8px;
   outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 input:focus,
 select:focus,
 textarea:focus {
-  border-color: var(--vs-accent);
+  border-color: var(--copilot-purple-light);
+  box-shadow: 0 0 0 2px rgba(163, 113, 247, 0.3);
 }
 
 /* Shell layout */
