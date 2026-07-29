@@ -2539,7 +2539,7 @@ fn replace_target(source: &Path, target: &Path, _backup: &Path) -> Result<(), St
 fn replace_target(source: &Path, target: &Path, _backup: &Path) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{
-        MoveFileExW, MOVE_FILE_REPLACE_EXISTING, MOVE_FILE_WRITE_THROUGH,
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
     };
 
     let source_wide: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
@@ -2550,7 +2550,7 @@ fn replace_target(source: &Path, target: &Path, _backup: &Path) -> Result<(), St
         MoveFileExW(
             source_wide.as_ptr(),
             target_wide.as_ptr(),
-            MOVE_FILE_REPLACE_EXISTING | MOVE_FILE_WRITE_THROUGH,
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
         )
     };
     if replaced == 0 {
